@@ -144,6 +144,22 @@ export const SAFETY_CATEGORIES: IncidentCategory[] = [
   'IRREGULAR_WORKING', 'FIRE', 'DERAILMENT',
 ]
 
+// Focused safety categories for repeat-asset and operational safety views
+export const INFRA_SAFETY_CATEGORIES: IncidentCategory[] = [
+  'NEAR_MISS', 'IRREGULAR_WORKING', 'TPWS', 'SPAD', 'PERSON_STRUCK',
+]
+
+// Categories included in the Repeat-Fault Assets view
+export const REPEAT_ASSET_CATEGORIES: IncidentCategory[] = [
+  'INFRASTRUCTURE', 'TRACTION_FAILURE', 'LEVEL_CROSSING',
+  'NEAR_MISS', 'IRREGULAR_WORKING', 'TPWS', 'SPAD', 'PERSON_STRUCK',
+]
+
+// Categories included in the Infrastructure failure mix (NR-managed assets only)
+export const INFRA_MIX_CATEGORIES: IncidentCategory[] = [
+  'INFRASTRUCTURE', 'TRACTION_FAILURE',
+]
+
 export const TIME_WINDOWS = [
   { label: '7d',   days: 7   },
   { label: '30d',  days: 30  },
@@ -202,6 +218,33 @@ export interface RepeatFault {
   firstSeen: string
   lastSeen: string
   category: IncidentCategory
+}
+
+export interface RepeatAsset {
+  assetKey: string          // "Points Failure — Derby Station"
+  assetType: string         // incident_type_label
+  location: string
+  occurrences: number
+  totalDelay: number
+  category: IncidentCategory
+  firstSeen: string
+  lastSeen: string
+}
+
+export interface InfraFailureDatum {
+  typeCode: string
+  typeLabel: string
+  count: number
+  delayMins: number
+  color: string
+}
+
+export interface DelayDensityDatum {
+  location: string
+  area: string | null
+  incidentCount: number
+  avgDelayDensity: number   // mean(delay_mins / incident_duration) — delay-minutes per rectification-minute
+  totalDelay: number
 }
 
 export interface ResponderLoad {

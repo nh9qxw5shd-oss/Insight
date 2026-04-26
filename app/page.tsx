@@ -13,13 +13,14 @@ import {
 } from 'recharts'
 import { isSupabaseConfigured } from '@/lib/supabase'
 import {
-  AnalyticsFilters, DEFAULT_FILTERS, IncidentCategory, Severity,
-  CATEGORY_CONFIG, SEVERITY_CONFIG, SAFETY_CATEGORIES, TIME_WINDOWS,
-  ChartKind, DistributionKind,
+  AnalyticsFilters, DEFAULT_FILTERS, IncidentCategory, IncidentRow, Severity,
+  CATEGORY_CONFIG, SEVERITY_CONFIG, SAFETY_CATEGORIES,
+  TIME_WINDOWS, ChartKind, DistributionKind,
 } from '@/lib/types'
 import {
   fetchAnalytics, deriveKPIs, deriveTrend, deriveCategorySplit,
-  deriveLocationHotspots, deriveRepeatFaults, deriveResponderLoad,
+  deriveLocationHotspots, deriveRepeatFaults, deriveRepeatAssets,
+  deriveInfraFailureMix, deriveDelayDensity, deriveResponderLoad,
   deriveOperatorImpact, deriveHeatmap, deriveAreaList, deriveResponseDistribution,
   RawData,
 } from '@/lib/queries'
@@ -50,6 +51,7 @@ export default function InsightDashboard() {
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [trendChart, setTrendChart] = useState<ChartKind>('area')
   const [distChart, setDistChart] = useState<DistributionKind>('donut')
+  const [drillDown, setDrillDown] = useState<{ title: string; incidents: IncidentRow[] } | null>(null)
 
   // Fetch on filter change
   useEffect(() => {
@@ -91,16 +93,19 @@ export default function InsightDashboard() {
   }, [filters])
 
   // Derived
-  const kpis    = useMemo(() => data ? deriveKPIs(data) : null, [data])
-  const trend   = useMemo(() => data ? deriveTrend(data) : [], [data])
-  const cats    = useMemo(() => data ? deriveCategorySplit(data) : [], [data])
-  const hots    = useMemo(() => data ? deriveLocationHotspots(data) : [], [data])
-  const faults  = useMemo(() => data ? deriveRepeatFaults(data) : [], [data])
-  const resp    = useMemo(() => data ? deriveResponderLoad(data) : [], [data])
-  const ops     = useMemo(() => data ? deriveOperatorImpact(data) : [], [data])
-  const heat    = useMemo(() => data ? deriveHeatmap(data) : [], [data])
-  const areas   = useMemo(() => data ? deriveAreaList(data) : [], [data])
-  const respDist = useMemo(() => data ? deriveResponseDistribution(data) : null, [data])
+  const kpis         = useMemo(() => data ? deriveKPIs(data) : null, [data])
+  const trend        = useMemo(() => data ? deriveTrend(data) : [], [data])
+  const cats         = useMemo(() => data ? deriveCategorySplit(data) : [], [data])
+  const hots         = useMemo(() => data ? deriveLocationHotspots(data) : [], [data])
+  const faults       = useMemo(() => data ? deriveRepeatFaults(data) : [], [data])
+  const repeatAssets = useMemo(() => data ? deriveRepeatAssets(data) : [], [data])
+  const infraMix     = useMemo(() => data ? deriveInfraFailureMix(data) : [], [data])
+  const delayDensity = useMemo(() => data ? deriveDelayDensity(data) : [], [data])
+  const resp         = useMemo(() => data ? deriveResponderLoad(data) : [], [data])
+  const ops          = useMemo(() => data ? deriveOperatorImpact(data) : [], [data])
+  const heat         = useMemo(() => data ? deriveHeatmap(data) : [], [data])
+  const areas        = useMemo(() => data ? deriveAreaList(data) : [], [data])
+  const respDist     = useMemo(() => data ? deriveResponseDistribution(data) : null, [data])
 
   return (
     <main className="min-h-screen pb-24">
@@ -138,16 +143,24 @@ export default function InsightDashboard() {
 
         {kpis && data && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} cats={cats} hots={hots} areas={areas} faults={faults} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} cats={cats} hots={hots} areas={areas} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={data} />}
-            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} hots={hots} resp={respDist} chart={trendChart} setChart={setTrendChart} />}
-            {tab === 'geography'   && <GeographyTab hots={hots} areas={areas} />}
+            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} hots={hots} resp={respDist} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} />}
+            {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} />}
-            {tab === 'assets'      && <AssetsTab faults={faults} cats={cats} />}
+            {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'operators'   && <OperatorsTab ops={ops} resp={resp} />}
           </>
         )}
       </div>
+
+      {drillDown && (
+        <DrillDownModal
+          title={drillDown.title}
+          incidents={drillDown.incidents}
+          onClose={() => setDrillDown(null)}
+        />
+      )}
 
       <FilterDrawer
         open={filtersOpen}
@@ -230,7 +243,7 @@ function Header(props: {
 
 // ─── Overview tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ kpis, trend, cats, hots, areas, faults, chart, setChart, dist, setDist }: any) {
+function OverviewTab({ kpis, trend, cats, hots, areas, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown }: any) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 stagger">
@@ -283,10 +296,10 @@ function OverviewTab({ kpis, trend, cats, hots, areas, faults, chart, setChart, 
       {/* Hotspots + repeat assets */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card title="Top Hotspots" subtitle="Locations ranked by total delay" className="tick-corners">
-          <LocationLeaderboard data={hots} />
+          <LocationLeaderboard data={hots} incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
-        <Card title="Repeat-Fault Assets" subtitle="Same fault number, multiple occurrences">
-          <RepeatFaultsTable data={faults} />
+        <Card title="Repeat-Fault Assets" subtitle="Same equipment, multiple occurrences">
+          <RepeatAssetsTable data={repeatAssets} incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
       </div>
 
@@ -365,7 +378,7 @@ function SafetyTab({ kpis, trend, cats, data }: any) {
 
 // ─── Performance tab ─────────────────────────────────────────────────────────
 
-function PerformanceTab({ kpis, trend, hots, resp, chart, setChart }: any) {
+function PerformanceTab({ kpis, trend, hots, resp, chart, setChart, incidents, onDrillDown }: any) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 stagger">
@@ -388,7 +401,7 @@ function PerformanceTab({ kpis, trend, hots, resp, chart, setChart }: any) {
           {resp ? <ResponseHistograms data={resp} /> : null}
         </Card>
         <Card title="Top Locations by Delay" subtitle="Concentrated impact">
-          <LocationLeaderboard data={hots} />
+          <LocationLeaderboard data={hots} incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
       </div>
     </div>
@@ -397,15 +410,19 @@ function PerformanceTab({ kpis, trend, hots, resp, chart, setChart }: any) {
 
 // ─── Geography tab ───────────────────────────────────────────────────────────
 
-function GeographyTab({ hots, areas }: any) {
+function GeographyTab({ hots, delayDensity, incidents, onDrillDown }: any) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card title="Area Performance" subtitle="Aggregate delay by control area" className="lg:col-span-2 tick-corners">
-          <AreaBars data={areas} expanded />
+        <Card
+          title="Delay Density"
+          subtitle="Avg delay-minutes per rectification-minute — all locations"
+          className="lg:col-span-2 tick-corners"
+        >
+          <DelayDensityTable data={delayDensity} incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
-        <Card title="Top 12 Hotspots" subtitle="By delay">
-          <LocationLeaderboard data={hots} compact />
+        <Card title="Top 12 Hotspots" subtitle="By total delay">
+          <LocationLeaderboard data={hots} compact incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
       </div>
 
@@ -455,29 +472,21 @@ function PatternsTab({ heat, cats }: any) {
 
 // ─── Assets tab ──────────────────────────────────────────────────────────────
 
-function AssetsTab({ faults, cats }: any) {
-  const assetCats = cats.filter((c: any) => CATEGORY_CONFIG[c.category as IncidentCategory].group === 'asset')
+function AssetsTab({ repeatAssets, infraMix, cats, incidents, onDrillDown }: any) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card title="Asset-Failure Mix" subtitle="Infrastructure / OHL / Train Fault" className="tick-corners">
-          <ResponsiveContainer width="100%" height={260}>
-            <PieChart>
-              <Pie data={assetCats} dataKey="count" nameKey="short" innerRadius={60} outerRadius={100} paddingAngle={2}>
-                {assetCats.map((c: any, i: number) => <Cell key={i} fill={c.color} />)}
-              </Pie>
-              <Tooltip content={<CustomTooltip />} />
-            </PieChart>
-          </ResponsiveContainer>
+        <Card title="Asset-Failure Mix" subtitle="NR infrastructure — CCIL sub-category breakdown" className="tick-corners">
+          <InfraFailureMixChart data={infraMix} incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
 
-        <Card title="Repeat-Fault Assets" subtitle="Highest priority for engineering review" className="lg:col-span-2">
-          <RepeatFaultsTable data={faults} expanded />
+        <Card title="Repeat-Fault Assets" subtitle="Same equipment recurring — highest priority for engineering review" className="lg:col-span-2">
+          <RepeatAssetsTable data={repeatAssets} expanded incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
       </div>
 
-      <Card title="Asset Failure by Category" subtitle="Count vs total delay">
-        <DualBarChart data={assetCats} />
+      <Card title="Infrastructure Sub-Category — Count vs Delay" subtitle="NR-managed assets only">
+        <DualBarChart data={infraMix.map((d: any) => ({ ...d, short: d.typeLabel.length > 22 ? d.typeLabel.slice(0, 22) + '…' : d.typeLabel, delayMins: d.delayMins }))} />
       </Card>
     </div>
   )
@@ -682,19 +691,31 @@ function CategoryDistribution({ data, kind }: any) {
   )
 }
 
-function LocationLeaderboard({ data, compact }: any) {
+function LocationLeaderboard({ data, compact, incidents, onDrillDown }: any) {
   if (!data.length) return <Empty />
   const max = data[0]?.delayMins || 1
   return (
     <div className="space-y-2">
       {data.slice(0, compact ? 8 : 12).map((d: any, i: number) => (
-        <div key={i} className="group">
+        <div
+          key={i}
+          className={`group ${onDrillDown ? 'cursor-pointer' : ''}`}
+          onClick={() => {
+            if (!onDrillDown || !incidents) return
+            const rows = incidents.filter((inc: any) => !inc.is_continuation && inc.location === d.location)
+              .sort((a: any, b: any) => b.report_date.localeCompare(a.report_date))
+            onDrillDown({ title: `${d.location}`, incidents: rows })
+          }}
+          title={onDrillDown ? `View incidents at ${d.location}` : undefined}
+        >
           <div className="flex items-center justify-between text-xs mb-1">
             <div className="flex items-center gap-2 min-w-0">
               <span className="numeric-mono text-[10px] w-5" style={{ color: 'var(--ink-500)' }}>
                 {String(i + 1).padStart(2, '0')}
               </span>
-              <span className="truncate" style={{ color: 'var(--ink-200)' }}>{d.location}</span>
+              <span className={`truncate ${onDrillDown ? 'group-hover:underline group-hover:text-[var(--nr-orange)]' : ''}`} style={{ color: 'var(--ink-200)' }}>
+                {d.location}
+              </span>
             </div>
             <div className="flex items-center gap-3 shrink-0">
               <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>
@@ -748,40 +769,81 @@ function AreaBars({ data, expanded }: any) {
   )
 }
 
-function RepeatFaultsTable({ data, expanded }: any) {
-  if (!data.length) return <Empty msg="No repeat faults in window" />
+function RepeatAssetsTable({ data, expanded, incidents, onDrillDown }: any) {
+  if (!data.length) return <Empty msg="No repeat-fault assets in window" />
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
           <tr className="label-micro border-b border-[var(--line)]">
-            <th className="text-left py-2 pr-2">Fault #</th>
+            <th className="text-left py-2 pr-3">Equipment / Asset</th>
+            {expanded && <th className="text-left pr-3">Location</th>}
             <th className="text-left">Category</th>
             <th className="text-right">Occur.</th>
             <th className="text-right">Total Delay</th>
-            {expanded && <th className="text-left pl-3">Locations</th>}
-            <th className="text-right">Last seen</th>
+            <th className="text-right pl-3">Last seen</th>
           </tr>
         </thead>
         <tbody>
-          {data.map((f: any, i: number) => (
-            <tr key={i} className="border-b border-[var(--line)] hover:bg-[var(--bg-card-hi)] transition-colors">
-              <td className="py-2 pr-2 numeric-mono" style={{ color: 'var(--ink-100)' }}>{f.faultNumber}</td>
-              <td>
-                <span className="pill pill-low" style={{ background: `${CATEGORY_CONFIG[f.category as IncidentCategory].color}20`, color: CATEGORY_CONFIG[f.category as IncidentCategory].color, borderColor: `${CATEGORY_CONFIG[f.category as IncidentCategory].color}50` }}>
-                  {CATEGORY_CONFIG[f.category as IncidentCategory].short}
-                </span>
-              </td>
-              <td className="text-right numeric-mono" style={{ color: 'var(--nr-orange)' }}>{f.occurrences}×</td>
-              <td className="text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>{fmtMins(f.totalDelay)}</td>
-              {expanded && (
-                <td className="pl-3 truncate max-w-[200px]" style={{ color: 'var(--ink-300)' }}>
-                  {f.locations.slice(0, 2).join(', ')}{f.locations.length > 2 ? ` +${f.locations.length - 2}` : ''}
+          {data.map((a: any, i: number) => {
+            const cfg = CATEGORY_CONFIG[a.category as IncidentCategory]
+            return (
+              <tr key={i} className="border-b border-[var(--line)] hover:bg-[var(--bg-card-hi)] transition-colors">
+                <td className="py-2 pr-3" style={{ color: 'var(--ink-100)', maxWidth: expanded ? 180 : 140 }}>
+                  <button
+                    className="text-left hover:underline truncate block w-full"
+                    style={{ color: 'var(--ink-100)' }}
+                    title={`View incidents — ${a.assetKey}`}
+                    onClick={() => {
+                      if (!onDrillDown || !incidents) return
+                      const rows = incidents.filter((inc: any) =>
+                        !inc.is_continuation &&
+                        inc.location === a.location &&
+                        (inc.incident_type_label === a.assetType || inc.incident_type_code === a.assetType)
+                      ).sort((x: any, y: any) => y.report_date.localeCompare(x.report_date))
+                      onDrillDown({ title: a.assetKey, incidents: rows })
+                    }}
+                  >
+                    {a.assetType}
+                  </button>
                 </td>
-              )}
-              <td className="text-right numeric-mono" style={{ color: 'var(--ink-400)' }}>{shortDate(f.lastSeen)}</td>
-            </tr>
-          ))}
+                {expanded && (
+                  <td className="pr-3 truncate" style={{ color: 'var(--ink-300)', maxWidth: 160 }}>
+                    <button
+                      className="text-left hover:underline truncate block w-full"
+                      title={`View incidents at ${a.location}`}
+                      onClick={() => {
+                        if (!onDrillDown || !incidents) return
+                        const rows = incidents.filter((inc: any) => !inc.is_continuation && inc.location === a.location)
+                          .sort((x: any, y: any) => y.report_date.localeCompare(x.report_date))
+                        onDrillDown({ title: a.location, incidents: rows })
+                      }}
+                    >
+                      {a.location}
+                    </button>
+                  </td>
+                )}
+                <td>
+                  <button
+                    className="pill pill-low hover:opacity-80 transition-opacity"
+                    style={{ background: `${cfg.color}20`, color: cfg.color, borderColor: `${cfg.color}50` }}
+                    title={`View all ${cfg.label} incidents`}
+                    onClick={() => {
+                      if (!onDrillDown || !incidents) return
+                      const rows = incidents.filter((inc: any) => !inc.is_continuation && inc.category === a.category)
+                        .sort((x: any, y: any) => y.report_date.localeCompare(x.report_date))
+                      onDrillDown({ title: cfg.label, incidents: rows })
+                    }}
+                  >
+                    {cfg.short}
+                  </button>
+                </td>
+                <td className="text-right numeric-mono" style={{ color: 'var(--nr-orange)' }}>{a.occurrences}×</td>
+                <td className="text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>{fmtMins(a.totalDelay)}</td>
+                <td className="text-right numeric-mono pl-3" style={{ color: 'var(--ink-400)' }}>{shortDate(a.lastSeen)}</td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -810,6 +872,153 @@ function SafetyTable({ rows }: any) {
           <div className="col-span-1 numeric-mono text-right" style={{ color: 'var(--ink-400)' }}>{fmtMins(r.delayMins)}</div>
         </div>
       ))}
+    </div>
+  )
+}
+
+function InfraFailureMixChart({ data, incidents, onDrillDown }: any) {
+  if (!data.length) return <Empty msg="No infrastructure incidents in window" />
+  return (
+    <div>
+      <ResponsiveContainer width="100%" height={220}>
+        <PieChart>
+          <Pie data={data} dataKey="count" nameKey="typeLabel" innerRadius={55} outerRadius={90} paddingAngle={2}>
+            {data.map((d: any, i: number) => <Cell key={i} fill={d.color} />)}
+          </Pie>
+          <Tooltip
+            content={({ active, payload }) => {
+              if (!active || !payload?.length) return null
+              const d = payload[0].payload
+              return (
+                <div className="card !bg-[var(--bg-card-hi)] !border-[var(--line-hi)] p-2.5 text-xs">
+                  <div className="label-micro mb-1">{d.typeLabel}</div>
+                  <div className="numeric-mono" style={{ color: 'var(--ink-100)' }}>{d.count} incidents · {fmtMins(d.delayMins)}</div>
+                </div>
+              )
+            }}
+          />
+        </PieChart>
+      </ResponsiveContainer>
+      <div className="space-y-1.5 mt-1">
+        {data.map((d: any, i: number) => (
+          <button
+            key={i}
+            className="flex items-center gap-2 w-full text-left text-[10px] hover:opacity-80 transition-opacity"
+            title={`View ${d.typeLabel} incidents`}
+            onClick={() => {
+              if (!onDrillDown || !incidents) return
+              const rows = incidents.filter((inc: any) =>
+                !inc.is_continuation && inc.incident_type_code === d.typeCode
+              ).sort((a: any, b: any) => b.report_date.localeCompare(a.report_date))
+              onDrillDown({ title: d.typeLabel, incidents: rows })
+            }}
+          >
+            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: d.color }} />
+            <span className="truncate flex-1" style={{ color: 'var(--ink-200)' }}>{d.typeLabel}</span>
+            <span className="numeric-mono shrink-0" style={{ color: 'var(--ink-400)' }}>{d.count}×</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function DelayDensityTable({ data, incidents, onDrillDown }: any) {
+  if (!data.length) return <Empty msg="No incidents with duration data in window" />
+  const maxDensity = data[0]?.avgDelayDensity || 1
+  return (
+    <div className="space-y-0 max-h-[420px] overflow-y-auto pr-1">
+      <div className="grid grid-cols-12 gap-2 text-[9px] label-micro pb-1.5 mb-1 border-b border-[var(--line)] sticky top-0" style={{ background: 'var(--bg-card)' }}>
+        <div className="col-span-5">Location</div>
+        <div className="col-span-3">Density</div>
+        <div className="col-span-2 text-right">Inc</div>
+        <div className="col-span-2 text-right">Tot. delay</div>
+      </div>
+      {data.map((d: any, i: number) => (
+        <button
+          key={i}
+          className="grid grid-cols-12 gap-2 items-center w-full text-left text-xs py-1.5 border-b border-[var(--line)] last:border-0 hover:bg-[var(--bg-card-hi)] transition-colors"
+          onClick={() => {
+            if (!onDrillDown || !incidents) return
+            const rows = incidents.filter((inc: any) => !inc.is_continuation && inc.location === d.location)
+              .sort((a: any, b: any) => b.report_date.localeCompare(a.report_date))
+            onDrillDown({ title: d.location, incidents: rows })
+          }}
+        >
+          <div className="col-span-5 truncate" style={{ color: 'var(--ink-200)' }} title={d.location}>{d.location}</div>
+          <div className="col-span-3">
+            <div className="flex items-center gap-1.5">
+              <div className="h-1.5 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden flex-1">
+                <div
+                  className="h-full rounded-sm"
+                  style={{
+                    width: `${Math.min(100, (d.avgDelayDensity / maxDensity) * 100)}%`,
+                    background: d.avgDelayDensity > maxDensity * 0.66 ? '#E05206' :
+                                d.avgDelayDensity > maxDensity * 0.33 ? '#F39C12' : '#4A6FA5',
+                  }}
+                />
+              </div>
+              <span className="numeric-mono text-[10px] shrink-0" style={{ color: 'var(--ink-100)' }}>
+                {d.avgDelayDensity.toFixed(1)}
+              </span>
+            </div>
+          </div>
+          <div className="col-span-2 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-400)' }}>{d.incidentCount}</div>
+          <div className="col-span-2 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-300)' }}>{fmtMins(d.totalDelay)}</div>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function DrillDownModal({ title, incidents, onClose }: { title: string; incidents: IncidentRow[]; onClose: () => void }) {
+  const sorted = [...incidents].slice(0, 30)
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-2xl max-h-[80vh] bg-[var(--bg-panel)] border border-[var(--line-hi)] rounded overflow-hidden flex flex-col animate-fade-up">
+        <div className="flex items-start justify-between p-4 border-b border-[var(--line)] shrink-0">
+          <div>
+            <h3 className="serif text-xl font-medium" style={{ color: 'var(--ink-100)' }}>{title}</h3>
+            <p className="label-micro mt-0.5">{sorted.length} incident{sorted.length !== 1 ? 's' : ''} in window</p>
+          </div>
+          <button onClick={onClose} className="btn !p-2 shrink-0"><X size={14} /></button>
+        </div>
+        <div className="overflow-y-auto p-4 space-y-2 flex-1">
+          {sorted.length === 0 && <Empty msg="No matching incidents in window" />}
+          {sorted.map((inc) => (
+            <div key={inc.id} className="card !bg-[var(--bg-card-hi)] !border-[var(--line)] p-3 text-xs">
+              <div className="flex items-start gap-3">
+                <span className={`pill pill-${inc.severity.toLowerCase()} shrink-0`}>{inc.severity}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    {inc.ccil && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL {inc.ccil}</span>}
+                    <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{inc.report_date}{inc.incident_start ? ` · ${inc.incident_start}` : ''}</span>
+                    {inc.area && <span className="text-[10px]" style={{ color: 'var(--ink-400)' }}>{inc.area}</span>}
+                    {inc.incident_type_label && (
+                      <span className="pill" style={{ background: `${CATEGORY_CONFIG[inc.category].color}20`, color: CATEGORY_CONFIG[inc.category].color, borderColor: `${CATEGORY_CONFIG[inc.category].color}50` }}>
+                        {inc.incident_type_label}
+                      </span>
+                    )}
+                  </div>
+                  <div className="font-medium truncate" style={{ color: 'var(--ink-200)' }}>{inc.title || '—'}</div>
+                  <div className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>{inc.location}</div>
+                  {inc.incident_duration != null && (
+                    <div className="text-[10px] mt-1 numeric-mono" style={{ color: 'var(--ink-500)' }}>
+                      Duration: {inc.incident_duration}m
+                      {inc.incident_duration > 0 && ` · Density: ${(inc.minutes_delay / inc.incident_duration).toFixed(1)} delay/min`}
+                    </div>
+                  )}
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>DELAY</div>
+                  <div className="numeric-mono" style={{ color: 'var(--nr-orange)' }}>{inc.minutes_delay}m</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
