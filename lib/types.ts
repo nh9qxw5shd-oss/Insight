@@ -138,10 +138,10 @@ export const SEVERITY_CONFIG: Record<Severity, { color: string; rank: number }> 
   INFO:     { color: '#7A8BA8', rank: 4 },
 }
 
+// Bridge strikes, fires, and level crossing incidents excluded — tracked elsewhere
 export const SAFETY_CATEGORIES: IncidentCategory[] = [
   'FATALITY', 'PERSON_STRUCK', 'SPAD', 'TPWS',
-  'NEAR_MISS', 'BRIDGE_STRIKE', 'LEVEL_CROSSING',
-  'IRREGULAR_WORKING', 'FIRE', 'DERAILMENT',
+  'NEAR_MISS', 'IRREGULAR_WORKING', 'DERAILMENT', 'PASSENGER_INJURY', 'HABD_WILD',
 ]
 
 // Focused safety categories for repeat-asset and operational safety views
@@ -149,10 +149,9 @@ export const INFRA_SAFETY_CATEGORIES: IncidentCategory[] = [
   'NEAR_MISS', 'IRREGULAR_WORKING', 'TPWS', 'SPAD', 'PERSON_STRUCK',
 ]
 
-// Categories included in the Repeat-Fault Assets view
+// Repeat-Fault Assets: physical NR-managed infrastructure only
 export const REPEAT_ASSET_CATEGORIES: IncidentCategory[] = [
-  'INFRASTRUCTURE', 'TRACTION_FAILURE', 'LEVEL_CROSSING',
-  'NEAR_MISS', 'IRREGULAR_WORKING', 'TPWS', 'SPAD', 'PERSON_STRUCK',
+  'INFRASTRUCTURE', 'TRACTION_FAILURE',
 ]
 
 // Categories included in the Infrastructure failure mix (NR-managed assets only)

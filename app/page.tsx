@@ -28,7 +28,7 @@ import { generateSyntheticData } from '@/lib/syntheticData'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'operators'
+type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -36,7 +36,6 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'geography',   label: 'Geography',   icon: MapPin },
   { id: 'patterns',    label: 'Patterns',    icon: Layers },
   { id: 'assets',      label: 'Assets',      icon: Wrench },
-  { id: 'operators',   label: 'Operators',   icon: Train },
 ]
 
 // ─── Page ────────────────────────────────────────────────────────────────────
@@ -143,13 +142,12 @@ export default function InsightDashboard() {
 
         {kpis && data && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} cats={cats} hots={hots} areas={areas} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={data} />}
             {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} hots={hots} resp={respDist} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} />}
             {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={data.incidents} onDrillDown={setDrillDown} />}
-            {tab === 'operators'   && <OperatorsTab ops={ops} resp={resp} />}
           </>
         )}
       </div>
@@ -243,7 +241,7 @@ function Header(props: {
 
 // ─── Overview tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ kpis, trend, cats, hots, areas, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown }: any) {
+function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown }: any) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 stagger">
@@ -302,11 +300,6 @@ function OverviewTab({ kpis, trend, cats, hots, areas, repeatAssets, chart, setC
           <RepeatAssetsTable data={repeatAssets} incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
       </div>
-
-      {/* Areas */}
-      <Card title="Area Breakdown" subtitle="Delay impact by control area">
-        <AreaBars data={areas} />
-      </Card>
     </div>
   )
 }
