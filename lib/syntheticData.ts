@@ -58,10 +58,12 @@ const CATEGORY_WEIGHTS: CategoryWeight[] = [
 ]
 const TOTAL_W = CATEGORY_WEIGHTS.reduce((s, c) => s + c.w, 0)
 
+// Weighted type codes so common infra failures (points, track circuits, signals)
+// appear more often than rare ones, giving realistic sub-category distribution
 const TYPE_CODES: Partial<Record<IncidentCategory, string[]>> = {
-  INFRASTRUCTURE:    ['05A', '05B', '05C', '05D', '05E', '19', '20', '21'],
+  INFRASTRUCTURE:    ['05B', '05C', '05A', '05B', '05C', '05E', '05B', '05C', '05A', '19', '05D', '20', '21'],
   TRAIN_FAULT:       ['54', '55', '71'],
-  LEVEL_CROSSING:    ['07', '07a', '07b', '52'],
+  LEVEL_CROSSING:    ['07a', '07b', '52', '07', '07a', '07a'],
   TPWS:              ['02'],
   NEAR_MISS:         ['03'],
   CRIME:             ['15', '15A', '16', '70'],
@@ -160,10 +162,10 @@ function buildIncident(rng: () => number, dateStr: string, idx: number, faultPoo
     return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
   }
 
-  // Fault number: occasional repeats so the "repeat faults" view has data
+  // Fault number: infra/safety incidents reuse pool so repeat-asset view has data
   let faultNo: string | null = null
-  if (category === 'INFRASTRUCTURE' || category === 'TRAIN_FAULT' || category === 'LEVEL_CROSSING') {
-    if (rng() < 0.35 && faultPool.length) faultNo = pick(faultPool, rng)
+  if (['INFRASTRUCTURE', 'TRACTION_FAILURE', 'LEVEL_CROSSING', 'SPAD', 'TPWS', 'NEAR_MISS', 'IRREGULAR_WORKING', 'PERSON_STRUCK'].includes(category)) {
+    if (rng() < 0.4 && faultPool.length) faultNo = pick(faultPool, rng)
     else { faultNo = String(1130000 + Math.floor(rng() * 20000)); faultPool.push(faultNo) }
   }
 

@@ -3,8 +3,10 @@
 import { getSupabase } from './supabase'
 import {
   AnalyticsFilters, IncidentRow, ReportRow, KPISummary, TrendPoint,
-  CategoryDatum, LocationDatum, RepeatFault, ResponderLoad, OperatorImpact,
+  CategoryDatum, LocationDatum, RepeatFault, RepeatAsset, InfraFailureDatum,
+  DelayDensityDatum, ResponderLoad, OperatorImpact,
   HeatmapCell, IncidentCategory, CATEGORY_CONFIG, SAFETY_CATEGORIES,
+  REPEAT_ASSET_CATEGORIES, INFRA_MIX_CATEGORIES,
 } from './types'
 
 // ─── Date helpers ────────────────────────────────────────────────────────────
@@ -339,6 +341,95 @@ export function deriveAreaList(data: RawData): { area: string; count: number; de
     byArea.set(a, agg)
   }
   return Array.from(byArea.values()).sort((a, b) => b.delay - a.delay)
+}
+
+// ─── Infrastructure failure sub-category color palette ───────────────────────
+const INFRA_TYPE_COLORS: Record<string, string> = {
+  '05A': '#4A6FA5',  // Signal Failure
+  '05B': '#E05206',  // Points Failure
+  '05C': '#F39C12',  // Track Circuit Failure
+  '05D': '#27AE60',  // Axle Counter Failure
+  '05E': '#9B59B6',  // Broken Rail / Track Defect
+  '19':  '#5B7FA8',  // Signalling Failure
+  '20':  '#6B8FA8',  // Misc infra
+  '21':  '#7A9AB8',  // Misc infra
+  '23A': '#3A8FD5',  // OHL / Traction Failure
+  '07a': '#E0A006',  // Level Crossing Failure
+  '52':  '#D0900A',  // Level Crossing System Failure
+}
+
+export function deriveRepeatAssets(data: RawData, limit = 15): RepeatAsset[] {
+  const byAsset = new Map<string, RepeatAsset>()
+  for (const i of nonContinuation(data.incidents)) {
+    if (!REPEAT_ASSET_CATEGORIES.includes(i.category)) continue
+    const typeLabel = (i.incident_type_label || i.incident_type_code || CATEGORY_CONFIG[i.category].label).trim()
+    const loc = (i.location?.trim()) || 'Unknown'
+    const key = `${typeLabel}|||${loc}`
+    const agg = byAsset.get(key) ?? {
+      assetKey: `${typeLabel} — ${loc}`,
+      assetType: typeLabel,
+      location: loc,
+      occurrences: 0,
+      totalDelay: 0,
+      category: i.category,
+      firstSeen: i.report_date,
+      lastSeen: i.report_date,
+    }
+    agg.occurrences += 1
+    agg.totalDelay += effectiveDelay(i)
+    if (i.report_date < agg.firstSeen) agg.firstSeen = i.report_date
+    if (i.report_date > agg.lastSeen) agg.lastSeen = i.report_date
+    byAsset.set(key, agg)
+  }
+  return Array.from(byAsset.values())
+    .filter(a => a.occurrences > 1)
+    .sort((a, b) => b.occurrences - a.occurrences || b.totalDelay - a.totalDelay)
+    .slice(0, limit)
+}
+
+export function deriveInfraFailureMix(data: RawData): InfraFailureDatum[] {
+  const byType = new Map<string, InfraFailureDatum>()
+  for (const i of nonContinuation(data.incidents)) {
+    if (!INFRA_MIX_CATEGORIES.includes(i.category)) continue
+    const code = i.incident_type_code?.trim() || 'OTHER'
+    const label = (i.incident_type_label?.trim()) || CATEGORY_CONFIG[i.category].label
+    const agg = byType.get(code) ?? {
+      typeCode: code,
+      typeLabel: label,
+      count: 0,
+      delayMins: 0,
+      color: INFRA_TYPE_COLORS[code] || '#4A6FA5',
+    }
+    agg.count += 1
+    agg.delayMins += effectiveDelay(i)
+    byType.set(code, agg)
+  }
+  return Array.from(byType.values()).sort((a, b) => b.count - a.count)
+}
+
+export function deriveDelayDensity(data: RawData): DelayDensityDatum[] {
+  const byLoc = new Map<string, { densities: number[]; totalDelay: number; count: number; area: string | null }>()
+  for (const i of nonContinuation(data.incidents)) {
+    const loc = i.location?.trim()
+    if (!loc) continue
+    const delay = effectiveDelay(i)
+    const dur = i.incident_duration
+    const agg = byLoc.get(loc) ?? { densities: [], totalDelay: 0, count: 0, area: i.area }
+    agg.totalDelay += delay
+    agg.count += 1
+    if (dur != null && dur > 0) agg.densities.push(delay / dur)
+    byLoc.set(loc, agg)
+  }
+  return Array.from(byLoc.entries())
+    .filter(([, v]) => v.densities.length > 0)
+    .map(([loc, v]) => ({
+      location: loc,
+      area: v.area,
+      incidentCount: v.count,
+      avgDelayDensity: v.densities.reduce((s, n) => s + n, 0) / v.densities.length,
+      totalDelay: v.totalDelay,
+    }))
+    .sort((a, b) => b.avgDelayDensity - a.avgDelayDensity)
 }
 
 export function deriveResponseDistribution(data: RawData): {

@@ -138,10 +138,25 @@ export const SEVERITY_CONFIG: Record<Severity, { color: string; rank: number }> 
   INFO:     { color: '#7A8BA8', rank: 4 },
 }
 
+// Bridge strikes, fires, and level crossing incidents excluded — tracked elsewhere
 export const SAFETY_CATEGORIES: IncidentCategory[] = [
   'FATALITY', 'PERSON_STRUCK', 'SPAD', 'TPWS',
-  'NEAR_MISS', 'BRIDGE_STRIKE', 'LEVEL_CROSSING',
-  'IRREGULAR_WORKING', 'FIRE', 'DERAILMENT',
+  'NEAR_MISS', 'IRREGULAR_WORKING', 'DERAILMENT', 'PASSENGER_INJURY', 'HABD_WILD',
+]
+
+// Focused safety categories for repeat-asset and operational safety views
+export const INFRA_SAFETY_CATEGORIES: IncidentCategory[] = [
+  'NEAR_MISS', 'IRREGULAR_WORKING', 'TPWS', 'SPAD', 'PERSON_STRUCK',
+]
+
+// Repeat-Fault Assets: physical NR-managed infrastructure only
+export const REPEAT_ASSET_CATEGORIES: IncidentCategory[] = [
+  'INFRASTRUCTURE', 'TRACTION_FAILURE',
+]
+
+// Categories included in the Infrastructure failure mix (NR-managed assets only)
+export const INFRA_MIX_CATEGORIES: IncidentCategory[] = [
+  'INFRASTRUCTURE', 'TRACTION_FAILURE',
 ]
 
 export const TIME_WINDOWS = [
@@ -202,6 +217,33 @@ export interface RepeatFault {
   firstSeen: string
   lastSeen: string
   category: IncidentCategory
+}
+
+export interface RepeatAsset {
+  assetKey: string          // "Points Failure — Derby Station"
+  assetType: string         // incident_type_label
+  location: string
+  occurrences: number
+  totalDelay: number
+  category: IncidentCategory
+  firstSeen: string
+  lastSeen: string
+}
+
+export interface InfraFailureDatum {
+  typeCode: string
+  typeLabel: string
+  count: number
+  delayMins: number
+  color: string
+}
+
+export interface DelayDensityDatum {
+  location: string
+  area: string | null
+  incidentCount: number
+  avgDelayDensity: number   // mean(delay_mins / incident_duration) — delay-minutes per rectification-minute
+  totalDelay: number
 }
 
 export interface ResponderLoad {
