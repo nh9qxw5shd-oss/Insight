@@ -1038,9 +1038,12 @@ function InfraFailureMixChart({ data, incidents, onDrillDown }: any) {
             title={`View ${d.typeLabel} incidents`}
             onClick={() => {
               if (!onDrillDown || !incidents) return
-              const rows = incidents.filter((inc: any) =>
-                !inc.is_continuation && inc.incident_type_code === d.typeCode
-              ).sort((a: any, b: any) => b.report_date.localeCompare(a.report_date))
+              const targetLabel = d.typeLabel.toLowerCase()
+              const rows = incidents.filter((inc: any) => {
+                if (inc.is_continuation) return false
+                const lbl = (inc.incident_type_label?.trim() || CATEGORY_CONFIG[inc.category]?.label || '').toLowerCase()
+                return lbl === targetLabel
+              }).sort((a: any, b: any) => b.report_date.localeCompare(a.report_date))
               onDrillDown({ title: d.typeLabel, incidents: rows })
             }}
           >

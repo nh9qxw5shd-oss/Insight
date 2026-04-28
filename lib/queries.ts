@@ -362,19 +362,35 @@ export function deriveAreaList(data: RawData): { area: string; count: number; de
 }
 
 // ─── Infrastructure failure sub-category color palette ───────────────────────
-const INFRA_TYPE_COLORS: Record<string, string> = {
-  '05A': '#4A6FA5',  // Signal Failure
-  '05B': '#E05206',  // Points Failure
-  '05C': '#F39C12',  // Track Circuit Failure
-  '05D': '#27AE60',  // Axle Counter Failure
-  '05E': '#9B59B6',  // Broken Rail / Track Defect
-  '19':  '#5B7FA8',  // Signalling Failure
-  '20':  '#6B8FA8',  // Misc infra
-  '21':  '#7A9AB8',  // Misc infra
-  '23A': '#3A8FD5',  // OHL / Traction Failure
-  '07a': '#E0A006',  // Level Crossing Failure
-  '52':  '#D0900A',  // Level Crossing System Failure
-}
+// Ordered by visual priority — index 0 goes to the most-common failure type,
+// so every slice gets a distinct colour regardless of what DB code it carries.
+const INFRA_PALETTE = [
+  '#E05206',  // orange
+  '#F39C12',  // amber
+  '#4A6FA5',  // blue
+  '#27AE60',  // green
+  '#9B59B6',  // purple
+  '#3A8FD5',  // sky blue
+  '#E74C3C',  // red
+  '#16A085',  // teal
+  '#E0A006',  // dark amber
+  '#D35400',  // burnt orange
+  '#2ECC71',  // light green
+  '#8E44AD',  // violet
+  '#2980B9',  // medium blue
+  '#C0392B',  // dark red
+  '#F1C40F',  // yellow
+  '#1ABC9C',  // turquoise
+  '#6B8FA8',  // slate
+  '#E67E22',  // light orange
+  '#5B7FA8',  // muted blue
+  '#7A9AB8',  // pale blue
+  '#A569BD',  // lavender
+  '#48C9B0',  // mint
+  '#85A3C7',  // powder blue
+  '#95A5A6',  // grey
+  '#BDC3C7',  // light grey
+]
 
 export function deriveRepeatAssets(data: RawData, limit = 15): RepeatAsset[] {
   const byAsset = new Map<string, RepeatAsset>()
@@ -406,26 +422,24 @@ export function deriveRepeatAssets(data: RawData, limit = 15): RepeatAsset[] {
 }
 
 export function deriveInfraFailureMix(data: RawData): InfraFailureDatum[] {
-  const byType = new Map<string, InfraFailureDatum>()
+  const byType = new Map<string, Omit<InfraFailureDatum, 'color'>>()
   for (const i of nonContinuation(data.incidents)) {
     if (!INFRA_MIX_CATEGORIES.includes(i.category)) continue
     const code = i.incident_type_code?.trim() || 'OTHER'
     const label = (i.incident_type_label?.trim()) || CATEGORY_CONFIG[i.category].label
-    // Group by normalised label so variants with the same human name (e.g.
-    // "Points Failure" from codes "05B" and "5B") merge into a single slice.
+    // Group by normalised label so the same failure type stored under different
+    // codes (e.g. "Points Failure" from "05B" and "5B") merges into one slice.
     const key = label.toLowerCase()
-    const agg = byType.get(key) ?? {
-      typeCode: code,
-      typeLabel: label,
-      count: 0,
-      delayMins: 0,
-      color: INFRA_TYPE_COLORS[code] || '#4A6FA5',
-    }
+    const agg = byType.get(key) ?? { typeCode: code, typeLabel: label, count: 0, delayMins: 0 }
     agg.count += 1
     agg.delayMins += effectiveDelay(i)
     byType.set(key, agg)
   }
-  return Array.from(byType.values()).sort((a, b) => b.count - a.count)
+  // Sort by count then assign palette colours by rank so every slice is
+  // distinct regardless of what raw type-code the DB happens to store.
+  return Array.from(byType.values())
+    .sort((a, b) => b.count - a.count)
+    .map((d, i) => ({ ...d, color: INFRA_PALETTE[i % INFRA_PALETTE.length] }))
 }
 
 export function deriveDelayDensity(data: RawData): DelayDensityDatum[] {
