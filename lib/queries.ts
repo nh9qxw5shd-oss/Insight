@@ -40,9 +40,8 @@ function previousWindow(f: AnalyticsFilters): { from: string; to: string } {
 
 // ─── Master fetch ────────────────────────────────────────────────────────────
 // One round-trip pulls every column we need and we derive everything in JS.
-// At ~5 incidents/day × 365 days that's <2k rows so client-side aggregation
-// is fine and keeps the queries trivial. If volumes grow significantly, push
-// the heavy aggregations into Supabase RPCs.
+// Each query is capped at 100 000 rows to override the PostgREST 1 000-row
+// default. If volumes grow beyond that, push aggregations into Supabase RPCs.
 
 export interface RawData {
   incidents: IncidentRow[]
@@ -77,6 +76,7 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
     .gte('report_date', cur.from)
     .lte('report_date', cur.to)
     .order('report_date', { ascending: true })
+    .limit(100000)
 
   if (f.areas.length)      curQ = curQ.in('area', f.areas)
   if (f.categories.length) curQ = curQ.in('category', f.categories)
@@ -90,11 +90,13 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
   const { data: prevRows } = await sb.from('incidents').select(INCIDENT_COLS)
     .gte('report_date', prev.from)
     .lte('report_date', prev.to)
+    .limit(100000)
 
   // Reports row count (for "reports covered" KPI)
   const { data: reportRows } = await sb.from('reports').select('*')
     .gte('report_date', cur.from)
     .lte('report_date', cur.to)
+    .limit(100000)
 
   const incidents = (curRows || []) as unknown as IncidentRow[]
 
