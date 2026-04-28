@@ -163,6 +163,44 @@ function median(nums: number[]): number | null {
   return sorted.length % 2 ? sorted[m] : (sorted[m - 1] + sorted[m]) / 2
 }
 
+// Parse elapsed minutes between two "HH:MM" strings, handling cross-midnight.
+function minsFromTimes(start: string | null, end: string | null): number | null {
+  if (!start || !end) return null
+  const toMin = (t: string) => {
+    const [h, m] = t.split(':').map(Number)
+    return isNaN(h) || isNaN(m) ? null : h * 60 + m
+  }
+  const s = toMin(start)
+  const e = toMin(end)
+  if (s == null || e == null) return null
+  const diff = e >= s ? e - s : e + 1440 - s  // handle cross-midnight
+  return diff
+}
+
+// Effective timing getters — prefer precomputed DB columns, fall back to
+// parsing the raw HH:MM strings so incidents without computed columns still
+// contribute to distributions and median calculations.
+function effectiveMinsToAdvised(i: IncidentRow): number | null {
+  if (i.mins_to_advised != null && i.mins_to_advised >= 0 && i.mins_to_advised < 1440)
+    return i.mins_to_advised
+  const v = minsFromTimes(i.incident_start, i.advised_time)
+  return v != null && v >= 0 && v < 1440 ? v : null
+}
+
+function effectiveMinsToResponse(i: IncidentRow): number | null {
+  if (i.mins_to_response != null && i.mins_to_response >= 0 && i.mins_to_response < 1440)
+    return i.mins_to_response
+  const v = minsFromTimes(i.incident_start, i.initial_resp_time)
+  return v != null && v >= 0 && v < 1440 ? v : null
+}
+
+function effectiveMinsToArrival(i: IncidentRow): number | null {
+  if (i.mins_to_arrival != null && i.mins_to_arrival >= 0 && i.mins_to_arrival < 1440)
+    return i.mins_to_arrival
+  const v = minsFromTimes(i.incident_start, i.arrived_at_time)
+  return v != null && v >= 0 && v < 1440 ? v : null
+}
+
 function pctDelta(curr: number, prev: number): number | null {
   if (prev === 0) return curr === 0 ? 0 : null
   return ((curr - prev) / prev) * 100
@@ -195,8 +233,8 @@ export function deriveKPIs(data: RawData): KPISummary {
     : null
 
   const arrivalTimes = curUnique
-    .map(i => i.mins_to_arrival)
-    .filter((n): n is number => n != null && n >= 0 && n < 24 * 60)
+    .map(effectiveMinsToArrival)
+    .filter((n): n is number => n != null)
 
   return {
     totalIncidents: curUnique.length,
@@ -497,9 +535,12 @@ export function deriveResponseDistribution(data: RawData): {
   const toArrival:  number[] = []
   const duration:   number[] = []
   for (const i of nonContinuation(data.incidents)) {
-    if (i.mins_to_advised  != null && i.mins_to_advised  >= 0 && i.mins_to_advised  < 1440) toAdvised.push(i.mins_to_advised)
-    if (i.mins_to_response != null && i.mins_to_response >= 0 && i.mins_to_response < 1440) toResponse.push(i.mins_to_response)
-    if (i.mins_to_arrival  != null && i.mins_to_arrival  >= 0 && i.mins_to_arrival  < 1440) toArrival.push(i.mins_to_arrival)
+    const a = effectiveMinsToAdvised(i)
+    const r = effectiveMinsToResponse(i)
+    const v = effectiveMinsToArrival(i)
+    if (a != null) toAdvised.push(a)
+    if (r != null) toResponse.push(r)
+    if (v != null) toArrival.push(v)
     if (i.incident_duration != null && i.incident_duration >= 0) duration.push(i.incident_duration)
   }
   return { toAdvised, toResponse, toArrival, duration }
