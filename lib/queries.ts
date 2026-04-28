@@ -194,8 +194,8 @@ export function deriveKPIs(data: RawData): KPISummary {
     ? prevDurations.reduce((s, n) => s + n, 0) / prevDurations.length
     : null
 
-  const responseTimes = curUnique
-    .map(i => i.mins_to_response)
+  const arrivalTimes = curUnique
+    .map(i => i.mins_to_arrival)
     .filter((n): n is number => n != null && n >= 0 && n < 24 * 60)
 
   return {
@@ -204,7 +204,7 @@ export function deriveKPIs(data: RawData): KPISummary {
     totalCancelled,
     totalPartCancelled,
     avgIncidentDuration: avgDuration,
-    medianResponseMins: median(responseTimes),
+    medianArrivalMins: median(arrivalTimes),
     safetyCriticalCount: safetyCount,
     reportsCovered: data.reports.length,
     delayDeltaPct: pctDelta(totalDelay, prevDelay),
@@ -331,6 +331,21 @@ export function deriveOperatorImpact(data: RawData): OperatorImpact[] {
   return Array.from(byCo.values()).sort((a, b) => b.delayMins - a.delayMins)
 }
 
+function incidentDow(i: IncidentRow): number | null {
+  if (i.day_of_week != null) return i.day_of_week
+  if (i.report_date) return new Date(i.report_date + 'T00:00:00Z').getUTCDay()
+  return null
+}
+
+function incidentHour(i: IncidentRow): number | null {
+  if (i.hour_of_day != null) return i.hour_of_day
+  if (i.incident_start) {
+    const h = parseInt(i.incident_start.slice(0, 2), 10)
+    if (!isNaN(h) && h >= 0 && h <= 23) return h
+  }
+  return null
+}
+
 export function deriveHeatmap(data: RawData): HeatmapCell[] {
   const grid: HeatmapCell[] = []
   for (let dow = 0; dow < 7; dow++) {
@@ -339,8 +354,8 @@ export function deriveHeatmap(data: RawData): HeatmapCell[] {
     }
   }
   for (const i of nonContinuation(data.incidents)) {
-    const dow = i.day_of_week
-    const h = i.hour_of_day
+    const dow = incidentDow(i)
+    const h = incidentHour(i)
     if (dow == null || h == null) continue
     if (dow < 0 || dow > 6 || h < 0 || h > 23) continue
     const cell = grid[dow * 24 + h]
@@ -352,7 +367,11 @@ export function deriveHeatmap(data: RawData): HeatmapCell[] {
 export function deriveAreaList(data: RawData): { area: string; count: number; delay: number }[] {
   const byArea = new Map<string, { area: string; count: number; delay: number }>()
   for (const i of nonContinuation(data.incidents)) {
-    const a = (i.area || 'Unspecified').trim()
+    // Use the raw DB value without trimming — the Supabase .in() filter does
+    // exact-string matching, so the value here must be byte-for-byte identical
+    // to what is stored in the database.
+    const a = i.area
+    if (!a) continue
     const agg = byArea.get(a) ?? { area: a, count: 0, delay: 0 }
     agg.count += 1
     agg.delay += effectiveDelay(i)

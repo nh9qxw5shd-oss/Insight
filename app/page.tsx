@@ -450,8 +450,8 @@ function PerformanceTab({ kpis, trend, hots, resp, chart, setChart, incidents, o
         <KPICard label="Cancelled" value={kpis.totalCancelled} icon={X} />
         <KPICard label="Part Cancelled" value={kpis.totalPartCancelled} icon={X} />
         <KPICard
-          label="Median Response"
-          value={kpis.medianResponseMins != null ? `${kpis.medianResponseMins} min` : '—'}
+          label="Median Arrival"
+          value={kpis.medianArrivalMins != null ? `${kpis.medianArrivalMins} min` : '—'}
           icon={Clock}
         />
       </div>
