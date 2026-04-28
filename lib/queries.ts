@@ -44,7 +44,7 @@ function previousWindow(f: AnalyticsFilters): { from: string; to: string } {
 // chunks and stop when a partial page (or empty page) is returned.
 
 async function fetchAllRows<T>(
-  queryFn: () => { range: (from: number, to: number) => Promise<{ data: unknown[] | null; error: { message: string } | null }> },
+  queryFn: () => { range: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> },
   pageSize = 1000,
 ): Promise<T[]> {
   const all: T[] = []
