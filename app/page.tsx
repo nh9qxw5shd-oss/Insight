@@ -404,6 +404,9 @@ function PerformanceTab({ kpis, trend, hots, resp, chart, setChart, incidents, o
 // ─── Geography tab ───────────────────────────────────────────────────────────
 
 function GeographyTab({ hots, delayDensity, incidents, onDrillDown }: any) {
+  const routeAvg = delayDensity.length
+    ? delayDensity.reduce((s: number, d: any) => s + d.avgDelayDensity, 0) / delayDensity.length
+    : null
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -411,6 +414,12 @@ function GeographyTab({ hots, delayDensity, incidents, onDrillDown }: any) {
           title="Delay Density"
           subtitle="Avg delay-minutes per rectification-minute — all locations"
           className="lg:col-span-2 tick-corners"
+          right={routeAvg != null && (
+            <div className="text-right shrink-0">
+              <div className="label-micro">Route avg</div>
+              <div className="numeric-mono text-lg font-semibold" style={{ color: 'var(--ink-100)' }}>{routeAvg.toFixed(2)}</div>
+            </div>
+          )}
         >
           <DelayDensityTable data={delayDensity} incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
