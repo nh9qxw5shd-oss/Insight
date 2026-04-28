@@ -1041,7 +1041,7 @@ function InfraFailureMixChart({ data, incidents, onDrillDown }: any) {
               const targetLabel = d.typeLabel.toLowerCase()
               const rows = incidents.filter((inc: any) => {
                 if (inc.is_continuation) return false
-                const lbl = (inc.incident_type_label?.trim() || CATEGORY_CONFIG[inc.category]?.label || '').toLowerCase()
+                const lbl = (inc.incident_type_label?.trim() || CATEGORY_CONFIG[inc.category as IncidentCategory]?.label || '').toLowerCase()
                 return lbl === targetLabel
               }).sort((a: any, b: any) => b.report_date.localeCompare(a.report_date))
               onDrillDown({ title: d.typeLabel, incidents: rows })
