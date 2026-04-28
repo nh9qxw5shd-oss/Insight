@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Activity, AlertTriangle, ChevronLeft, ChevronRight, Clock, Filter,
-  Layers, MapPin, RefreshCw, Search, TrendingDown, TrendingUp, Train,
-  Wrench, X, type LucideIcon,
+  Activity, AlertTriangle, Bell, ChevronDown, ChevronLeft, ChevronRight,
+  Clock, Download, Filter, Layers, MapPin, RefreshCw, Route, Search,
+  TrendingDown, TrendingUp, Train, Wrench, X, type LucideIcon,
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
@@ -15,20 +15,24 @@ import { isSupabaseConfigured } from '@/lib/supabase'
 import {
   AnalyticsFilters, DEFAULT_FILTERS, IncidentCategory, IncidentRow, Severity,
   CATEGORY_CONFIG, SEVERITY_CONFIG, SAFETY_CATEGORIES,
-  TIME_WINDOWS, ChartKind, DistributionKind,
+  TIME_WINDOWS, ChartKind, DistributionKind, Signal,
 } from '@/lib/types'
 import {
   fetchAnalytics, deriveKPIs, deriveTrend, deriveCategorySplit,
   deriveLocationHotspots, deriveRepeatFaults, deriveRepeatAssets,
   deriveInfraFailureMix, deriveDelayDensity, deriveResponderLoad,
   deriveOperatorImpact, deriveHeatmap, deriveAreaList, deriveResponseDistribution,
+  deriveSignals, deriveLineBreakdown, deriveDelayAttribution, deriveContinuationChains,
   RawData,
 } from '@/lib/queries'
 import { generateSyntheticData } from '@/lib/syntheticData'
+import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
+import { getFiltersFromUrl, setFiltersInUrl, clearFiltersFromUrl } from '@/lib/filterUrl'
+import { exportCSV } from '@/lib/export'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets'
+type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -36,43 +40,46 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'geography',   label: 'Geography',   icon: MapPin },
   { id: 'patterns',    label: 'Patterns',    icon: Layers },
   { id: 'assets',      label: 'Assets',      icon: Wrench },
+  { id: 'routes',      label: 'Routes',      icon: Route },
 ]
 
 // ─── Window navigation helper ────────────────────────────────────────────────
 
+function localISODate(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 function shiftWindow(f: AnalyticsFilters, dir: -1 | 1): AnalyticsFilters {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const todayStr = today.toISOString().slice(0, 10)
-
-  // Determine the current window's end date
-  const curEndStr = f.endDate || todayStr
-  const curEnd = new Date(curEndStr)
-  const days = f.windowDays
-
-  const newEnd = new Date(curEnd)
-  newEnd.setDate(newEnd.getDate() + dir * days)
+  const todayStr  = localISODate()
+  const todayMs   = new Date(todayStr + 'T00:00:00Z').getTime()
+  const curEndMs  = new Date((f.endDate ?? todayStr) + 'T00:00:00Z').getTime()
+  const days      = f.windowDays
+  const newEndMs  = curEndMs + dir * days * 86_400_000
 
   // Clamp: don't step forward past today
-  if (newEnd > today) {
+  if (newEndMs > todayMs) {
     if (dir === 1) return f
-    newEnd.setTime(today.getTime())
+    // Defensive — going backward can't exceed today, but clamp anyway
+    const clampedMs = todayMs
+    return {
+      ...f,
+      startDate: new Date(clampedMs - (days - 1) * 86_400_000).toISOString().slice(0, 10),
+      endDate:   new Date(clampedMs).toISOString().slice(0, 10),
+    }
   }
-
-  const newStart = new Date(newEnd)
-  newStart.setDate(newStart.getDate() - (days - 1))
 
   return {
     ...f,
-    startDate: newStart.toISOString().slice(0, 10),
-    endDate: newEnd.toISOString().slice(0, 10),
+    startDate: new Date(newEndMs - (days - 1) * 86_400_000).toISOString().slice(0, 10),
+    endDate:   new Date(newEndMs).toISOString().slice(0, 10),
   }
 }
 
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function InsightDashboard() {
-  const [filters, setFilters] = useState<AnalyticsFilters>(DEFAULT_FILTERS)
+  const [filters, setFilters] = useState<AnalyticsFilters>(() => getFiltersFromUrl() ?? DEFAULT_FILTERS)
   const [tab, setTab] = useState<Tab>('overview')
   const [data, setData] = useState<RawData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -82,6 +89,11 @@ export default function InsightDashboard() {
   const [trendChart, setTrendChart] = useState<ChartKind>('area')
   const [distChart, setDistChart] = useState<DistributionKind>('donut')
   const [drillDown, setDrillDown] = useState<{ title: string; incidents: IncidentRow[] } | null>(null)
+  const [savedViews, setSavedViews] = useState<SavedView[]>(() => getSavedViews())
+  const [signalsOpen, setSignalsOpen] = useState(false)
+
+  // Keep URL in sync with filters
+  useEffect(() => { setFiltersInUrl(filters) }, [filters])
 
   // Fetch on filter change
   useEffect(() => {
@@ -93,7 +105,7 @@ export default function InsightDashboard() {
       try {
         if (!isSupabaseConfigured()) {
           if (!cancelled) {
-            setData(generateSyntheticData(filters.windowDays))
+            setData(generateSyntheticData(filters.windowDays, 42, filters.startDate, filters.endDate))
             setDemoMode(true)
             setLoading(false)
           }
@@ -103,7 +115,7 @@ export default function InsightDashboard() {
         if (cancelled) return
         if (!result || result.incidents.length === 0) {
           // Empty → fall back to demo so the dashboard isn't a void
-          setData(generateSyntheticData(filters.windowDays))
+          setData(generateSyntheticData(filters.windowDays, 42, filters.startDate, filters.endDate))
           setDemoMode(true)
         } else {
           setData(result)
@@ -112,7 +124,7 @@ export default function InsightDashboard() {
       } catch (e: any) {
         if (cancelled) return
         setError(e.message || 'Failed to load analytics')
-        setData(generateSyntheticData(filters.windowDays))
+        setData(generateSyntheticData(filters.windowDays, 42, filters.startDate, filters.endDate))
         setDemoMode(true)
       } finally {
         if (!cancelled) setLoading(false)
@@ -136,10 +148,31 @@ export default function InsightDashboard() {
   const heat         = useMemo(() => data ? deriveHeatmap(data) : [], [data])
   const areas        = useMemo(() => data ? deriveAreaList(data) : [], [data])
   const respDist     = useMemo(() => data ? deriveResponseDistribution(data) : null, [data])
+  const signals      = useMemo(() => data ? deriveSignals(data) : [], [data])
+  const lines        = useMemo(() => data ? deriveLineBreakdown(data) : [], [data])
+  const attribution  = useMemo(() => data ? deriveDelayAttribution(data) : [], [data])
+  const chains       = useMemo(() => data ? deriveContinuationChains(data) : [], [data])
 
   const handleDateClick = (date: string) => {
     setFilters(f => ({ ...f, startDate: date, endDate: date, windowDays: 1 }))
   }
+
+  const handleSaveView = (name: string) => {
+    const view = saveView(name, filters)
+    setSavedViews(vs => [view, ...vs.filter(v => v.id !== view.id)])
+  }
+
+  const handleDeleteView = (id: string) => {
+    deleteView(id)
+    setSavedViews(vs => vs.filter(v => v.id !== id))
+  }
+
+  const handleResetFilters = () => {
+    setFilters(DEFAULT_FILTERS)
+    clearFiltersFromUrl()
+  }
+
+  const criticalSignals = signals.filter(s => s.severity === 'critical').length
 
   return (
     <main className="min-h-screen pb-24">
@@ -152,13 +185,16 @@ export default function InsightDashboard() {
         onWindowChange={(d) => setFilters({ ...filters, windowDays: d, startDate: undefined, endDate: undefined })}
         onPrevWindow={() => setFilters(f => shiftWindow(f, -1))}
         onNextWindow={() => setFilters(f => shiftWindow(f, 1))}
-        isAtToday={!filters.endDate || filters.endDate >= new Date().toISOString().slice(0, 10)}
+        isAtToday={!filters.endDate || filters.endDate >= localISODate()}
         onOpenFilters={() => setFiltersOpen(true)}
         activeFilterCount={
           filters.areas.length + filters.categories.length +
           filters.severities.length + (filters.search ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
+        signalCount={signals.length}
+        criticalSignalCount={criticalSignals}
+        onExport={data ? () => exportCSV(data.incidents, data.windowFrom, data.windowTo) : undefined}
       />
 
       {/* Tabs */}
@@ -172,6 +208,11 @@ export default function InsightDashboard() {
             >
               <t.icon size={13} />
               {t.label}
+              {t.id === 'overview' && criticalSignals > 0 && (
+                <span className="ml-0.5 px-1 py-0.5 text-[9px] font-bold bg-[var(--nr-red,#E74C3C)] text-white rounded-sm leading-none">
+                  {criticalSignals}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -182,12 +223,13 @@ export default function InsightDashboard() {
 
         {kpis && data && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} signals={signals} signalsOpen={signalsOpen} setSignalsOpen={setSignalsOpen} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={data} />}
-            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} hots={hots} resp={respDist} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} />}
+            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} />}
-            {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={data.incidents} onDrillDown={setDrillDown} />}
+            {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={data.incidents} onDrillDown={setDrillDown} chains={chains} />}
+            {tab === 'routes'      && <RoutesTab lines={lines} incidents={data.incidents} onDrillDown={setDrillDown} />}
           </>
         )}
       </div>
@@ -205,7 +247,12 @@ export default function InsightDashboard() {
         onClose={() => setFiltersOpen(false)}
         filters={filters}
         onApply={(f: AnalyticsFilters) => { setFilters(f); setFiltersOpen(false) }}
+        onReset={handleResetFilters}
         availableAreas={areas.map(a => a.area)}
+        savedViews={savedViews}
+        onSaveView={handleSaveView}
+        onDeleteView={handleDeleteView}
+        onApplyView={(f: AnalyticsFilters) => { setFilters(f); setFiltersOpen(false) }}
       />
     </main>
   )
@@ -221,11 +268,14 @@ function Header(props: {
   loading: boolean
   activeFilterCount: number
   isAtToday: boolean
+  signalCount: number
+  criticalSignalCount: number
   onWindowChange: (d: number) => void
   onPrevWindow: () => void
   onNextWindow: () => void
   onOpenFilters: () => void
   onRefresh: () => void
+  onExport?: () => void
 }) {
   const customRange = !!props.startDate
 
@@ -295,10 +345,31 @@ function Header(props: {
             )}
           </button>
 
+          {props.onExport && (
+            <button onClick={props.onExport} className="btn" title="Download CSV">
+              <Download size={12} />
+              Export
+            </button>
+          )}
+
           <button onClick={props.onRefresh} className="btn" disabled={props.loading}>
             <RefreshCw size={12} className={props.loading ? 'animate-spin' : ''} />
             Refresh
           </button>
+
+          {props.signalCount > 0 && (
+            <div
+              className="flex items-center gap-2 px-3 py-1.5 border rounded cursor-default"
+              style={{
+                borderColor: props.criticalSignalCount > 0 ? '#E74C3C' : 'var(--nr-amber)',
+                color: props.criticalSignalCount > 0 ? '#E74C3C' : 'var(--nr-amber)',
+              }}
+              title="Active signals — see Overview tab"
+            >
+              <Bell size={12} />
+              <span className="label-micro">{props.signalCount} signal{props.signalCount !== 1 ? 's' : ''}</span>
+            </div>
+          )}
 
           <div className="flex items-center gap-2 px-3 py-1.5 border border-[var(--line)] rounded">
             <span className={`live-dot ${props.demoMode ? '!bg-[var(--nr-amber)]' : 'animate-pulse-soft'}`} style={props.demoMode ? { boxShadow: '0 0 8px var(--nr-amber)' } : {}} />
@@ -312,10 +383,81 @@ function Header(props: {
 
 // ─── Overview tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick }: any) {
+function SignalsPanel({ signals, open, setOpen }: { signals: Signal[]; open: boolean; setOpen: (v: boolean) => void }) {
+  if (!signals.length) return null
+  const critical = signals.filter(s => s.severity === 'critical')
+  const warning  = signals.filter(s => s.severity === 'warning')
+  const info     = signals.filter(s => s.severity === 'info')
+
+  const severityStyle = (sev: Signal['severity']) => {
+    if (sev === 'critical') return { border: '#E74C3C', bg: 'rgba(231,76,60,0.08)', dot: '#E74C3C', label: 'CRITICAL' }
+    if (sev === 'warning')  return { border: 'var(--nr-amber)', bg: 'rgba(243,156,18,0.06)', dot: 'var(--nr-amber)', label: 'WARNING' }
+    return { border: 'var(--line)', bg: 'transparent', dot: '#4A6FA5', label: 'INFO' }
+  }
+
+  return (
+    <div className="card animate-fade-up" style={{ borderColor: critical.length ? '#E74C3C' : 'var(--nr-amber)', overflow: 'hidden' }}>
+      <button
+        className="w-full flex items-center justify-between px-5 py-4"
+        onClick={() => setOpen(!open)}
+      >
+        <div className="flex items-center gap-3">
+          <Bell size={14} style={{ color: critical.length ? '#E74C3C' : 'var(--nr-amber)' }} />
+          <span className="label-micro text-[11px]" style={{ color: critical.length ? '#E74C3C' : 'var(--nr-amber)' }}>
+            {signals.length} Active Signal{signals.length !== 1 ? 's' : ''}
+          </span>
+          {critical.length > 0 && (
+            <span className="px-1.5 py-0.5 text-[9px] font-bold bg-[#E74C3C] text-white rounded-sm">
+              {critical.length} CRITICAL
+            </span>
+          )}
+          {warning.length > 0 && (
+            <span className="px-1.5 py-0.5 text-[9px] font-bold text-white rounded-sm" style={{ background: 'var(--nr-amber)' }}>
+              {warning.length} WARNING
+            </span>
+          )}
+        </div>
+        <ChevronDown size={14} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', color: 'var(--ink-400)' }} />
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5 space-y-2 border-t border-[var(--line)]">
+          {signals.map(sig => {
+            const s = severityStyle(sig.severity)
+            return (
+              <div
+                key={sig.id}
+                className="flex items-start gap-3 p-3 rounded-sm text-xs"
+                style={{ background: s.bg, border: `1px solid ${s.border}30` }}
+              >
+                <div className="w-1.5 h-1.5 rounded-full mt-1 shrink-0" style={{ background: s.dot }} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                    <span className="label-micro text-[9px]" style={{ color: s.dot }}>{s.label}</span>
+                    <span className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>{sig.type.replace(/_/g, ' ')}</span>
+                    {sig.date && <span className="numeric-mono text-[9px]" style={{ color: 'var(--ink-500)' }}>{sig.date}</span>}
+                  </div>
+                  <div className="font-medium" style={{ color: 'var(--ink-100)' }}>{sig.title}</div>
+                  <div className="mt-0.5" style={{ color: 'var(--ink-300)' }}>{sig.detail}</div>
+                </div>
+                <div className="text-right shrink-0 numeric-mono text-[10px]" style={{ color: s.dot }}>
+                  {sig.delta > 0 ? '+' : ''}{sig.delta.toFixed(1)}σ
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, signals, signalsOpen, setSignalsOpen }: any) {
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 stagger">
+      <SignalsPanel signals={signals} open={signalsOpen} setOpen={setSignalsOpen} />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 stagger">
         <KPICard
           label="Total Incidents"
           value={kpis.totalIncidents.toLocaleString()}
@@ -346,6 +488,18 @@ function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, d
           delta={kpis.durationDeltaPct}
           icon={Clock}
           deltaInverted
+        />
+        <KPICard
+          label="Trains Delayed"
+          value={kpis.totalTrainsDelayed != null ? kpis.totalTrainsDelayed.toLocaleString() : '—'}
+          icon={Train}
+          deltaInverted
+        />
+        <KPICard
+          label="SLA Compliance"
+          value={kpis.slaCompliancePct != null ? `${kpis.slaCompliancePct.toFixed(1)}%` : '—'}
+          delta={kpis.slaBreachDeltaPct != null ? -kpis.slaBreachDeltaPct : null}
+          icon={Clock}
         />
       </div>
 
@@ -442,10 +596,10 @@ function SafetyTab({ kpis, trend, cats, data }: any) {
 
 // ─── Performance tab ─────────────────────────────────────────────────────────
 
-function PerformanceTab({ kpis, trend, hots, resp, chart, setChart, incidents, onDrillDown, onDateClick }: any) {
+function PerformanceTab({ kpis, trend, hots, resp, responderLoad, ops, attribution, chart, setChart, incidents, onDrillDown, onDateClick }: any) {
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 stagger">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 stagger">
         <KPICard label="Total Delay (mins)" value={kpis.totalDelayMins.toLocaleString()} delta={kpis.delayDeltaPct} icon={Clock} deltaInverted accent />
         <KPICard label="Cancelled" value={kpis.totalCancelled} icon={X} />
         <KPICard label="Part Cancelled" value={kpis.totalPartCancelled} icon={X} />
@@ -453,6 +607,13 @@ function PerformanceTab({ kpis, trend, hots, resp, chart, setChart, incidents, o
           label="Median Arrival"
           value={kpis.medianArrivalMins != null ? `${kpis.medianArrivalMins} min` : '—'}
           icon={Clock}
+        />
+        <KPICard
+          label="SLA Compliance (≤45m)"
+          value={kpis.slaCompliancePct != null ? `${kpis.slaCompliancePct.toFixed(1)}%` : '—'}
+          delta={kpis.slaBreachDeltaPct != null ? -kpis.slaBreachDeltaPct : null}
+          icon={Clock}
+          critical={kpis.slaCompliancePct != null && kpis.slaCompliancePct < 70}
         />
       </div>
 
@@ -467,6 +628,58 @@ function PerformanceTab({ kpis, trend, hots, resp, chart, setChart, incidents, o
         <Card title="Top Incidents by Delay" subtitle="Highest-impact singular incidents">
           <TopIncidentsByDelay incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
+      </div>
+
+      {attribution && attribution.length > 0 && (
+        <Card title="Delay Attribution by TRMC Code" subtitle="Who bears responsibility — standardised attribution identifiers">
+          <div className="space-y-2">
+            {(() => {
+              const max = attribution[0]?.totalDelay || 1
+              return attribution.map((a: any, i: number) => (
+                <div key={i} className="grid grid-cols-12 gap-3 items-center text-xs py-1.5 border-b border-[var(--line)] last:border-0">
+                  <div className="col-span-2 numeric-mono text-[10px] font-bold" style={{ color: 'var(--nr-orange)' }}>{a.code}</div>
+                  <div className="col-span-4 truncate" style={{ color: 'var(--ink-200)' }}>{a.label}</div>
+                  <div className="col-span-4">
+                    <div className="h-1.5 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden">
+                      <div className="h-full rounded-sm" style={{ width: `${(a.totalDelay / max) * 100}%`, background: 'var(--nr-orange)' }} />
+                    </div>
+                  </div>
+                  <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-400)' }}>{a.incidentCount}</div>
+                  <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-100)' }}>{a.pct.toFixed(1)}%</div>
+                </div>
+              ))
+            })()}
+          </div>
+        </Card>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {ops && ops.length > 0 && (
+          <Card title="Operator Delay Impact" subtitle="Total delay minutes per train operator">
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={ops} layout="vertical" margin={{ left: 10, right: 30 }}>
+                <CartesianGrid strokeDasharray="2 6" horizontal={false} />
+                <XAxis type="number" />
+                <YAxis dataKey="company" type="category" width={80} tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
+                <Tooltip content={<CustomTooltip />} />
+                <Bar dataKey="delayMins" name="Delay (mins)" fill="#E05206" radius={[0, 2, 2, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+        )}
+        {responderLoad && responderLoad.length > 0 && (
+          <Card title="Responder Workload" subtitle="Incidents handled per control room initials">
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={responderLoad}>
+                <CartesianGrid strokeDasharray="2 6" />
+                <XAxis dataKey="initials" tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
+                <YAxis allowDecimals={false} />
+                <Tooltip content={<CustomTooltip />} />
+                <Bar dataKey="incidentCount" name="Incidents" fill="#4A6FA5" radius={[2, 2, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+        )}
       </div>
     </div>
   )
@@ -545,7 +758,7 @@ function PatternsTab({ heat, cats }: any) {
 
 // ─── Assets tab ──────────────────────────────────────────────────────────────
 
-function AssetsTab({ repeatAssets, infraMix, cats, incidents, onDrillDown }: any) {
+function AssetsTab({ repeatAssets, infraMix, cats, incidents, onDrillDown, chains }: any) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -560,6 +773,163 @@ function AssetsTab({ repeatAssets, infraMix, cats, incidents, onDrillDown }: any
 
       <Card title="Infrastructure Sub-Category — Count vs Delay" subtitle="NR-managed assets only">
         <DualBarChart data={infraMix.map((d: any) => ({ ...d, short: d.typeLabel.length > 22 ? d.typeLabel.slice(0, 22) + '…' : d.typeLabel, delayMins: d.delayMins }))} />
+      </Card>
+
+      {chains && chains.length > 0 && (
+        <Card title="Multi-Day Escalations" subtitle="Incidents spanning multiple days grouped by CCIL — highest cumulative impact">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="label-micro border-b border-[var(--line)]">
+                  <th className="text-left py-2 pr-3">CCIL</th>
+                  <th className="text-left pr-3">Category</th>
+                  <th className="text-left pr-3">Location</th>
+                  <th className="text-right pr-3">Days</th>
+                  <th className="text-right pr-3">Events</th>
+                  <th className="text-right">Total Delay</th>
+                </tr>
+              </thead>
+              <tbody>
+                {chains.map((c: any, i: number) => {
+                  const cfg = CATEGORY_CONFIG[c.category as IncidentCategory]
+                  return (
+                    <tr
+                      key={i}
+                      className="border-b border-[var(--line)] hover:bg-[var(--bg-card-hi)] transition-colors cursor-pointer"
+                      onClick={() => onDrillDown?.({ title: `CCIL ${c.ccil}`, incidents: c.incidents })}
+                    >
+                      <td className="py-2 pr-3 numeric-mono text-[10px]" style={{ color: 'var(--nr-orange)' }}>{c.ccil}</td>
+                      <td className="pr-3">
+                        <span className="pill" style={{ background: `${cfg.color}20`, color: cfg.color, borderColor: `${cfg.color}50` }}>{cfg.short}</span>
+                      </td>
+                      <td className="pr-3 truncate" style={{ color: 'var(--ink-200)', maxWidth: 200 }}>{c.location || '—'}</td>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-300)' }}>{c.days}d</td>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-400)' }}>{c.incidents.length}</td>
+                      <td className="text-right numeric-mono font-medium" style={{ color: 'var(--ink-100)' }}>{fmtMins(c.totalDelay)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </div>
+  )
+}
+
+// ─── Routes tab ──────────────────────────────────────────────────────────────
+
+function RoutesTab({ lines, incidents, onDrillDown }: any) {
+  if (!lines || lines.length === 0) {
+    return (
+      <div className="space-y-6">
+        <Empty msg="No line data available in this window" />
+      </div>
+    )
+  }
+  const maxDelay = Math.max(...lines.map((l: any) => l.totalDelay), 1)
+  const maxCount = Math.max(...lines.map((l: any) => l.incidentCount), 1)
+  const barData  = lines.slice(0, 12).map((l: any) => ({
+    name: l.line.length > 24 ? l.line.slice(0, 24) + '…' : l.line,
+    full: l.line,
+    incidents: l.incidentCount,
+    delay: l.totalDelay,
+  }))
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 stagger">
+        <KPICard
+          label="Lines Affected"
+          value={lines.length}
+          icon={Route}
+        />
+        <KPICard
+          label="Highest Delay Line"
+          value={lines[0]?.line?.split(' ').slice(0, 3).join(' ') || '—'}
+          icon={TrendingUp}
+        />
+        <KPICard
+          label="Avg Delay / Incident"
+          value={lines.length ? fmtMins(Math.round(lines.reduce((s: number, l: any) => s + l.totalDelay, 0) / lines.reduce((s: number, l: any) => s + l.incidentCount, 0))) : '—'}
+          icon={Clock}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card title="Incidents by Line" subtitle="Top 12 lines by incident count" className="tick-corners">
+          <ResponsiveContainer width="100%" height={320}>
+            <BarChart data={barData} layout="vertical" margin={{ left: 10, right: 30 }}>
+              <CartesianGrid strokeDasharray="2 6" horizontal={false} />
+              <XAxis type="number" allowDecimals={false} />
+              <YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="incidents" name="Incidents" fill="#4A6FA5" radius={[0, 2, 2, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+
+        <Card title="Delay by Line" subtitle="Total delay minutes per line">
+          <ResponsiveContainer width="100%" height={320}>
+            <BarChart data={barData} layout="vertical" margin={{ left: 10, right: 30 }}>
+              <CartesianGrid strokeDasharray="2 6" horizontal={false} />
+              <XAxis type="number" />
+              <YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="delay" name="Delay (mins)" fill="#E05206" radius={[0, 2, 2, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+      </div>
+
+      <Card title="Line Performance Table" subtitle="All lines — ranked by total delay impact">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="label-micro border-b border-[var(--line)]">
+                <th className="text-left py-2 pr-3">Line</th>
+                <th className="text-right pr-3">Incidents</th>
+                <th className="text-right pr-3">Total Delay</th>
+                <th className="text-right pr-3">Delay/Inc</th>
+                <th className="text-right pr-3">Avg Duration</th>
+                <th className="text-left">Top Category</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((l: any, i: number) => {
+                const cfg = CATEGORY_CONFIG[l.topCategory as IncidentCategory]
+                const delayPerInc = l.incidentCount > 0 ? Math.round(l.totalDelay / l.incidentCount) : 0
+                return (
+                  <tr
+                    key={i}
+                    className="border-b border-[var(--line)] hover:bg-[var(--bg-card-hi)] transition-colors cursor-pointer"
+                    onClick={() => {
+                      if (!onDrillDown || !incidents) return
+                      const rows = incidents.filter((inc: any) => !inc.is_continuation && inc.line === l.line)
+                        .sort((a: any, b: any) => b.report_date.localeCompare(a.report_date))
+                      onDrillDown({ title: l.line, incidents: rows })
+                    }}
+                  >
+                    <td className="py-2 pr-3" style={{ color: 'var(--ink-100)', maxWidth: 200 }}>
+                      <div className="truncate">{l.line}</div>
+                      <div className="h-[3px] mt-1 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden" style={{ width: 80 }}>
+                        <div className="h-full" style={{ width: `${(l.totalDelay / maxDelay) * 100}%`, background: 'var(--nr-orange)' }} />
+                      </div>
+                    </td>
+                    <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-300)' }}>{l.incidentCount}</td>
+                    <td className="text-right pr-3 numeric-mono font-medium" style={{ color: 'var(--ink-100)' }}>{fmtMins(l.totalDelay)}</td>
+                    <td className="text-right pr-3 numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{fmtMins(delayPerInc)}</td>
+                    <td className="text-right pr-3 numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{l.avgDuration != null ? fmtMins(Math.round(l.avgDuration)) : '—'}</td>
+                    <td>
+                      {cfg && <span className="pill" style={{ background: `${cfg.color}20`, color: cfg.color, borderColor: `${cfg.color}50` }}>{cfg.short}</span>}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       </Card>
     </div>
   )
@@ -680,6 +1050,21 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
   }
 
   const cursorStyle = onDateClick ? 'pointer' : 'default'
+  const hasRolling = dataKey === 'incidents' && data.some((d: any) => d.rolling7Avg != null)
+  const hasRegression = dataKey === 'incidents' && data.some((d: any) => d.regressionY != null)
+
+  const sharedOverlays = hasRolling || hasRegression ? (
+    <>
+      {hasRolling && (
+        <Line type="monotone" dataKey="rolling7Avg" name="7d avg" stroke="#7A8BA8" strokeWidth={1.5}
+              strokeDasharray="4 2" dot={false} activeDot={false} connectNulls />
+      )}
+      {hasRegression && (
+        <Line type="linear" dataKey="regressionY" name="Trend" stroke="#F39C12" strokeWidth={1}
+              strokeDasharray="6 3" dot={false} activeDot={false} strokeOpacity={0.7} connectNulls />
+      )}
+    </>
+  ) : null
 
   if (kind === 'bar') {
     return (
@@ -704,6 +1089,7 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
           <YAxis />
           <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
           <Line type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.8} dot={false} activeDot={{ r: 4 }} />
+          {sharedOverlays}
         </LineChart>
       </ResponsiveContainer>
     )
@@ -723,6 +1109,7 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
         <YAxis />
         <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
         <Area type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.5} fill={`url(#${gradientId})`} />
+        {sharedOverlays}
       </AreaChart>
     </ResponsiveContainer>
   )
@@ -1199,9 +1586,11 @@ function ResponseHistograms({ data }: any) {
       return arr.filter(n => n >= prev && n < b.max).length
     })
   }
-  const advised  = bucketise(data.toAdvised)
-  const response = bucketise(data.toResponse)
-  const arrival  = bucketise(data.toArrival)
+  // Support both old shape (plain array) and new shape ({ raw, p50, p95 })
+  const raw = (field: any) => Array.isArray(field) ? field : (field?.raw ?? [])
+  const advised  = bucketise(raw(data.toAdvised))
+  const response = bucketise(raw(data.toResponse))
+  const arrival  = bucketise(raw(data.toArrival))
 
   const chartData = buckets.map((b, i) => ({
     bucket: b.label,
@@ -1210,19 +1599,40 @@ function ResponseHistograms({ data }: any) {
     arrival: arrival[i],
   }))
 
+  const p50 = data.toArrival?.p50
+  const p95 = data.toArrival?.p95
+
   return (
-    <ResponsiveContainer width="100%" height={260}>
-      <BarChart data={chartData}>
-        <CartesianGrid strokeDasharray="2 6" />
-        <XAxis dataKey="bucket" />
-        <YAxis />
-        <Tooltip content={<CustomTooltip />} />
-        <Legend wrapperStyle={{ fontSize: 10, fontFamily: 'JetBrains Mono', textTransform: 'uppercase', letterSpacing: '0.08em' }} />
-        <Bar dataKey="advised"  name="To Advised"  fill="#27AE60" radius={[2, 2, 0, 0]} />
-        <Bar dataKey="response" name="To Response" fill="#F39C12" radius={[2, 2, 0, 0]} />
-        <Bar dataKey="arrival"  name="To Arrival"  fill="#E05206" radius={[2, 2, 0, 0]} />
-      </BarChart>
-    </ResponsiveContainer>
+    <div>
+      {(p50 != null || p95 != null) && (
+        <div className="flex gap-4 mb-3">
+          {p50 != null && (
+            <div className="text-xs">
+              <span className="label-micro">Arrival P50</span>
+              <span className="numeric-mono ml-2" style={{ color: 'var(--ink-100)' }}>{p50} min</span>
+            </div>
+          )}
+          {p95 != null && (
+            <div className="text-xs">
+              <span className="label-micro">Arrival P95</span>
+              <span className="numeric-mono ml-2" style={{ color: 'var(--nr-orange)' }}>{p95} min</span>
+            </div>
+          )}
+        </div>
+      )}
+      <ResponsiveContainer width="100%" height={240}>
+        <BarChart data={chartData}>
+          <CartesianGrid strokeDasharray="2 6" />
+          <XAxis dataKey="bucket" />
+          <YAxis />
+          <Tooltip content={<CustomTooltip />} />
+          <Legend wrapperStyle={{ fontSize: 10, fontFamily: 'JetBrains Mono', textTransform: 'uppercase', letterSpacing: '0.08em' }} />
+          <Bar dataKey="advised"  name="To Advised"  fill="#27AE60" radius={[2, 2, 0, 0]} />
+          <Bar dataKey="response" name="To Response" fill="#F39C12" radius={[2, 2, 0, 0]} />
+          <Bar dataKey="arrival"  name="To Arrival"  fill="#E05206" radius={[2, 2, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   )
 }
 
@@ -1363,9 +1773,11 @@ function DualBarChart({ data }: any) {
   )
 }
 
-function FilterDrawer({ open, onClose, filters, onApply, availableAreas }: any) {
-  const [draft, setDraft] = useState<AnalyticsFilters>(filters)
-  useEffect(() => setDraft(filters), [filters, open])
+function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
+  const [draft, setDraft]         = useState<AnalyticsFilters>(filters)
+  const [saveName, setSaveName]   = useState('')
+  const [showSaveInput, setShowSaveInput] = useState(false)
+  useEffect(() => { setDraft(filters); setShowSaveInput(false); setSaveName('') }, [filters, open])
 
   if (!open) return null
   return (
@@ -1376,6 +1788,34 @@ function FilterDrawer({ open, onClose, filters, onApply, availableAreas }: any) 
           <h2 className="serif text-2xl font-light">Filters</h2>
           <button onClick={onClose} className="btn !p-2"><X size={14} /></button>
         </div>
+
+        {/* Saved views */}
+        {savedViews && savedViews.length > 0 && (
+          <div className="mb-6">
+            <div className="label-micro mb-2">Saved Views</div>
+            <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+              {savedViews.map((v: any) => (
+                <div key={v.id} className="flex items-center gap-2">
+                  <button
+                    className="flex-1 text-left text-xs px-2.5 py-1.5 rounded-sm border border-[var(--line)] hover:border-[var(--nr-orange)] hover:text-[var(--ink-100)] transition-colors truncate"
+                    style={{ color: 'var(--ink-300)' }}
+                    onClick={() => onApplyView?.(v.filters)}
+                    title={`Applied: ${new Date(v.savedAt).toLocaleDateString()}`}
+                  >
+                    {v.name}
+                  </button>
+                  <button
+                    className="btn !p-1.5 !border-[var(--line)] shrink-0"
+                    onClick={() => onDeleteView?.(v.id)}
+                    title="Delete view"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="space-y-6">
           <FilterGroup label="Search">
@@ -1464,9 +1904,55 @@ function FilterDrawer({ open, onClose, filters, onApply, availableAreas }: any) 
           </FilterGroup>
         </div>
 
-        <div className="flex gap-3 mt-8 sticky bottom-0 bg-[var(--bg-panel)] py-4 border-t border-[var(--line)]">
+        {/* Save current view */}
+        <div className="mt-6">
+          {showSaveInput ? (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                className="input flex-1 text-xs"
+                placeholder="View name…"
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && saveName.trim()) {
+                    onSaveView?.(saveName.trim())
+                    setSaveName('')
+                    setShowSaveInput(false)
+                  }
+                  if (e.key === 'Escape') setShowSaveInput(false)
+                }}
+                autoFocus
+              />
+              <button
+                className="btn btn-active !text-xs"
+                onClick={() => {
+                  if (saveName.trim()) {
+                    onSaveView?.(saveName.trim())
+                    setSaveName('')
+                    setShowSaveInput(false)
+                  }
+                }}
+              >
+                Save
+              </button>
+              <button className="btn !text-xs" onClick={() => setShowSaveInput(false)}>
+                <X size={11} />
+              </button>
+            </div>
+          ) : (
+            <button
+              className="btn w-full text-xs"
+              onClick={() => setShowSaveInput(true)}
+            >
+              Save current view…
+            </button>
+          )}
+        </div>
+
+        <div className="flex gap-3 mt-4 sticky bottom-0 bg-[var(--bg-panel)] py-4 border-t border-[var(--line)]">
           <button
-            onClick={() => onApply(DEFAULT_FILTERS)}
+            onClick={() => { onReset?.(); onClose() }}
             className="btn flex-1"
           >
             Reset

@@ -174,16 +174,20 @@ export interface KPISummary {
   totalDelayMins: number
   totalCancelled: number
   totalPartCancelled: number
+  totalTrainsDelayed: number
   avgIncidentDuration: number | null   // mean of incident_duration where present
   medianArrivalMins: number | null     // median of mins_to_arrival
   safetyCriticalCount: number
   reportsCovered: number
+  slaBreachCount: number               // incidents where arrival > SLA_THRESHOLD_MINS
+  slaCompliancePct: number | null      // % that met arrival SLA (null = no arrival data)
 
   // % deltas vs the previous equivalent window (null when prev window empty)
   delayDeltaPct: number | null
   incidentsDeltaPct: number | null
   safetyDeltaPct: number | null
   durationDeltaPct: number | null
+  slaBreachDeltaPct: number | null
 }
 
 export interface TrendPoint {
@@ -191,6 +195,62 @@ export interface TrendPoint {
   incidents: number
   delayMins: number
   safetyCritical: number
+  rolling7Avg?: number    // 7-day rolling average of incident count
+  regressionY?: number    // least-squares regression value for that date index
+}
+
+export interface ResponseDistribution {
+  toAdvised:  { raw: number[]; p50: number | null; p95: number | null }
+  toResponse: { raw: number[]; p50: number | null; p95: number | null }
+  toArrival:  { raw: number[]; p50: number | null; p95: number | null }
+  duration:   { raw: number[]; p50: number | null; p95: number | null }
+}
+
+export type SignalType =
+  | 'DELAY_SPIKE'
+  | 'INCIDENT_SURGE'
+  | 'HOTSPOT_EMERGED'
+  | 'FAULT_ACCELERATION'
+  | 'RESPONSE_DEGRADATION'
+  | 'SAFETY_CLUSTER'
+  | 'CATEGORY_SPIKE'
+  | 'SLA_BREACH_RATE'
+
+export interface Signal {
+  id: string
+  severity: 'critical' | 'warning' | 'info'
+  type: SignalType
+  title: string
+  detail: string
+  metric: number
+  threshold: number
+  delta: number
+  date?: string
+}
+
+export interface LineDatum {
+  line: string
+  incidentCount: number
+  totalDelay: number
+  avgDuration: number | null
+  topCategory: IncidentCategory
+}
+
+export interface AttributionDatum {
+  code: string
+  label: string
+  incidentCount: number
+  totalDelay: number
+  pct: number
+}
+
+export interface Chain {
+  ccil: string
+  days: number
+  totalDelay: number
+  category: IncidentCategory
+  location: string | null
+  incidents: IncidentRow[]
 }
 
 export interface CategoryDatum {
