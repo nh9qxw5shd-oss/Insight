@@ -17,25 +17,29 @@ function isoDay(d: Date): string {
 
 function resolveWindow(f: AnalyticsFilters): { from: string; to: string; days: number } {
   if (f.startDate && f.endDate) {
-    const a = new Date(f.startDate)
-    const b = new Date(f.endDate)
-    const days = Math.max(1, Math.round((b.getTime() - a.getTime()) / 86_400_000) + 1)
+    const fromMs = new Date(f.startDate + 'T00:00:00Z').getTime()
+    const toMs   = new Date(f.endDate   + 'T00:00:00Z').getTime()
+    const days = Math.max(1, Math.round((toMs - fromMs) / 86_400_000) + 1)
     return { from: f.startDate, to: f.endDate, days }
   }
-  const to = new Date()
-  const from = new Date()
-  from.setDate(from.getDate() - (f.windowDays - 1))
-  return { from: isoDay(from), to: isoDay(to), days: f.windowDays }
+  const toMs   = Date.now()
+  const fromMs = toMs - (f.windowDays - 1) * 86_400_000
+  return {
+    from: new Date(fromMs).toISOString().slice(0, 10),
+    to:   new Date(toMs).toISOString().slice(0, 10),
+    days: f.windowDays,
+  }
 }
 
 function previousWindow(f: AnalyticsFilters): { from: string; to: string } {
-  const { days } = resolveWindow(f)
   const w = resolveWindow(f)
-  const prevTo = new Date(w.from)
-  prevTo.setDate(prevTo.getDate() - 1)
-  const prevFrom = new Date(prevTo)
-  prevFrom.setDate(prevFrom.getDate() - (days - 1))
-  return { from: isoDay(prevFrom), to: isoDay(prevTo) }
+  const winFromMs  = new Date(w.from + 'T00:00:00Z').getTime()
+  const prevToMs   = winFromMs - 86_400_000
+  const prevFromMs = prevToMs  - (w.days - 1) * 86_400_000
+  return {
+    from: new Date(prevFromMs).toISOString().slice(0, 10),
+    to:   new Date(prevToMs).toISOString().slice(0, 10),
+  }
 }
 
 // ─── Pagination helper ───────────────────────────────────────────────────────
@@ -201,6 +205,13 @@ function effectiveMinsToArrival(i: IncidentRow): number | null {
   return v != null && v >= 0 && v < 1440 ? v : null
 }
 
+function effectiveDuration(i: IncidentRow): number | null {
+  if (i.incident_duration != null && i.incident_duration > 0 && i.incident_duration < 1440)
+    return i.incident_duration
+  const v = minsFromTimes(i.incident_start, i.nwr_time)
+  return v != null && v > 0 && v < 1440 ? v : null
+}
+
 function pctDelta(curr: number, prev: number): number | null {
   if (prev === 0) return curr === 0 ? 0 : null
   return ((curr - prev) / prev) * 100
@@ -222,12 +233,12 @@ export function deriveKPIs(data: RawData): KPISummary {
   const safetyCount = curUnique.filter(i => SAFETY_CATEGORIES.includes(i.category)).length
   const prevSafety  = prevUnique.filter(i => SAFETY_CATEGORIES.includes(i.category)).length
 
-  const durations = curUnique.map(i => i.incident_duration).filter((n): n is number => n != null)
+  const durations = curUnique.map(effectiveDuration).filter((n): n is number => n != null)
   const avgDuration = durations.length
     ? durations.reduce((s, n) => s + n, 0) / durations.length
     : null
 
-  const prevDurations = prevUnique.map(i => i.incident_duration).filter((n): n is number => n != null)
+  const prevDurations = prevUnique.map(effectiveDuration).filter((n): n is number => n != null)
   const prevAvgDuration = prevDurations.length
     ? prevDurations.reduce((s, n) => s + n, 0) / prevDurations.length
     : null
@@ -255,12 +266,10 @@ export function deriveKPIs(data: RawData): KPISummary {
 
 export function deriveTrend(data: RawData): TrendPoint[] {
   const byDate = new Map<string, TrendPoint>()
-  // Seed every day in window so the chart has continuous x-axis
-  const start = new Date(data.windowFrom)
+  // Seed every day in window so the chart has continuous x-axis (UTC to avoid local/UTC mismatch)
+  const startMs = new Date(data.windowFrom + 'T00:00:00Z').getTime()
   for (let i = 0; i < data.windowDays; i++) {
-    const d = new Date(start)
-    d.setDate(start.getDate() + i)
-    const k = isoDay(d)
+    const k = new Date(startMs + i * 86_400_000).toISOString().slice(0, 10)
     byDate.set(k, { date: k, incidents: 0, delayMins: 0, safetyCritical: 0 })
   }
   for (const inc of data.incidents) {

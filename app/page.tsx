@@ -40,32 +40,34 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
 
 // ─── Window navigation helper ────────────────────────────────────────────────
 
+function localISODate(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 function shiftWindow(f: AnalyticsFilters, dir: -1 | 1): AnalyticsFilters {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const todayStr = today.toISOString().slice(0, 10)
-
-  // Determine the current window's end date
-  const curEndStr = f.endDate || todayStr
-  const curEnd = new Date(curEndStr)
-  const days = f.windowDays
-
-  const newEnd = new Date(curEnd)
-  newEnd.setDate(newEnd.getDate() + dir * days)
+  const todayStr  = localISODate()
+  const todayMs   = new Date(todayStr + 'T00:00:00Z').getTime()
+  const curEndMs  = new Date((f.endDate ?? todayStr) + 'T00:00:00Z').getTime()
+  const days      = f.windowDays
+  const newEndMs  = curEndMs + dir * days * 86_400_000
 
   // Clamp: don't step forward past today
-  if (newEnd > today) {
+  if (newEndMs > todayMs) {
     if (dir === 1) return f
-    newEnd.setTime(today.getTime())
+    // Defensive — going backward can't exceed today, but clamp anyway
+    const clampedMs = todayMs
+    return {
+      ...f,
+      startDate: new Date(clampedMs - (days - 1) * 86_400_000).toISOString().slice(0, 10),
+      endDate:   new Date(clampedMs).toISOString().slice(0, 10),
+    }
   }
-
-  const newStart = new Date(newEnd)
-  newStart.setDate(newStart.getDate() - (days - 1))
 
   return {
     ...f,
-    startDate: newStart.toISOString().slice(0, 10),
-    endDate: newEnd.toISOString().slice(0, 10),
+    startDate: new Date(newEndMs - (days - 1) * 86_400_000).toISOString().slice(0, 10),
+    endDate:   new Date(newEndMs).toISOString().slice(0, 10),
   }
 }
 
@@ -93,7 +95,7 @@ export default function InsightDashboard() {
       try {
         if (!isSupabaseConfigured()) {
           if (!cancelled) {
-            setData(generateSyntheticData(filters.windowDays))
+            setData(generateSyntheticData(filters.windowDays, 42, filters.startDate, filters.endDate))
             setDemoMode(true)
             setLoading(false)
           }
@@ -103,7 +105,7 @@ export default function InsightDashboard() {
         if (cancelled) return
         if (!result || result.incidents.length === 0) {
           // Empty → fall back to demo so the dashboard isn't a void
-          setData(generateSyntheticData(filters.windowDays))
+          setData(generateSyntheticData(filters.windowDays, 42, filters.startDate, filters.endDate))
           setDemoMode(true)
         } else {
           setData(result)
@@ -112,7 +114,7 @@ export default function InsightDashboard() {
       } catch (e: any) {
         if (cancelled) return
         setError(e.message || 'Failed to load analytics')
-        setData(generateSyntheticData(filters.windowDays))
+        setData(generateSyntheticData(filters.windowDays, 42, filters.startDate, filters.endDate))
         setDemoMode(true)
       } finally {
         if (!cancelled) setLoading(false)
@@ -152,7 +154,7 @@ export default function InsightDashboard() {
         onWindowChange={(d) => setFilters({ ...filters, windowDays: d, startDate: undefined, endDate: undefined })}
         onPrevWindow={() => setFilters(f => shiftWindow(f, -1))}
         onNextWindow={() => setFilters(f => shiftWindow(f, 1))}
-        isAtToday={!filters.endDate || filters.endDate >= new Date().toISOString().slice(0, 10)}
+        isAtToday={!filters.endDate || filters.endDate >= localISODate()}
         onOpenFilters={() => setFiltersOpen(true)}
         activeFilterCount={
           filters.areas.length + filters.categories.length +

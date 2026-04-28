@@ -249,23 +249,36 @@ function synthTitle(cat: IncidentCategory, code: string): string {
   return v[Math.floor(Math.random() * v.length)]
 }
 
-export function generateSyntheticData(windowDays: number, seed = 42): RawData {
+export function generateSyntheticData(
+  windowDays: number,
+  seed = 42,
+  startDate?: string,
+  endDate?: string,
+): RawData {
   const rng = mulberry32(seed)
   const incidents: IncidentRow[] = []
   const reports: ReportRow[] = []
   const faultPool: string[] = []
 
-  const today = new Date()
-  today.setUTCHours(0, 0, 0, 0)
+  // Determine the window end in UTC — use provided endDate or today
+  const winEndMs = endDate
+    ? new Date(endDate + 'T00:00:00Z').getTime()
+    : Date.UTC(
+        new Date().getUTCFullYear(),
+        new Date().getUTCMonth(),
+        new Date().getUTCDate(),
+      )
 
-  // Generate windowDays + 7 days extra so we have a previous-window baseline for deltas
-  const totalDays = windowDays + 7
+  // Generate current window + a full previous window for accurate delta calculations
+  const totalDays = windowDays * 2
+  const genStartMs = winEndMs - (totalDays - 1) * 86_400_000
+
   for (let d = 0; d < totalDays; d++) {
-    const dt = new Date(today)
-    dt.setDate(today.getDate() - (totalDays - 1 - d))
+    const dayMs  = genStartMs + d * 86_400_000
+    const dt     = new Date(dayMs)
     const dateStr = dt.toISOString().slice(0, 10)
     const factor = dailyVolumeFactor(dt)
-    const count = Math.max(2, Math.round((4 + rng() * 10) * factor))
+    const count  = Math.max(2, Math.round((4 + rng() * 10) * factor))
     for (let i = 0; i < count; i++) {
       incidents.push(buildIncident(rng, dateStr, i, faultPool))
     }
@@ -282,19 +295,20 @@ export function generateSyntheticData(windowDays: number, seed = 42): RawData {
     })
   }
 
-  // Split current vs previous
-  const cutoff = new Date(today)
-  cutoff.setDate(today.getDate() - (windowDays - 1))
-  const cutoffStr = cutoff.toISOString().slice(0, 10)
-  const cur = incidents.filter(i => i.report_date >= cutoffStr)
+  // Split current vs previous window at UTC boundaries
+  const winStartMs = winEndMs - (windowDays - 1) * 86_400_000
+  const cutoffStr  = new Date(winStartMs).toISOString().slice(0, 10)
+  const winEndStr  = new Date(winEndMs).toISOString().slice(0, 10)
+
+  const cur  = incidents.filter(i => i.report_date >= cutoffStr && i.report_date <= winEndStr)
   const prev = incidents.filter(i => i.report_date < cutoffStr)
 
   return {
     incidents: cur,
     prevIncidents: prev,
-    reports: reports.filter(r => r.report_date >= cutoffStr),
+    reports: reports.filter(r => r.report_date >= cutoffStr && r.report_date <= winEndStr),
     windowFrom: cutoffStr,
-    windowTo: today.toISOString().slice(0, 10),
+    windowTo:   winEndStr,
     windowDays,
   }
 }
