@@ -175,7 +175,7 @@ export interface KPISummary {
   totalCancelled: number
   totalPartCancelled: number
   avgIncidentDuration: number | null   // mean of incident_duration where present
-  medianResponseMins: number | null    // median of mins_to_response
+  medianArrivalMins: number | null     // median of mins_to_arrival
   safetyCriticalCount: number
   reportsCovered: number
 

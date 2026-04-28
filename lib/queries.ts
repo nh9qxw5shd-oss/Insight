@@ -163,6 +163,44 @@ function median(nums: number[]): number | null {
   return sorted.length % 2 ? sorted[m] : (sorted[m - 1] + sorted[m]) / 2
 }
 
+// Parse elapsed minutes between two "HH:MM" strings, handling cross-midnight.
+function minsFromTimes(start: string | null, end: string | null): number | null {
+  if (!start || !end) return null
+  const toMin = (t: string) => {
+    const [h, m] = t.split(':').map(Number)
+    return isNaN(h) || isNaN(m) ? null : h * 60 + m
+  }
+  const s = toMin(start)
+  const e = toMin(end)
+  if (s == null || e == null) return null
+  const diff = e >= s ? e - s : e + 1440 - s  // handle cross-midnight
+  return diff
+}
+
+// Effective timing getters — prefer precomputed DB columns, fall back to
+// parsing the raw HH:MM strings so incidents without computed columns still
+// contribute to distributions and median calculations.
+function effectiveMinsToAdvised(i: IncidentRow): number | null {
+  if (i.mins_to_advised != null && i.mins_to_advised >= 0 && i.mins_to_advised < 1440)
+    return i.mins_to_advised
+  const v = minsFromTimes(i.incident_start, i.advised_time)
+  return v != null && v >= 0 && v < 1440 ? v : null
+}
+
+function effectiveMinsToResponse(i: IncidentRow): number | null {
+  if (i.mins_to_response != null && i.mins_to_response >= 0 && i.mins_to_response < 1440)
+    return i.mins_to_response
+  const v = minsFromTimes(i.incident_start, i.initial_resp_time)
+  return v != null && v >= 0 && v < 1440 ? v : null
+}
+
+function effectiveMinsToArrival(i: IncidentRow): number | null {
+  if (i.mins_to_arrival != null && i.mins_to_arrival >= 0 && i.mins_to_arrival < 1440)
+    return i.mins_to_arrival
+  const v = minsFromTimes(i.incident_start, i.arrived_at_time)
+  return v != null && v >= 0 && v < 1440 ? v : null
+}
+
 function pctDelta(curr: number, prev: number): number | null {
   if (prev === 0) return curr === 0 ? 0 : null
   return ((curr - prev) / prev) * 100
@@ -194,9 +232,9 @@ export function deriveKPIs(data: RawData): KPISummary {
     ? prevDurations.reduce((s, n) => s + n, 0) / prevDurations.length
     : null
 
-  const responseTimes = curUnique
-    .map(i => i.mins_to_response)
-    .filter((n): n is number => n != null && n >= 0 && n < 24 * 60)
+  const arrivalTimes = curUnique
+    .map(effectiveMinsToArrival)
+    .filter((n): n is number => n != null)
 
   return {
     totalIncidents: curUnique.length,
@@ -204,7 +242,7 @@ export function deriveKPIs(data: RawData): KPISummary {
     totalCancelled,
     totalPartCancelled,
     avgIncidentDuration: avgDuration,
-    medianResponseMins: median(responseTimes),
+    medianArrivalMins: median(arrivalTimes),
     safetyCriticalCount: safetyCount,
     reportsCovered: data.reports.length,
     delayDeltaPct: pctDelta(totalDelay, prevDelay),
@@ -331,6 +369,21 @@ export function deriveOperatorImpact(data: RawData): OperatorImpact[] {
   return Array.from(byCo.values()).sort((a, b) => b.delayMins - a.delayMins)
 }
 
+function incidentDow(i: IncidentRow): number | null {
+  if (i.day_of_week != null) return i.day_of_week
+  if (i.report_date) return new Date(i.report_date + 'T00:00:00Z').getUTCDay()
+  return null
+}
+
+function incidentHour(i: IncidentRow): number | null {
+  if (i.hour_of_day != null) return i.hour_of_day
+  if (i.incident_start) {
+    const h = parseInt(i.incident_start.slice(0, 2), 10)
+    if (!isNaN(h) && h >= 0 && h <= 23) return h
+  }
+  return null
+}
+
 export function deriveHeatmap(data: RawData): HeatmapCell[] {
   const grid: HeatmapCell[] = []
   for (let dow = 0; dow < 7; dow++) {
@@ -339,8 +392,8 @@ export function deriveHeatmap(data: RawData): HeatmapCell[] {
     }
   }
   for (const i of nonContinuation(data.incidents)) {
-    const dow = i.day_of_week
-    const h = i.hour_of_day
+    const dow = incidentDow(i)
+    const h = incidentHour(i)
     if (dow == null || h == null) continue
     if (dow < 0 || dow > 6 || h < 0 || h > 23) continue
     const cell = grid[dow * 24 + h]
@@ -352,7 +405,11 @@ export function deriveHeatmap(data: RawData): HeatmapCell[] {
 export function deriveAreaList(data: RawData): { area: string; count: number; delay: number }[] {
   const byArea = new Map<string, { area: string; count: number; delay: number }>()
   for (const i of nonContinuation(data.incidents)) {
-    const a = (i.area || 'Unspecified').trim()
+    // Use the raw DB value without trimming — the Supabase .in() filter does
+    // exact-string matching, so the value here must be byte-for-byte identical
+    // to what is stored in the database.
+    const a = i.area
+    if (!a) continue
     const agg = byArea.get(a) ?? { area: a, count: 0, delay: 0 }
     agg.count += 1
     agg.delay += effectiveDelay(i)
@@ -362,19 +419,35 @@ export function deriveAreaList(data: RawData): { area: string; count: number; de
 }
 
 // ─── Infrastructure failure sub-category color palette ───────────────────────
-const INFRA_TYPE_COLORS: Record<string, string> = {
-  '05A': '#4A6FA5',  // Signal Failure
-  '05B': '#E05206',  // Points Failure
-  '05C': '#F39C12',  // Track Circuit Failure
-  '05D': '#27AE60',  // Axle Counter Failure
-  '05E': '#9B59B6',  // Broken Rail / Track Defect
-  '19':  '#5B7FA8',  // Signalling Failure
-  '20':  '#6B8FA8',  // Misc infra
-  '21':  '#7A9AB8',  // Misc infra
-  '23A': '#3A8FD5',  // OHL / Traction Failure
-  '07a': '#E0A006',  // Level Crossing Failure
-  '52':  '#D0900A',  // Level Crossing System Failure
-}
+// Ordered by visual priority — index 0 goes to the most-common failure type,
+// so every slice gets a distinct colour regardless of what DB code it carries.
+const INFRA_PALETTE = [
+  '#E05206',  // orange
+  '#F39C12',  // amber
+  '#4A6FA5',  // blue
+  '#27AE60',  // green
+  '#9B59B6',  // purple
+  '#3A8FD5',  // sky blue
+  '#E74C3C',  // red
+  '#16A085',  // teal
+  '#E0A006',  // dark amber
+  '#D35400',  // burnt orange
+  '#2ECC71',  // light green
+  '#8E44AD',  // violet
+  '#2980B9',  // medium blue
+  '#C0392B',  // dark red
+  '#F1C40F',  // yellow
+  '#1ABC9C',  // turquoise
+  '#6B8FA8',  // slate
+  '#E67E22',  // light orange
+  '#5B7FA8',  // muted blue
+  '#7A9AB8',  // pale blue
+  '#A569BD',  // lavender
+  '#48C9B0',  // mint
+  '#85A3C7',  // powder blue
+  '#95A5A6',  // grey
+  '#BDC3C7',  // light grey
+]
 
 export function deriveRepeatAssets(data: RawData, limit = 15): RepeatAsset[] {
   const byAsset = new Map<string, RepeatAsset>()
@@ -406,23 +479,24 @@ export function deriveRepeatAssets(data: RawData, limit = 15): RepeatAsset[] {
 }
 
 export function deriveInfraFailureMix(data: RawData): InfraFailureDatum[] {
-  const byType = new Map<string, InfraFailureDatum>()
+  const byType = new Map<string, Omit<InfraFailureDatum, 'color'>>()
   for (const i of nonContinuation(data.incidents)) {
     if (!INFRA_MIX_CATEGORIES.includes(i.category)) continue
     const code = i.incident_type_code?.trim() || 'OTHER'
     const label = (i.incident_type_label?.trim()) || CATEGORY_CONFIG[i.category].label
-    const agg = byType.get(code) ?? {
-      typeCode: code,
-      typeLabel: label,
-      count: 0,
-      delayMins: 0,
-      color: INFRA_TYPE_COLORS[code] || '#4A6FA5',
-    }
+    // Group by normalised label so the same failure type stored under different
+    // codes (e.g. "Points Failure" from "05B" and "5B") merges into one slice.
+    const key = label.toLowerCase()
+    const agg = byType.get(key) ?? { typeCode: code, typeLabel: label, count: 0, delayMins: 0 }
     agg.count += 1
     agg.delayMins += effectiveDelay(i)
-    byType.set(code, agg)
+    byType.set(key, agg)
   }
-  return Array.from(byType.values()).sort((a, b) => b.count - a.count)
+  // Sort by count then assign palette colours by rank so every slice is
+  // distinct regardless of what raw type-code the DB happens to store.
+  return Array.from(byType.values())
+    .sort((a, b) => b.count - a.count)
+    .map((d, i) => ({ ...d, color: INFRA_PALETTE[i % INFRA_PALETTE.length] }))
 }
 
 export function deriveDelayDensity(data: RawData): DelayDensityDatum[] {
@@ -461,9 +535,12 @@ export function deriveResponseDistribution(data: RawData): {
   const toArrival:  number[] = []
   const duration:   number[] = []
   for (const i of nonContinuation(data.incidents)) {
-    if (i.mins_to_advised  != null && i.mins_to_advised  >= 0 && i.mins_to_advised  < 1440) toAdvised.push(i.mins_to_advised)
-    if (i.mins_to_response != null && i.mins_to_response >= 0 && i.mins_to_response < 1440) toResponse.push(i.mins_to_response)
-    if (i.mins_to_arrival  != null && i.mins_to_arrival  >= 0 && i.mins_to_arrival  < 1440) toArrival.push(i.mins_to_arrival)
+    const a = effectiveMinsToAdvised(i)
+    const r = effectiveMinsToResponse(i)
+    const v = effectiveMinsToArrival(i)
+    if (a != null) toAdvised.push(a)
+    if (r != null) toResponse.push(r)
+    if (v != null) toArrival.push(v)
     if (i.incident_duration != null && i.incident_duration >= 0) duration.push(i.incident_duration)
   }
   return { toAdvised, toResponse, toArrival, duration }

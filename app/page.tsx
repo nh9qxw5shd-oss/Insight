@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Activity, AlertTriangle, Clock, Filter, Layers, MapPin, RefreshCw,
-  Search, TrendingDown, TrendingUp, Train, Wrench, X,
-  type LucideIcon,
+  Activity, AlertTriangle, ChevronLeft, ChevronRight, Clock, Filter,
+  Layers, MapPin, RefreshCw, Search, TrendingDown, TrendingUp, Train,
+  Wrench, X, type LucideIcon,
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
@@ -37,6 +37,37 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'patterns',    label: 'Patterns',    icon: Layers },
   { id: 'assets',      label: 'Assets',      icon: Wrench },
 ]
+
+// ─── Window navigation helper ────────────────────────────────────────────────
+
+function shiftWindow(f: AnalyticsFilters, dir: -1 | 1): AnalyticsFilters {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const todayStr = today.toISOString().slice(0, 10)
+
+  // Determine the current window's end date
+  const curEndStr = f.endDate || todayStr
+  const curEnd = new Date(curEndStr)
+  const days = f.windowDays
+
+  const newEnd = new Date(curEnd)
+  newEnd.setDate(newEnd.getDate() + dir * days)
+
+  // Clamp: don't step forward past today
+  if (newEnd > today) {
+    if (dir === 1) return f
+    newEnd.setTime(today.getTime())
+  }
+
+  const newStart = new Date(newEnd)
+  newStart.setDate(newStart.getDate() - (days - 1))
+
+  return {
+    ...f,
+    startDate: newStart.toISOString().slice(0, 10),
+    endDate: newEnd.toISOString().slice(0, 10),
+  }
+}
 
 // ─── Page ────────────────────────────────────────────────────────────────────
 
@@ -106,13 +137,22 @@ export default function InsightDashboard() {
   const areas        = useMemo(() => data ? deriveAreaList(data) : [], [data])
   const respDist     = useMemo(() => data ? deriveResponseDistribution(data) : null, [data])
 
+  const handleDateClick = (date: string) => {
+    setFilters(f => ({ ...f, startDate: date, endDate: date, windowDays: 1 }))
+  }
+
   return (
     <main className="min-h-screen pb-24">
       <Header
         windowDays={filters.windowDays}
+        startDate={filters.startDate}
+        endDate={filters.endDate}
         demoMode={demoMode}
         loading={loading}
-        onWindowChange={(d) => setFilters({ ...filters, windowDays: d })}
+        onWindowChange={(d) => setFilters({ ...filters, windowDays: d, startDate: undefined, endDate: undefined })}
+        onPrevWindow={() => setFilters(f => shiftWindow(f, -1))}
+        onNextWindow={() => setFilters(f => shiftWindow(f, 1))}
+        isAtToday={!filters.endDate || filters.endDate >= new Date().toISOString().slice(0, 10)}
         onOpenFilters={() => setFiltersOpen(true)}
         activeFilterCount={
           filters.areas.length + filters.categories.length +
@@ -142,9 +182,9 @@ export default function InsightDashboard() {
 
         {kpis && data && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={data} />}
-            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} hots={hots} resp={respDist} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} />}
+            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} hots={hots} resp={respDist} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} />}
             {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={data.incidents} onDrillDown={setDrillDown} />}
@@ -175,13 +215,20 @@ export default function InsightDashboard() {
 
 function Header(props: {
   windowDays: number
+  startDate?: string
+  endDate?: string
   demoMode: boolean
   loading: boolean
   activeFilterCount: number
+  isAtToday: boolean
   onWindowChange: (d: number) => void
+  onPrevWindow: () => void
+  onNextWindow: () => void
   onOpenFilters: () => void
   onRefresh: () => void
 }) {
+  const customRange = !!props.startDate
+
   return (
     <header className="border-b border-[var(--line)] bg-gradient-to-b from-[#0B1226] to-transparent">
       <div className="max-w-[1480px] mx-auto px-6 py-7 flex items-start justify-between gap-6 flex-wrap">
@@ -201,17 +248,41 @@ function Header(props: {
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Window selector */}
-          <div className="flex items-center gap-1 p-1 border border-[var(--line)] rounded">
-            {TIME_WINDOWS.map(w => (
+          {/* Window selector with prev/next arrows */}
+          <div className="flex flex-col items-center gap-1">
+            <div className="flex items-center gap-0 p-1 border border-[var(--line)] rounded">
               <button
-                key={w.label}
-                onClick={() => props.onWindowChange(w.days)}
-                className={`btn !py-1 !px-3 !border-none ${props.windowDays === w.days ? 'btn-active' : ''}`}
+                onClick={props.onPrevWindow}
+                className="btn !py-1 !px-2 !border-none"
+                title="Previous period"
               >
-                {w.label}
+                <ChevronLeft size={12} />
               </button>
-            ))}
+              <div className="flex items-center gap-0.5">
+                {TIME_WINDOWS.map(w => (
+                  <button
+                    key={w.label}
+                    onClick={() => props.onWindowChange(w.days)}
+                    className={`btn !py-1 !px-3 !border-none ${props.windowDays === w.days && !customRange ? 'btn-active' : ''}`}
+                  >
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={props.onNextWindow}
+                disabled={props.isAtToday}
+                className="btn !py-1 !px-2 !border-none disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Next period"
+              >
+                <ChevronRight size={12} />
+              </button>
+            </div>
+            {customRange && (
+              <div className="label-micro text-[9px]" style={{ color: 'var(--ink-400)' }}>
+                {props.startDate}{props.endDate && props.endDate !== props.startDate ? ` → ${props.endDate}` : ''}
+              </div>
+            )}
           </div>
 
           <button onClick={props.onOpenFilters} className="btn relative">
@@ -241,7 +312,7 @@ function Header(props: {
 
 // ─── Overview tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown }: any) {
+function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick }: any) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 stagger">
@@ -282,7 +353,7 @@ function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, d
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card title="Daily Activity" subtitle={`${trend.length}-day rolling window`} className="lg:col-span-2 tick-corners"
               right={<ChartTypeToggle value={chart} onChange={setChart} />}>
-          <TrendChart data={trend} kind={chart} />
+          <TrendChart data={trend} kind={chart} onDateClick={onDateClick} />
         </Card>
 
         <Card title="Category Mix" subtitle={`${cats.length} categories`}
@@ -371,7 +442,7 @@ function SafetyTab({ kpis, trend, cats, data }: any) {
 
 // ─── Performance tab ─────────────────────────────────────────────────────────
 
-function PerformanceTab({ kpis, trend, hots, resp, chart, setChart, incidents, onDrillDown }: any) {
+function PerformanceTab({ kpis, trend, hots, resp, chart, setChart, incidents, onDrillDown, onDateClick }: any) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 stagger">
@@ -379,14 +450,14 @@ function PerformanceTab({ kpis, trend, hots, resp, chart, setChart, incidents, o
         <KPICard label="Cancelled" value={kpis.totalCancelled} icon={X} />
         <KPICard label="Part Cancelled" value={kpis.totalPartCancelled} icon={X} />
         <KPICard
-          label="Median Response"
-          value={kpis.medianResponseMins != null ? `${kpis.medianResponseMins} min` : '—'}
+          label="Median Arrival"
+          value={kpis.medianArrivalMins != null ? `${kpis.medianArrivalMins} min` : '—'}
           icon={Clock}
         />
       </div>
 
       <Card title="Delay Minutes — Daily" subtitle="Aggregate impact" right={<ChartTypeToggle value={chart} onChange={setChart} />} className="tick-corners">
-        <TrendChart data={trend} kind={chart} dataKey="delayMins" gradient="orange" />
+        <TrendChart data={trend} kind={chart} dataKey="delayMins" gradient="orange" onDateClick={onDateClick} />
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -600,18 +671,24 @@ function DistributionToggle({ value, onChange }: { value: DistributionKind; onCh
   )
 }
 
-function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange' }: any) {
+function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick }: any) {
   const stroke = gradient === 'orange' ? '#E05206' : '#4A6FA5'
   const gradientId = `grad-${dataKey}-${gradient}`
+
+  const handleClick = (chartData: any) => {
+    if (chartData?.activeLabel && onDateClick) onDateClick(chartData.activeLabel)
+  }
+
+  const cursorStyle = onDateClick ? 'pointer' : 'default'
 
   if (kind === 'bar') {
     return (
       <ResponsiveContainer width="100%" height={300}>
-        <BarChart data={data}>
+        <BarChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
           <CartesianGrid strokeDasharray="2 6" />
           <XAxis dataKey="date" tickFormatter={shortDate} />
           <YAxis />
-          <Tooltip content={<CustomTooltip />} />
+          <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
           <Bar dataKey={dataKey} fill={stroke} radius={[2, 2, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
@@ -621,11 +698,11 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange' }: 
   if (kind === 'line') {
     return (
       <ResponsiveContainer width="100%" height={300}>
-        <LineChart data={data}>
+        <LineChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
           <CartesianGrid strokeDasharray="2 6" />
           <XAxis dataKey="date" tickFormatter={shortDate} />
           <YAxis />
-          <Tooltip content={<CustomTooltip />} />
+          <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
           <Line type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.8} dot={false} activeDot={{ r: 4 }} />
         </LineChart>
       </ResponsiveContainer>
@@ -634,7 +711,7 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange' }: 
 
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <AreaChart data={data}>
+      <AreaChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%"   stopColor={stroke} stopOpacity={0.55} />
@@ -644,7 +721,7 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange' }: 
         <CartesianGrid strokeDasharray="2 6" />
         <XAxis dataKey="date" tickFormatter={shortDate} />
         <YAxis />
-        <Tooltip content={<CustomTooltip />} />
+        <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
         <Area type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.5} fill={`url(#${gradientId})`} />
       </AreaChart>
     </ResponsiveContainer>
@@ -961,9 +1038,12 @@ function InfraFailureMixChart({ data, incidents, onDrillDown }: any) {
             title={`View ${d.typeLabel} incidents`}
             onClick={() => {
               if (!onDrillDown || !incidents) return
-              const rows = incidents.filter((inc: any) =>
-                !inc.is_continuation && inc.incident_type_code === d.typeCode
-              ).sort((a: any, b: any) => b.report_date.localeCompare(a.report_date))
+              const targetLabel = d.typeLabel.toLowerCase()
+              const rows = incidents.filter((inc: any) => {
+                if (inc.is_continuation) return false
+                const lbl = (inc.incident_type_label?.trim() || CATEGORY_CONFIG[inc.category as IncidentCategory]?.label || '').toLowerCase()
+                return lbl === targetLabel
+              }).sort((a: any, b: any) => b.report_date.localeCompare(a.report_date))
               onDrillDown({ title: d.typeLabel, incidents: rows })
             }}
           >
@@ -1431,7 +1511,7 @@ function Chip({ label, fullLabel, color, active, onToggle }: any) {
   )
 }
 
-function CustomTooltip({ active, payload, label }: any) {
+function CustomTooltip({ active, payload, label, footer }: any) {
   if (!active || !payload?.length) return null
   return (
     <div className="card !bg-[var(--bg-card-hi)] !border-[var(--line-hi)] p-2.5 text-xs">
@@ -1445,6 +1525,11 @@ function CustomTooltip({ active, payload, label }: any) {
           </span>
         </div>
       ))}
+      {footer && (
+        <div className="mt-1.5 pt-1.5 border-t border-[var(--line)] label-micro" style={{ color: 'var(--ink-500)' }}>
+          {footer}
+        </div>
+      )}
     </div>
   )
 }
