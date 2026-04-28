@@ -393,8 +393,8 @@ function PerformanceTab({ kpis, trend, hots, resp, chart, setChart, incidents, o
         <Card title="Response-Time Distribution" subtitle="Mins from incident start">
           {resp ? <ResponseHistograms data={resp} /> : null}
         </Card>
-        <Card title="Top Locations by Delay" subtitle="Concentrated impact">
-          <LocationLeaderboard data={hots} incidents={incidents} onDrillDown={onDrillDown} />
+        <Card title="Top Incidents by Delay" subtitle="Highest-impact singular incidents">
+          <TopIncidentsByDelay incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
       </div>
     </div>
@@ -734,6 +734,58 @@ function LocationLeaderboard({ data, compact, incidents, onDrillDown }: any) {
               style={{
                 width: `${(d.delayMins / max) * 100}%`,
                 background: `linear-gradient(90deg, var(--nr-orange) 0%, #F47A3D 100%)`,
+              }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function TopIncidentsByDelay({ incidents, onDrillDown }: { incidents: IncidentRow[]; onDrillDown?: (d: { title: string; incidents: IncidentRow[] }) => void }) {
+  const top = useMemo(() =>
+    incidents
+      .filter(i => !i.is_continuation)
+      .sort((a, b) => (b.minutes_delay ?? 0) - (a.minutes_delay ?? 0))
+      .slice(0, 12),
+    [incidents],
+  )
+  if (!top.length) return <Empty />
+  const max = top[0]?.minutes_delay || 1
+  return (
+    <div className="space-y-2">
+      {top.map((inc, i) => (
+        <div
+          key={inc.id}
+          className={`group ${onDrillDown ? 'cursor-pointer' : ''}`}
+          onClick={() => onDrillDown?.({ title: inc.title || inc.ccil || 'Incident', incidents: [inc] })}
+          title={onDrillDown ? `View incident detail` : undefined}
+        >
+          <div className="flex items-center justify-between text-xs mb-1">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="numeric-mono text-[10px] w-5 shrink-0" style={{ color: 'var(--ink-500)' }}>
+                {String(i + 1).padStart(2, '0')}
+              </span>
+              <span className={`truncate ${onDrillDown ? 'group-hover:underline group-hover:text-[var(--nr-orange)]' : ''}`} style={{ color: 'var(--ink-200)' }}>
+                {inc.title || inc.location || inc.ccil || '—'}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>
+                {inc.report_date}
+              </span>
+              <span className="numeric-mono" style={{ color: 'var(--ink-100)' }}>
+                {fmtMins(inc.minutes_delay ?? 0)}
+              </span>
+            </div>
+          </div>
+          <div className="h-[3px] bg-[var(--bg-card-hi)] rounded-sm overflow-hidden">
+            <div
+              className="h-full transition-all duration-700 ease-out"
+              style={{
+                width: `${((inc.minutes_delay ?? 0) / max) * 100}%`,
+                background: 'linear-gradient(90deg, var(--nr-orange) 0%, #F47A3D 100%)',
               }}
             />
           </div>
