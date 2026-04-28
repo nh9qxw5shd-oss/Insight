@@ -421,7 +421,7 @@ export function deriveDelayDensity(data: RawData): DelayDensityDatum[] {
     byLoc.set(loc, agg)
   }
   return Array.from(byLoc.entries())
-    .filter(([, v]) => v.densities.length > 0)
+    .filter(([, v]) => v.densities.length > 0 && v.totalDelay > 0)
     .map(([loc, v]) => ({
       location: loc,
       area: v.area,
