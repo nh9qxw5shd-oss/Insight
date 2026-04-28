@@ -411,7 +411,10 @@ export function deriveInfraFailureMix(data: RawData): InfraFailureDatum[] {
     if (!INFRA_MIX_CATEGORIES.includes(i.category)) continue
     const code = i.incident_type_code?.trim() || 'OTHER'
     const label = (i.incident_type_label?.trim()) || CATEGORY_CONFIG[i.category].label
-    const agg = byType.get(code) ?? {
+    // Group by normalised label so variants with the same human name (e.g.
+    // "Points Failure" from codes "05B" and "5B") merge into a single slice.
+    const key = label.toLowerCase()
+    const agg = byType.get(key) ?? {
       typeCode: code,
       typeLabel: label,
       count: 0,
@@ -420,7 +423,7 @@ export function deriveInfraFailureMix(data: RawData): InfraFailureDatum[] {
     }
     agg.count += 1
     agg.delayMins += effectiveDelay(i)
-    byType.set(code, agg)
+    byType.set(key, agg)
   }
   return Array.from(byType.values()).sort((a, b) => b.count - a.count)
 }
