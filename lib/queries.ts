@@ -38,11 +38,29 @@ function previousWindow(f: AnalyticsFilters): { from: string; to: string } {
   return { from: isoDay(prevFrom), to: isoDay(prevTo) }
 }
 
+// ─── Pagination helper ───────────────────────────────────────────────────────
+// PostgREST's server-side max-rows cap (default 1 000) cannot be overridden
+// by the client — .limit() is silently clamped. We page through in 1 000-row
+// chunks and stop when a partial page (or empty page) is returned.
+
+async function fetchAllRows<T>(
+  queryFn: () => { range: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> },
+  pageSize = 1000,
+): Promise<T[]> {
+  const all: T[] = []
+  let from = 0
+  while (true) {
+    const { data, error } = await queryFn().range(from, from + pageSize - 1)
+    if (error) throw new Error(error.message)
+    const rows = (data ?? []) as T[]
+    all.push(...rows)
+    if (rows.length < pageSize) break
+    from += pageSize
+  }
+  return all
+}
+
 // ─── Master fetch ────────────────────────────────────────────────────────────
-// One round-trip pulls every column we need and we derive everything in JS.
-// At ~5 incidents/day × 365 days that's <2k rows so client-side aggregation
-// is fine and keeps the queries trivial. If volumes grow significantly, push
-// the heavy aggregations into Supabase RPCs.
 
 export interface RawData {
   incidents: IncidentRow[]
@@ -72,41 +90,41 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
   const cur = resolveWindow(f)
   const prev = previousWindow(f)
 
-  // Current window
-  let curQ = sb.from('incidents').select(INCIDENT_COLS)
-    .gte('report_date', cur.from)
-    .lte('report_date', cur.to)
-    .order('report_date', { ascending: true })
+  // Current window — paginate to bypass the PostgREST server-side max-rows cap
+  const curRows = await fetchAllRows<IncidentRow>(() => {
+    let q = sb!.from('incidents').select(INCIDENT_COLS)
+      .gte('report_date', cur.from)
+      .lte('report_date', cur.to)
+      .order('report_date', { ascending: true })
+    if (f.areas.length)      q = q.in('area', f.areas)
+    if (f.categories.length) q = q.in('category', f.categories)
+    if (f.severities.length) q = q.in('severity', f.severities)
+    return q
+  })
 
-  if (f.areas.length)      curQ = curQ.in('area', f.areas)
-  if (f.categories.length) curQ = curQ.in('category', f.categories)
-  if (f.severities.length) curQ = curQ.in('severity', f.severities)
-
-  const { data: curRows, error: curErr } = await curQ
-  if (curErr) throw new Error(`Incident fetch failed: ${curErr.message}`)
-
-  // Previous window — only for delta calc, no filters beyond date so the
-  // baseline is consistent
-  const { data: prevRows } = await sb.from('incidents').select(INCIDENT_COLS)
-    .gte('report_date', prev.from)
-    .lte('report_date', prev.to)
+  // Previous window — only for delta calc, no filters beyond date
+  const prevRows = await fetchAllRows<IncidentRow>(() =>
+    sb!.from('incidents').select(INCIDENT_COLS)
+      .gte('report_date', prev.from)
+      .lte('report_date', prev.to)
+  )
 
   // Reports row count (for "reports covered" KPI)
-  const { data: reportRows } = await sb.from('reports').select('*')
-    .gte('report_date', cur.from)
-    .lte('report_date', cur.to)
-
-  const incidents = (curRows || []) as unknown as IncidentRow[]
+  const reportRows = await fetchAllRows<ReportRow>(() =>
+    sb!.from('reports').select('*')
+      .gte('report_date', cur.from)
+      .lte('report_date', cur.to)
+  )
 
   // Apply free-text filter client-side
   const filtered = f.search.trim()
-    ? incidents.filter(i => searchMatch(i, f.search))
-    : incidents
+    ? curRows.filter(i => searchMatch(i, f.search))
+    : curRows
 
   return {
     incidents: filtered,
-    prevIncidents: (prevRows || []) as unknown as IncidentRow[],
-    reports: (reportRows || []) as unknown as ReportRow[],
+    prevIncidents: prevRows,
+    reports: reportRows,
     windowFrom: cur.from,
     windowTo: cur.to,
     windowDays: cur.days,
