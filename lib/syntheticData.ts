@@ -206,8 +206,12 @@ function buildIncident(rng: () => number, dateStr: string, idx: number, faultPoo
     line: pick(LINES, rng),
     fault_number: faultNo,
     possession_ref: rng() < 0.05 ? `P2026/${4000000 + Math.floor(rng() * 1000000)}` : null,
-    btp_ref: rng() < 0.15 ? String(100 + Math.floor(rng() * 900)) : null,
-    third_party_ref: null,
+    btp_ref: (['CRIME','PERSON_STRUCK','TRESPASS','NEAR_MISS','SPAD'] as string[]).includes(category)
+      ? (rng() < 0.6 ? `BTP${String(1000 + Math.floor(rng() * 9000))}` : null)
+      : (rng() < 0.08 ? `BTP${String(1000 + Math.floor(rng() * 9000))}` : null),
+    third_party_ref: (['CRIME','BRIDGE_STRIKE','LEVEL_CROSSING','WEATHER'] as string[]).includes(category)
+      ? (rng() < 0.4 ? `TP-${String(1000 + Math.floor(rng() * 9000))}` : null)
+      : null,
     action_code: responderInitials.join(' '),
     responder_initials: responderInitials,
     advised_time: fmt(incidentStartMin + advisedDelta),
@@ -223,9 +227,10 @@ function buildIncident(rng: () => number, dateStr: string, idx: number, faultPoo
     train_origin: rng() < 0.4 ? pick(['Nottingham','St Pancras','Sheffield','Lincoln','Derby','Leicester','Bedford'], rng) : null,
     train_destination: rng() < 0.4 ? pick(['Nottingham','St Pancras','Sheffield','Lincoln','Derby','Leicester','Bedford'], rng) : null,
     unit_numbers: rng() < 0.3 ? [`${66000 + Math.floor(rng() * 1000)}`] : null,
-    trust_ref: null,
+    trust_ref: rng() < 0.6 ? `T${String(20000 + Math.floor(rng() * 80000))}` : null,
     tda_ref: rng() < 0.7 ? String(190000 + Math.floor(rng() * 200000)) : null,
-    trmc_code: rng() < 0.7 ? pick(['IQVL','IQVR','IQV9','MXHA','IQGR'], rng) : null,
+    // Weight TRMC codes realistically: NR Infrastructure dominant, then TOC, NR Ops
+    trmc_code: pick(['IQVL','IQVL','IQVL','MXHA','MXHA','IQVR','IQV9','IQGR',null,null] as (string|null)[], rng),
     fts_div_count: 0,
     event_count: 1 + Math.floor(rng() * 12),
     has_files: rng() < 0.18,

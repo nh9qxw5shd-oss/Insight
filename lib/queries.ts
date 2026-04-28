@@ -4,10 +4,13 @@ import { getSupabase } from './supabase'
 import {
   AnalyticsFilters, IncidentRow, ReportRow, KPISummary, TrendPoint,
   CategoryDatum, LocationDatum, RepeatFault, RepeatAsset, InfraFailureDatum,
-  DelayDensityDatum, ResponderLoad, OperatorImpact,
+  DelayDensityDatum, ResponderLoad, OperatorImpact, ResponseDistribution,
   HeatmapCell, IncidentCategory, CATEGORY_CONFIG, SAFETY_CATEGORIES,
   REPEAT_ASSET_CATEGORIES, INFRA_MIX_CATEGORIES,
+  Signal, SignalType, LineDatum, AttributionDatum, Chain,
 } from './types'
+
+const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
 
 // ─── Date helpers ────────────────────────────────────────────────────────────
 
@@ -247,20 +250,38 @@ export function deriveKPIs(data: RawData): KPISummary {
     .map(effectiveMinsToArrival)
     .filter((n): n is number => n != null)
 
+  const totalTrainsDelayed = curUnique.reduce((s, i) => s + (i.trains_delayed || 0), 0)
+
+  // SLA compliance: % of incidents where responder arrived within threshold
+  const slaEligible    = arrivalTimes.length
+  const slaBreachCount = arrivalTimes.filter(m => m > SLA_THRESHOLD_MINS).length
+  const slaCompliancePct = slaEligible > 0
+    ? ((slaEligible - slaBreachCount) / slaEligible) * 100
+    : null
+
+  const prevArrivalTimes = prevUnique
+    .map(effectiveMinsToArrival)
+    .filter((n): n is number => n != null)
+  const prevSlaBreachCount = prevArrivalTimes.filter(m => m > SLA_THRESHOLD_MINS).length
+
   return {
     totalIncidents: curUnique.length,
     totalDelayMins: totalDelay,
     totalCancelled,
     totalPartCancelled,
+    totalTrainsDelayed,
     avgIncidentDuration: avgDuration,
     medianArrivalMins: median(arrivalTimes),
     safetyCriticalCount: safetyCount,
     reportsCovered: data.reports.length,
+    slaBreachCount,
+    slaCompliancePct,
     delayDeltaPct: pctDelta(totalDelay, prevDelay),
     incidentsDeltaPct: pctDelta(curUnique.length, prevUnique.length),
     safetyDeltaPct: pctDelta(safetyCount, prevSafety),
     durationDeltaPct: avgDuration != null && prevAvgDuration != null
       ? pctDelta(avgDuration, prevAvgDuration) : null,
+    slaBreachDeltaPct: pctDelta(slaBreachCount, prevSlaBreachCount),
   }
 }
 
@@ -281,7 +302,29 @@ export function deriveTrend(data: RawData): TrendPoint[] {
       if (SAFETY_CATEGORIES.includes(inc.category)) pt.safetyCritical += 1
     }
   }
-  return Array.from(byDate.values())
+  const pts = Array.from(byDate.values())
+
+  // Rolling 7-day average
+  for (let i = 0; i < pts.length; i++) {
+    const window = pts.slice(Math.max(0, i - 6), i + 1)
+    pts[i].rolling7Avg = window.reduce((s, p) => s + p.incidents, 0) / window.length
+  }
+
+  // Linear regression on incident counts (y = slope*x + intercept, x = day index)
+  if (pts.length > 1) {
+    const n = pts.length
+    const sumX = (n * (n - 1)) / 2
+    const sumX2 = (n * (n - 1) * (2 * n - 1)) / 6
+    const sumY = pts.reduce((s, p) => s + p.incidents, 0)
+    const sumXY = pts.reduce((s, p, i) => s + i * p.incidents, 0)
+    const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX)
+    const intercept = (sumY - slope * sumX) / n
+    for (let i = 0; i < pts.length; i++) {
+      pts[i].regressionY = Math.max(0, slope * i + intercept)
+    }
+  }
+
+  return pts
 }
 
 export function deriveCategorySplit(data: RawData): CategoryDatum[] {
@@ -533,12 +576,18 @@ export function deriveDelayDensity(data: RawData): DelayDensityDatum[] {
     .sort((a, b) => b.avgDelayDensity - a.avgDelayDensity)
 }
 
-export function deriveResponseDistribution(data: RawData): {
-  toAdvised:  number[]
-  toResponse: number[]
-  toArrival:  number[]
-  duration:   number[]
-} {
+function percentile(sorted: number[], p: number): number | null {
+  if (!sorted.length) return null
+  const idx = Math.ceil(sorted.length * p) - 1
+  return sorted[Math.max(0, idx)]
+}
+
+function distStats(raw: number[]): { raw: number[]; p50: number | null; p95: number | null } {
+  const sorted = [...raw].sort((a, b) => a - b)
+  return { raw, p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95) }
+}
+
+export function deriveResponseDistribution(data: RawData): ResponseDistribution {
   const toAdvised:  number[] = []
   const toResponse: number[] = []
   const toArrival:  number[] = []
@@ -552,5 +601,274 @@ export function deriveResponseDistribution(data: RawData): {
     if (v != null) toArrival.push(v)
     if (i.incident_duration != null && i.incident_duration >= 0) duration.push(i.incident_duration)
   }
-  return { toAdvised, toResponse, toArrival, duration }
+  return {
+    toAdvised:  distStats(toAdvised),
+    toResponse: distStats(toResponse),
+    toArrival:  distStats(toArrival),
+    duration:   distStats(duration),
+  }
+}
+
+// ─── New derivers ─────────────────────────────────────────────────────────────
+
+export function deriveSignals(data: RawData): Signal[] {
+  const signals: Signal[] = []
+  const pts = deriveTrend(data)
+  if (pts.length < 3) return signals
+
+  // Z-score helper
+  const vals = pts.map(p => p.incidents)
+  const mean = vals.reduce((s, v) => s + v, 0) / vals.length
+  const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length
+  const sigma = Math.sqrt(variance)
+
+  // Delay spike by day
+  const delayVals = pts.map(p => p.delayMins)
+  const delayMean = delayVals.reduce((s, v) => s + v, 0) / delayVals.length
+  const delayVariance = delayVals.reduce((s, v) => s + (v - delayMean) ** 2, 0) / delayVals.length
+  const delaySigma = Math.sqrt(delayVariance)
+
+  for (const pt of pts) {
+    if (sigma > 0 && pt.incidents > mean + 2 * sigma) {
+      const z = (pt.incidents - mean) / sigma
+      signals.push({
+        id: `surge-${pt.date}`,
+        severity: z > 3 ? 'critical' : 'warning',
+        type: 'INCIDENT_SURGE',
+        title: `Incident surge on ${pt.date}`,
+        detail: `${pt.incidents} incidents — ${z.toFixed(1)}σ above the window average of ${mean.toFixed(1)}`,
+        metric: pt.incidents,
+        threshold: mean + 2 * sigma,
+        delta: z,
+        date: pt.date,
+      })
+    }
+    if (delaySigma > 0 && pt.delayMins > delayMean + 2 * delaySigma) {
+      const z = (pt.delayMins - delayMean) / delaySigma
+      signals.push({
+        id: `delay-${pt.date}`,
+        severity: z > 3 ? 'critical' : 'warning',
+        type: 'DELAY_SPIKE',
+        title: `Delay spike on ${pt.date}`,
+        detail: `${Math.round(pt.delayMins)} min total delay — ${z.toFixed(1)}σ above average`,
+        metric: pt.delayMins,
+        threshold: delayMean + 2 * delaySigma,
+        delta: z,
+        date: pt.date,
+      })
+    }
+  }
+
+  // Safety cluster: 3+ safety-critical incidents at same location
+  const safeLoc = new Map<string, number>()
+  for (const i of nonContinuation(data.incidents)) {
+    if (!SAFETY_CATEGORIES.includes(i.category)) continue
+    const loc = i.location?.trim() || '__unknown__'
+    safeLoc.set(loc, (safeLoc.get(loc) ?? 0) + 1)
+  }
+  for (const [loc, count] of safeLoc.entries()) {
+    if (count >= 3) {
+      signals.push({
+        id: `safety-cluster-${loc}`,
+        severity: 'critical',
+        type: 'SAFETY_CLUSTER',
+        title: `Safety cluster at ${loc === '__unknown__' ? 'unknown location' : loc}`,
+        detail: `${count} safety-critical incidents in this window`,
+        metric: count,
+        threshold: 2,
+        delta: count - 2,
+      })
+    }
+  }
+
+  // Fault acceleration: same fault_number in 3+ separate days
+  const faultDays = new Map<string, Set<string>>()
+  for (const i of data.incidents) {
+    const fn = i.fault_number?.trim()
+    if (!fn) continue
+    const days = faultDays.get(fn) ?? new Set<string>()
+    days.add(i.report_date)
+    faultDays.set(fn, days)
+  }
+  for (const [fn, days] of faultDays.entries()) {
+    if (days.size >= 3) {
+      signals.push({
+        id: `fault-accel-${fn}`,
+        severity: 'warning',
+        type: 'FAULT_ACCELERATION',
+        title: `Recurring fault: ${fn}`,
+        detail: `Same fault number active on ${days.size} separate days`,
+        metric: days.size,
+        threshold: 2,
+        delta: days.size - 2,
+      })
+    }
+  }
+
+  // Response degradation: trailing 7-day median arrival trending up vs first 7 days
+  const arrivalByDay = pts.map(pt => {
+    const dayInc = nonContinuation(data.incidents).filter(i => i.report_date === pt.date)
+    return dayInc.map(effectiveMinsToArrival).filter((n): n is number => n != null)
+  })
+  if (arrivalByDay.length >= 14) {
+    const earlyMedian = median(arrivalByDay.slice(0, 7).flat())
+    const lateMedian  = median(arrivalByDay.slice(-7).flat())
+    if (earlyMedian != null && lateMedian != null && earlyMedian > 0) {
+      const degradation = ((lateMedian - earlyMedian) / earlyMedian) * 100
+      if (degradation > 20) {
+        signals.push({
+          id: 'response-degradation',
+          severity: degradation > 40 ? 'critical' : 'warning',
+          type: 'RESPONSE_DEGRADATION',
+          title: 'Response time degrading',
+          detail: `Median arrival time up ${degradation.toFixed(0)}% — last 7 days vs first 7 days`,
+          metric: lateMedian,
+          threshold: earlyMedian,
+          delta: degradation,
+        })
+      }
+    }
+  }
+
+  // SLA breach rate > 35%
+  const arrivalAll = nonContinuation(data.incidents)
+    .map(effectiveMinsToArrival)
+    .filter((n): n is number => n != null)
+  if (arrivalAll.length >= 5) {
+    const breachRate = (arrivalAll.filter(m => m > SLA_THRESHOLD_MINS).length / arrivalAll.length) * 100
+    if (breachRate > 35) {
+      signals.push({
+        id: 'sla-breach-rate',
+        severity: breachRate > 55 ? 'critical' : 'warning',
+        type: 'SLA_BREACH_RATE',
+        title: `SLA breach rate elevated`,
+        detail: `${breachRate.toFixed(0)}% of incidents exceeding ${SLA_THRESHOLD_MINS}-min arrival target`,
+        metric: breachRate,
+        threshold: 35,
+        delta: breachRate - 35,
+      })
+    }
+  }
+
+  // Category spike: category count > 2× its share in previous window
+  const curCats = new Map<string, number>()
+  const prevCats = new Map<string, number>()
+  for (const i of nonContinuation(data.incidents))   curCats.set(i.category,  (curCats.get(i.category)  ?? 0) + 1)
+  for (const i of nonContinuation(data.prevIncidents)) prevCats.set(i.category, (prevCats.get(i.category) ?? 0) + 1)
+  const prevTotal = Array.from(prevCats.values()).reduce((s, v) => s + v, 0)
+  const curTotal  = nonContinuation(data.incidents).length
+  for (const [cat, curCount] of curCats.entries()) {
+    const prevCount = prevCats.get(cat) ?? 0
+    const prevShare = prevTotal > 0 ? prevCount / prevTotal : 0
+    const curShare  = curTotal  > 0 ? curCount  / curTotal  : 0
+    if (prevShare > 0 && curShare > prevShare * 2 && curCount >= 3) {
+      signals.push({
+        id: `cat-spike-${cat}`,
+        severity: 'warning',
+        type: 'CATEGORY_SPIKE',
+        title: `${CATEGORY_CONFIG[cat as keyof typeof CATEGORY_CONFIG]?.label ?? cat} spike`,
+        detail: `${curCount} incidents — ${(curShare * 100).toFixed(0)}% of window vs ${(prevShare * 100).toFixed(0)}% previously`,
+        metric: curShare * 100,
+        threshold: prevShare * 2 * 100,
+        delta: curShare / prevShare,
+      })
+    }
+  }
+
+  // Sort: critical first, then by delta descending
+  return signals.sort((a, b) => {
+    const rank = { critical: 0, warning: 1, info: 2 }
+    return rank[a.severity] - rank[b.severity] || b.delta - a.delta
+  })
+}
+
+export function deriveLineBreakdown(data: RawData): LineDatum[] {
+  const byLine = new Map<string, {
+    incidentCount: number; totalDelay: number
+    durations: number[]; cats: Map<string, number>
+  }>()
+  for (const i of nonContinuation(data.incidents)) {
+    const line = i.line?.trim()
+    if (!line) continue
+    const agg = byLine.get(line) ?? { incidentCount: 0, totalDelay: 0, durations: [] as number[], cats: new Map<string, number>() }
+    agg.incidentCount += 1
+    agg.totalDelay += effectiveDelay(i)
+    const d = effectiveDuration(i)
+    if (d != null) agg.durations.push(d)
+    agg.cats.set(i.category, (agg.cats.get(i.category) ?? 0) + 1)
+    byLine.set(line, agg)
+  }
+  return Array.from(byLine.entries()).map(([line, agg]) => {
+    const topCategory = Array.from(agg.cats.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] as IncidentCategory ?? 'GENERAL'
+    return {
+      line,
+      incidentCount: agg.incidentCount,
+      totalDelay: agg.totalDelay,
+      avgDuration: agg.durations.length
+        ? agg.durations.reduce((s, n) => s + n, 0) / agg.durations.length
+        : null,
+      topCategory,
+    }
+  }).sort((a, b) => b.totalDelay - a.totalDelay)
+}
+
+const TRMC_LABELS: Record<string, string> = {
+  IQVL: 'Network Rail Infrastructure',
+  IQVR: 'Network Rail Operations',
+  IQV9: 'Network Rail Other',
+  MXHA: 'Train Operator',
+  IQGR: 'External / Third Party',
+}
+
+export function deriveDelayAttribution(data: RawData): AttributionDatum[] {
+  const byCode = new Map<string, { incidentCount: number; totalDelay: number }>()
+  const total = data.incidents.reduce((s, i) => s + effectiveDelay(i), 0)
+  for (const i of nonContinuation(data.incidents)) {
+    const code = i.trmc_code?.trim() || 'UNKNOWN'
+    const agg  = byCode.get(code) ?? { incidentCount: 0, totalDelay: 0 }
+    agg.incidentCount += 1
+    agg.totalDelay    += effectiveDelay(i)
+    byCode.set(code, agg)
+  }
+  return Array.from(byCode.entries())
+    .map(([code, agg]) => ({
+      code,
+      label: TRMC_LABELS[code] ?? code,
+      incidentCount: agg.incidentCount,
+      totalDelay: agg.totalDelay,
+      pct: total > 0 ? (agg.totalDelay / total) * 100 : 0,
+    }))
+    .sort((a, b) => b.totalDelay - a.totalDelay)
+}
+
+export function deriveContinuationChains(data: RawData): Chain[] {
+  const byCcil = new Map<string, Chain>()
+  for (const i of data.incidents) {
+    const ccil = i.ccil?.trim()
+    if (!ccil) continue
+    const existing = byCcil.get(ccil)
+    if (existing) {
+      existing.incidents.push(i)
+      existing.totalDelay += effectiveDelay(i)
+      if (!existing.location && i.location) existing.location = i.location
+    } else {
+      byCcil.set(ccil, {
+        ccil,
+        days: 0,
+        totalDelay: effectiveDelay(i),
+        category: i.category,
+        location: i.location ?? null,
+        incidents: [i],
+      })
+    }
+  }
+  return Array.from(byCcil.values())
+    .filter(c => c.incidents.length > 1)
+    .map(c => {
+      const dates = [...new Set(c.incidents.map(i => i.report_date))].sort()
+      c.days = dates.length
+      return c
+    })
+    .sort((a, b) => b.totalDelay - a.totalDelay || b.days - a.days)
+    .slice(0, 20)
 }
