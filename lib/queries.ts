@@ -310,10 +310,12 @@ export function deriveTrend(data: RawData): TrendPoint[] {
   }
   const pts = Array.from(byDate.values())
 
-  // Rolling 7-day average
+  // Rolling 7-day averages for all series
   for (let i = 0; i < pts.length; i++) {
     const window = pts.slice(Math.max(0, i - 6), i + 1)
-    pts[i].rolling7Avg = window.reduce((s, p) => s + p.incidents, 0) / window.length
+    pts[i].rolling7Avg       = window.reduce((s, p) => s + p.incidents,      0) / window.length
+    pts[i].rolling7DelayAvg  = window.reduce((s, p) => s + p.delayMins,      0) / window.length
+    pts[i].rolling7SafetyAvg = window.reduce((s, p) => s + p.safetyCritical, 0) / window.length
   }
 
   // Linear regression on incident counts (y = slope*x + intercept, x = day index)

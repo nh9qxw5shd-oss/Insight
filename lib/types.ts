@@ -195,8 +195,10 @@ export interface TrendPoint {
   incidents: number
   delayMins: number
   safetyCritical: number
-  rolling7Avg?: number    // 7-day rolling average of incident count
-  regressionY?: number    // least-squares regression value for that date index
+  rolling7Avg?: number         // 7-day rolling average of incident count
+  rolling7DelayAvg?: number    // 7-day rolling average of delay minutes
+  rolling7SafetyAvg?: number   // 7-day rolling average of safety-critical count
+  regressionY?: number         // least-squares regression value for that date index
 }
 
 export interface ResponseDistribution {

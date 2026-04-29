@@ -7,7 +7,7 @@ import {
   TrendingDown, TrendingUp, Train, Wrench, X, type LucideIcon,
 } from 'lucide-react'
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
   Pie, PieChart, PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart,
   ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
 } from 'recharts'
@@ -565,6 +565,8 @@ function SafetyTab({ kpis, trend, cats, data }: any) {
               <YAxis allowDecimals={false} />
               <Tooltip content={<CustomTooltip />} />
               <Area type="monotone" dataKey="safetyCritical" stroke="#E74C3C" strokeWidth={1.5} fill="url(#safetyGrad)" />
+              <Line type="monotone" dataKey="rolling7SafetyAvg" name="7d avg" stroke="#7A8BA8" strokeWidth={1.5}
+                    strokeDasharray="4 2" dot={false} activeDot={false} connectNulls />
             </AreaChart>
           </ResponsiveContainer>
         </Card>
@@ -1041,6 +1043,12 @@ function DistributionToggle({ value, onChange }: { value: DistributionKind; onCh
   )
 }
 
+const ROLLING_KEY: Record<string, string> = {
+  incidents:     'rolling7Avg',
+  delayMins:     'rolling7DelayAvg',
+  safetyCritical: 'rolling7SafetyAvg',
+}
+
 function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick }: any) {
   const stroke = gradient === 'orange' ? '#E05206' : '#4A6FA5'
   const gradientId = `grad-${dataKey}-${gradient}`
@@ -1050,32 +1058,32 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
   }
 
   const cursorStyle = onDateClick ? 'pointer' : 'default'
-  const hasRolling = dataKey === 'incidents' && data.some((d: any) => d.rolling7Avg != null)
+  const rollingKey = ROLLING_KEY[dataKey] ?? 'rolling7Avg'
+  const hasRolling = data.some((d: any) => d[rollingKey] != null)
   const hasRegression = dataKey === 'incidents' && data.some((d: any) => d.regressionY != null)
 
-  const sharedOverlays = hasRolling || hasRegression ? (
-    <>
-      {hasRolling && (
-        <Line type="monotone" dataKey="rolling7Avg" name="7d avg" stroke="#7A8BA8" strokeWidth={1.5}
-              strokeDasharray="4 2" dot={false} activeDot={false} connectNulls />
-      )}
-      {hasRegression && (
-        <Line type="linear" dataKey="regressionY" name="Trend" stroke="#F39C12" strokeWidth={1}
-              strokeDasharray="6 3" dot={false} activeDot={false} strokeOpacity={0.7} connectNulls />
-      )}
-    </>
+  const movingAvgLine = hasRolling ? (
+    <Line type="monotone" dataKey={rollingKey} name="7d avg" stroke="#7A8BA8" strokeWidth={1.5}
+          strokeDasharray="4 2" dot={false} activeDot={false} connectNulls />
+  ) : null
+
+  const regressionLine = hasRegression ? (
+    <Line type="linear" dataKey="regressionY" name="Trend" stroke="#F39C12" strokeWidth={1}
+          strokeDasharray="6 3" dot={false} activeDot={false} strokeOpacity={0.7} connectNulls />
   ) : null
 
   if (kind === 'bar') {
     return (
       <ResponsiveContainer width="100%" height={300}>
-        <BarChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
+        <ComposedChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
           <CartesianGrid strokeDasharray="2 6" />
           <XAxis dataKey="date" tickFormatter={shortDate} />
           <YAxis />
           <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
           <Bar dataKey={dataKey} fill={stroke} radius={[2, 2, 0, 0]} />
-        </BarChart>
+          {movingAvgLine}
+          {regressionLine}
+        </ComposedChart>
       </ResponsiveContainer>
     )
   }
@@ -1089,7 +1097,8 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
           <YAxis />
           <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
           <Line type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.8} dot={false} activeDot={{ r: 4 }} />
-          {sharedOverlays}
+          {movingAvgLine}
+          {regressionLine}
         </LineChart>
       </ResponsiveContainer>
     )
@@ -1109,7 +1118,8 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
         <YAxis />
         <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
         <Area type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.5} fill={`url(#${gradientId})`} />
-        {sharedOverlays}
+        {movingAvgLine}
+        {regressionLine}
       </AreaChart>
     </ResponsiveContainer>
   )
