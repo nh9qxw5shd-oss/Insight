@@ -128,9 +128,10 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       .lte('report_date', cur.to)
   )
 
-  // Apply free-text filter client-side
-  const filtered = f.search.trim()
-    ? curRows.filter(i => searchMatch(i, f.search))
+  // Apply free-text filter client-side (any token must match)
+  const activeSearches = f.searches.map(s => s.trim()).filter(Boolean)
+  const filtered = activeSearches.length
+    ? curRows.filter(i => activeSearches.some(q => searchMatch(i, q)))
     : curRows
 
   return {

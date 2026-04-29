@@ -189,7 +189,7 @@ export default function InsightDashboard() {
         onOpenFilters={() => setFiltersOpen(true)}
         activeFilterCount={
           filters.areas.length + filters.categories.length +
-          filters.severities.length + (filters.search ? 1 : 0)
+          filters.severities.length + filters.searches.length
         }
         onRefresh={() => setFilters({ ...filters })}
         signalCount={signals.length}
@@ -1819,16 +1819,10 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
 
         <div className="space-y-6">
           <FilterGroup label="Search">
-            <div className="relative">
-              <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--ink-400)' }} />
-              <input
-                type="text"
-                className="input w-full pl-8"
-                placeholder="Title, location, fault #, train ID, CCIL"
-                value={draft.search}
-                onChange={(e) => setDraft({ ...draft, search: e.target.value })}
-              />
-            </div>
+            <SearchTokenInput
+              tokens={draft.searches}
+              onChange={(searches) => setDraft({ ...draft, searches })}
+            />
           </FilterGroup>
 
           <FilterGroup label="Areas">
@@ -1965,6 +1959,61 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function SearchTokenInput({ tokens, onChange }: { tokens: string[]; onChange: (t: string[]) => void }) {
+  const [input, setInput] = useState('')
+
+  function commit() {
+    const val = input.trim()
+    if (val && !tokens.includes(val)) onChange([...tokens, val])
+    setInput('')
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit() }
+    if (e.key === 'Backspace' && input === '' && tokens.length > 0) {
+      onChange(tokens.slice(0, -1))
+    }
+  }
+
+  return (
+    <div>
+      <div className="relative">
+        <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--ink-400)' }} />
+        <input
+          type="text"
+          className="input w-full pl-8"
+          placeholder={tokens.length ? 'Add another term…' : 'Title, location, fault #, train ID, CCIL'}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onKeyDown}
+          onBlur={commit}
+        />
+      </div>
+      {tokens.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {tokens.map((t) => (
+            <span
+              key={t}
+              className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-sm border border-[var(--nr-orange)] font-mono"
+              style={{ color: 'var(--nr-orange)', background: 'rgba(255,107,53,0.08)' }}
+            >
+              {t}
+              <button
+                type="button"
+                onClick={() => onChange(tokens.filter(x => x !== t))}
+                className="ml-0.5 hover:opacity-70 transition-opacity"
+                aria-label={`Remove "${t}"`}
+              >
+                <X size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
