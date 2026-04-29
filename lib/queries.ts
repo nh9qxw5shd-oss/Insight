@@ -25,7 +25,9 @@ function resolveWindow(f: AnalyticsFilters): { from: string; to: string; days: n
     const days = Math.max(1, Math.round((toMs - fromMs) / 86_400_000) + 1)
     return { from: f.startDate, to: f.endDate, days }
   }
-  const toMs   = Date.now()
+  // Logs cover the previous 24-hour period, so today never has data.
+  // End the rolling window at yesterday to avoid a trailing zero on charts.
+  const toMs   = Date.now() - 86_400_000
   const fromMs = toMs - (f.windowDays - 1) * 86_400_000
   return {
     from: new Date(fromMs).toISOString().slice(0, 10),
@@ -109,12 +111,17 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
     return q
   })
 
-  // Previous window — only for delta calc, no filters beyond date
-  const prevRows = await fetchAllRows<IncidentRow>(() =>
-    sb!.from('incidents').select(INCIDENT_COLS)
+  // Previous window — same filters as current window for accurate delta calc
+  const prevRows = await fetchAllRows<IncidentRow>(() => {
+    let q = sb!.from('incidents').select(INCIDENT_COLS)
       .gte('report_date', prev.from)
       .lte('report_date', prev.to)
-  )
+      .order('report_date', { ascending: true })
+    if (f.areas.length)      q = q.in('area', f.areas)
+    if (f.categories.length) q = q.in('category', f.categories)
+    if (f.severities.length) q = q.in('severity', f.severities)
+    return q
+  })
 
   // Reports row count (for "reports covered" KPI)
   const reportRows = await fetchAllRows<ReportRow>(() =>
@@ -123,9 +130,10 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       .lte('report_date', cur.to)
   )
 
-  // Apply free-text filter client-side
-  const filtered = f.search.trim()
-    ? curRows.filter(i => searchMatch(i, f.search))
+  // Apply free-text filter client-side (any token must match)
+  const activeSearches = f.searches.map(s => s.trim()).filter(Boolean)
+  const filtered = activeSearches.length
+    ? curRows.filter(i => activeSearches.some(q => searchMatch(i, q)))
     : curRows
 
   return {
@@ -304,10 +312,12 @@ export function deriveTrend(data: RawData): TrendPoint[] {
   }
   const pts = Array.from(byDate.values())
 
-  // Rolling 7-day average
+  // Rolling 7-day averages for all series
   for (let i = 0; i < pts.length; i++) {
     const window = pts.slice(Math.max(0, i - 6), i + 1)
-    pts[i].rolling7Avg = window.reduce((s, p) => s + p.incidents, 0) / window.length
+    pts[i].rolling7Avg       = window.reduce((s, p) => s + p.incidents,      0) / window.length
+    pts[i].rolling7DelayAvg  = window.reduce((s, p) => s + p.delayMins,      0) / window.length
+    pts[i].rolling7SafetyAvg = window.reduce((s, p) => s + p.safetyCritical, 0) / window.length
   }
 
   // Linear regression on incident counts (y = slope*x + intercept, x = day index)

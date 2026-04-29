@@ -7,7 +7,7 @@ import {
   TrendingDown, TrendingUp, Train, Wrench, X, type LucideIcon,
 } from 'lucide-react'
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
   Pie, PieChart, PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart,
   ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
 } from 'recharts'
@@ -51,17 +51,18 @@ function localISODate(): string {
 }
 
 function shiftWindow(f: AnalyticsFilters, dir: -1 | 1): AnalyticsFilters {
-  const todayStr  = localISODate()
-  const todayMs   = new Date(todayStr + 'T00:00:00Z').getTime()
-  const curEndMs  = new Date((f.endDate ?? todayStr) + 'T00:00:00Z').getTime()
+  // Logs cover the previous 24-hour period, so the effective data ceiling is yesterday.
+  const yesterdayMs = Date.now() - 86_400_000
+  const curEndMs  = f.endDate
+    ? new Date(f.endDate + 'T00:00:00Z').getTime()
+    : yesterdayMs
   const days      = f.windowDays
   const newEndMs  = curEndMs + dir * days * 86_400_000
 
-  // Clamp: don't step forward past today
-  if (newEndMs > todayMs) {
+  // Clamp: don't step forward past yesterday
+  if (newEndMs > yesterdayMs) {
     if (dir === 1) return f
-    // Defensive — going backward can't exceed today, but clamp anyway
-    const clampedMs = todayMs
+    const clampedMs = yesterdayMs
     return {
       ...f,
       startDate: new Date(clampedMs - (days - 1) * 86_400_000).toISOString().slice(0, 10),
@@ -185,11 +186,11 @@ export default function InsightDashboard() {
         onWindowChange={(d) => setFilters({ ...filters, windowDays: d, startDate: undefined, endDate: undefined })}
         onPrevWindow={() => setFilters(f => shiftWindow(f, -1))}
         onNextWindow={() => setFilters(f => shiftWindow(f, 1))}
-        isAtToday={!filters.endDate || filters.endDate >= localISODate()}
+        isAtToday={!filters.endDate || filters.endDate >= new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)}
         onOpenFilters={() => setFiltersOpen(true)}
         activeFilterCount={
           filters.areas.length + filters.categories.length +
-          filters.severities.length + (filters.search ? 1 : 0)
+          filters.severities.length + filters.searches.length
         }
         onRefresh={() => setFilters({ ...filters })}
         signalCount={signals.length}
@@ -565,6 +566,8 @@ function SafetyTab({ kpis, trend, cats, data }: any) {
               <YAxis allowDecimals={false} />
               <Tooltip content={<CustomTooltip />} />
               <Area type="monotone" dataKey="safetyCritical" stroke="#E74C3C" strokeWidth={1.5} fill="url(#safetyGrad)" />
+              <Line type="monotone" dataKey="rolling7SafetyAvg" name="7d avg" stroke="#7A8BA8" strokeWidth={1.5}
+                    strokeDasharray="4 2" dot={false} activeDot={false} connectNulls />
             </AreaChart>
           </ResponsiveContainer>
         </Card>
@@ -1041,6 +1044,12 @@ function DistributionToggle({ value, onChange }: { value: DistributionKind; onCh
   )
 }
 
+const ROLLING_KEY: Record<string, string> = {
+  incidents:     'rolling7Avg',
+  delayMins:     'rolling7DelayAvg',
+  safetyCritical: 'rolling7SafetyAvg',
+}
+
 function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick }: any) {
   const stroke = gradient === 'orange' ? '#E05206' : '#4A6FA5'
   const gradientId = `grad-${dataKey}-${gradient}`
@@ -1050,32 +1059,32 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
   }
 
   const cursorStyle = onDateClick ? 'pointer' : 'default'
-  const hasRolling = dataKey === 'incidents' && data.some((d: any) => d.rolling7Avg != null)
+  const rollingKey = ROLLING_KEY[dataKey] ?? 'rolling7Avg'
+  const hasRolling = data.some((d: any) => d[rollingKey] != null)
   const hasRegression = dataKey === 'incidents' && data.some((d: any) => d.regressionY != null)
 
-  const sharedOverlays = hasRolling || hasRegression ? (
-    <>
-      {hasRolling && (
-        <Line type="monotone" dataKey="rolling7Avg" name="7d avg" stroke="#7A8BA8" strokeWidth={1.5}
-              strokeDasharray="4 2" dot={false} activeDot={false} connectNulls />
-      )}
-      {hasRegression && (
-        <Line type="linear" dataKey="regressionY" name="Trend" stroke="#F39C12" strokeWidth={1}
-              strokeDasharray="6 3" dot={false} activeDot={false} strokeOpacity={0.7} connectNulls />
-      )}
-    </>
+  const movingAvgLine = hasRolling ? (
+    <Line type="monotone" dataKey={rollingKey} name="7d avg" stroke="#7A8BA8" strokeWidth={1.5}
+          strokeDasharray="4 2" dot={false} activeDot={false} connectNulls />
+  ) : null
+
+  const regressionLine = hasRegression ? (
+    <Line type="linear" dataKey="regressionY" name="Trend" stroke="#F39C12" strokeWidth={1}
+          strokeDasharray="6 3" dot={false} activeDot={false} strokeOpacity={0.7} connectNulls />
   ) : null
 
   if (kind === 'bar') {
     return (
       <ResponsiveContainer width="100%" height={300}>
-        <BarChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
+        <ComposedChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
           <CartesianGrid strokeDasharray="2 6" />
           <XAxis dataKey="date" tickFormatter={shortDate} />
           <YAxis />
           <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
           <Bar dataKey={dataKey} fill={stroke} radius={[2, 2, 0, 0]} />
-        </BarChart>
+          {movingAvgLine}
+          {regressionLine}
+        </ComposedChart>
       </ResponsiveContainer>
     )
   }
@@ -1089,7 +1098,8 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
           <YAxis />
           <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
           <Line type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.8} dot={false} activeDot={{ r: 4 }} />
-          {sharedOverlays}
+          {movingAvgLine}
+          {regressionLine}
         </LineChart>
       </ResponsiveContainer>
     )
@@ -1109,7 +1119,8 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
         <YAxis />
         <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
         <Area type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.5} fill={`url(#${gradientId})`} />
-        {sharedOverlays}
+        {movingAvgLine}
+        {regressionLine}
       </AreaChart>
     </ResponsiveContainer>
   )
@@ -1819,16 +1830,10 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
 
         <div className="space-y-6">
           <FilterGroup label="Search">
-            <div className="relative">
-              <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--ink-400)' }} />
-              <input
-                type="text"
-                className="input w-full pl-8"
-                placeholder="Title, location, fault #, train ID, CCIL"
-                value={draft.search}
-                onChange={(e) => setDraft({ ...draft, search: e.target.value })}
-              />
-            </div>
+            <SearchTokenInput
+              tokens={draft.searches}
+              onChange={(searches) => setDraft({ ...draft, searches })}
+            />
           </FilterGroup>
 
           <FilterGroup label="Areas">
@@ -1965,6 +1970,61 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function SearchTokenInput({ tokens, onChange }: { tokens: string[]; onChange: (t: string[]) => void }) {
+  const [input, setInput] = useState('')
+
+  function commit() {
+    const val = input.trim()
+    if (val && !tokens.includes(val)) onChange([...tokens, val])
+    setInput('')
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit() }
+    if (e.key === 'Backspace' && input === '' && tokens.length > 0) {
+      onChange(tokens.slice(0, -1))
+    }
+  }
+
+  return (
+    <div>
+      <div className="relative">
+        <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--ink-400)' }} />
+        <input
+          type="text"
+          className="input w-full pl-8"
+          placeholder={tokens.length ? 'Add another term…' : 'Title, location, fault #, train ID, CCIL'}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onKeyDown}
+          onBlur={commit}
+        />
+      </div>
+      {tokens.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {tokens.map((t) => (
+            <span
+              key={t}
+              className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-sm border border-[var(--nr-orange)] font-mono"
+              style={{ color: 'var(--nr-orange)', background: 'rgba(255,107,53,0.08)' }}
+            >
+              {t}
+              <button
+                type="button"
+                onClick={() => onChange(tokens.filter(x => x !== t))}
+                className="ml-0.5 hover:opacity-70 transition-opacity"
+                aria-label={`Remove "${t}"`}
+              >
+                <X size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
