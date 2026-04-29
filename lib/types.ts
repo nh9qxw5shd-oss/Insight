@@ -88,7 +88,8 @@ export interface AnalyticsFilters {
   areas: string[]                 // empty = all
   categories: IncidentCategory[]  // empty = all
   severities: Severity[]          // empty = all
-  searches: string[]              // free-text tokens — OR-matched across title / location / fault
+  searches: string[]              // free-text tokens matched across title / location / fault
+  searchMode: 'and' | 'or'       // 'or' = any token matches; 'and' = all tokens must match
 }
 
 export const DEFAULT_FILTERS: AnalyticsFilters = {
@@ -97,6 +98,7 @@ export const DEFAULT_FILTERS: AnalyticsFilters = {
   categories: [],
   severities: [],
   searches: [],
+  searchMode: 'or',
 }
 
 // ─── Category visual config (mirrors DLog2 master) ───────────────────────────

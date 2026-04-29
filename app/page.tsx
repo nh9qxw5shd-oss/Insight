@@ -1833,6 +1833,8 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
             <SearchTokenInput
               tokens={draft.searches}
               onChange={(searches) => setDraft({ ...draft, searches })}
+              searchMode={draft.searchMode}
+              onModeChange={(searchMode) => setDraft({ ...draft, searchMode })}
             />
           </FilterGroup>
 
@@ -1974,7 +1976,12 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
   )
 }
 
-function SearchTokenInput({ tokens, onChange }: { tokens: string[]; onChange: (t: string[]) => void }) {
+function SearchTokenInput({ tokens, onChange, searchMode, onModeChange }: {
+  tokens: string[]
+  onChange: (t: string[]) => void
+  searchMode: 'and' | 'or'
+  onModeChange: (m: 'and' | 'or') => void
+}) {
   const [input, setInput] = useState('')
 
   function commit() {
@@ -2023,6 +2030,28 @@ function SearchTokenInput({ tokens, onChange }: { tokens: string[]; onChange: (t
               </button>
             </span>
           ))}
+        </div>
+      )}
+      {tokens.length > 1 && (
+        <div className="mt-3">
+          <div className="label-micro mb-1.5">Match mode</div>
+          <div className="flex gap-1.5">
+            {(['or', 'and'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => onModeChange(mode)}
+                className="px-3 py-1 text-[10px] rounded-sm uppercase tracking-wider transition-all duration-150"
+                style={{
+                  background: searchMode === mode ? 'rgba(255,107,53,0.15)' : 'var(--bg-card)',
+                  border: `1px solid ${searchMode === mode ? 'var(--nr-orange)' : 'var(--line)'}`,
+                  color: searchMode === mode ? 'var(--nr-orange)' : 'var(--ink-400)',
+                }}
+              >
+                {mode === 'or' ? 'Or — any term matches' : 'And — all terms must match'}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
