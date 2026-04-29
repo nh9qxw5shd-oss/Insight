@@ -109,12 +109,17 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
     return q
   })
 
-  // Previous window — only for delta calc, no filters beyond date
-  const prevRows = await fetchAllRows<IncidentRow>(() =>
-    sb!.from('incidents').select(INCIDENT_COLS)
+  // Previous window — same filters as current window for accurate delta calc
+  const prevRows = await fetchAllRows<IncidentRow>(() => {
+    let q = sb!.from('incidents').select(INCIDENT_COLS)
       .gte('report_date', prev.from)
       .lte('report_date', prev.to)
-  )
+      .order('report_date', { ascending: true })
+    if (f.areas.length)      q = q.in('area', f.areas)
+    if (f.categories.length) q = q.in('category', f.categories)
+    if (f.severities.length) q = q.in('severity', f.severities)
+    return q
+  })
 
   // Reports row count (for "reports covered" KPI)
   const reportRows = await fetchAllRows<ReportRow>(() =>
