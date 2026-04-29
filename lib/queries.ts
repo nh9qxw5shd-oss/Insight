@@ -25,7 +25,9 @@ function resolveWindow(f: AnalyticsFilters): { from: string; to: string; days: n
     const days = Math.max(1, Math.round((toMs - fromMs) / 86_400_000) + 1)
     return { from: f.startDate, to: f.endDate, days }
   }
-  const toMs   = Date.now()
+  // Logs cover the previous 24-hour period, so today never has data.
+  // End the rolling window at yesterday to avoid a trailing zero on charts.
+  const toMs   = Date.now() - 86_400_000
   const fromMs = toMs - (f.windowDays - 1) * 86_400_000
   return {
     from: new Date(fromMs).toISOString().slice(0, 10),

@@ -51,17 +51,18 @@ function localISODate(): string {
 }
 
 function shiftWindow(f: AnalyticsFilters, dir: -1 | 1): AnalyticsFilters {
-  const todayStr  = localISODate()
-  const todayMs   = new Date(todayStr + 'T00:00:00Z').getTime()
-  const curEndMs  = new Date((f.endDate ?? todayStr) + 'T00:00:00Z').getTime()
+  // Logs cover the previous 24-hour period, so the effective data ceiling is yesterday.
+  const yesterdayMs = Date.now() - 86_400_000
+  const curEndMs  = f.endDate
+    ? new Date(f.endDate + 'T00:00:00Z').getTime()
+    : yesterdayMs
   const days      = f.windowDays
   const newEndMs  = curEndMs + dir * days * 86_400_000
 
-  // Clamp: don't step forward past today
-  if (newEndMs > todayMs) {
+  // Clamp: don't step forward past yesterday
+  if (newEndMs > yesterdayMs) {
     if (dir === 1) return f
-    // Defensive — going backward can't exceed today, but clamp anyway
-    const clampedMs = todayMs
+    const clampedMs = yesterdayMs
     return {
       ...f,
       startDate: new Date(clampedMs - (days - 1) * 86_400_000).toISOString().slice(0, 10),
@@ -185,7 +186,7 @@ export default function InsightDashboard() {
         onWindowChange={(d) => setFilters({ ...filters, windowDays: d, startDate: undefined, endDate: undefined })}
         onPrevWindow={() => setFilters(f => shiftWindow(f, -1))}
         onNextWindow={() => setFilters(f => shiftWindow(f, 1))}
-        isAtToday={!filters.endDate || filters.endDate >= localISODate()}
+        isAtToday={!filters.endDate || filters.endDate >= new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)}
         onOpenFilters={() => setFiltersOpen(true)}
         activeFilterCount={
           filters.areas.length + filters.categories.length +
