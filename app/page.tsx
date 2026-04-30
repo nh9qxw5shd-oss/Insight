@@ -1546,7 +1546,7 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
         <CartesianGrid strokeDasharray="2 6" />
         <XAxis dataKey="date" tickFormatter={shortDate} />
         <YAxis />
-        <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
+        <Tooltip content={<CustomTooltip footer="Click to focus this date" />} position={{ x: 65, y: 8 }} />
         {baselineBand}
         {changePointLines}
         {mainSeries}
@@ -2544,7 +2544,9 @@ function CustomTooltip({ active, payload, label, footer }: any) {
           <div className="w-2 h-2 rounded-sm" style={{ background: p.color || p.fill }} />
           <span style={{ color: 'var(--ink-300)' }}>{p.name}:</span>
           <span className="numeric-mono ml-auto" style={{ color: 'var(--ink-100)' }}>
-            {typeof p.value === 'number' ? p.value.toLocaleString() : p.value}
+            {Array.isArray(p.value)
+              ? `${Number(p.value[0]).toFixed(1)} – ${Number(p.value[1]).toFixed(1)}`
+              : typeof p.value === 'number' ? p.value.toLocaleString() : p.value}
           </span>
         </div>
       ))}
