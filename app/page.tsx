@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, Bell, ChevronDown, ChevronLeft, ChevronRight,
   Clock, Download, Filter, Layers, MapPin, RefreshCw, Route, Search,
@@ -473,7 +474,7 @@ function SignalsPanel({ signals, open, setOpen }: { signals: Signal[]; open: boo
                   <div className="mt-0.5" style={{ color: 'var(--ink-300)' }}>{sig.detail}</div>
                 </div>
                 <div className="text-right shrink-0 numeric-mono text-[10px]" style={{ color: s.dot }}>
-                  {sig.delta > 0 ? '+' : ''}{sig.delta.toFixed(1)}σ
+                  {sig.delta > 0 ? '+' : ''}{sig.delta.toFixed(1)}×
                 </div>
               </div>
             )
@@ -1095,7 +1096,16 @@ function DeltaDecompositionModal({ label, decomp, onClose }: {
     { title: 'By Time of Day', rows: decomp.byHourBand },
   ]
   const fmt = (n: number) => decomp.metric === 'delay' ? fmtMins(Math.round(n)) : Math.round(n).toLocaleString()
-  return (
+
+  // Portal the modal to <body>. The KPICard parent applies `animate-count-up`
+  // which leaves a `transform: translateY(0)` baked in via `forwards`, and any
+  // transformed ancestor establishes a containing block for fixed-positioned
+  // descendants — so the backdrop and close button were getting clipped to
+  // the card instead of overlaying the viewport, making the modal impossible
+  // to dismiss.
+  if (typeof document === 'undefined') return null
+
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
       <div className="relative w-full max-w-2xl max-h-[85vh] bg-[var(--bg-panel)] border border-[var(--line-hi)] rounded overflow-hidden flex flex-col animate-fade-up">
@@ -1126,7 +1136,8 @@ function DeltaDecompositionModal({ label, decomp, onClose }: {
           </p>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -1141,7 +1152,7 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
   return (
     <div>
       <div className="label-micro mb-2">{title}</div>
-      <div className="space-y-1.5">
+      <div className="space-y-2.5">
         {rows.map(r => {
           const positive = r.contribution >= 0
           // Same-direction contributions match the headline movement (i.e.
@@ -1150,17 +1161,26 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
           // tell at a glance which is which.
           const drives = (totalDelta >= 0) === positive
           const bar = drives ? 'var(--nr-red)' : 'var(--nr-green)'
+          const sign = positive ? '+' : ''
           return (
-            <div key={r.key} className="grid grid-cols-12 gap-3 items-center text-xs">
-              <div className="col-span-4 flex items-center gap-2 min-w-0">
-                {r.color && <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: r.color }} />}
-                <span className="truncate" style={{ color: 'var(--ink-200)' }} title={r.label}>{r.label}</span>
+            <div key={r.key} className="text-xs">
+              <div className="flex items-baseline justify-between gap-3 mb-1">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  {r.color && <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: r.color }} />}
+                  <span className="truncate" style={{ color: 'var(--ink-200)' }} title={r.label}>{r.label}</span>
+                </div>
+                <span
+                  className="numeric-mono text-[11px] shrink-0 whitespace-nowrap"
+                  style={{ color: drives ? 'var(--nr-red)' : 'var(--nr-green)' }}
+                >
+                  {sign}{fmt(r.contribution)}
+                  <span className="ml-1.5" style={{ color: 'var(--ink-400)' }}>
+                    ({sign}{r.contributionPct.toFixed(0)}%)
+                  </span>
+                </span>
               </div>
-              <div className="col-span-2 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-400)' }}>
-                {fmt(r.previous)} <span style={{ color: 'var(--ink-500)' }}>→</span> {fmt(r.current)}
-              </div>
-              <div className="col-span-4">
-                <div className="h-1.5 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden relative">
+              <div className="flex items-center gap-3">
+                <div className="h-1.5 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden relative flex-1">
                   <div
                     className="h-full rounded-sm absolute top-0"
                     style={{
@@ -1170,12 +1190,9 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
                     } as React.CSSProperties}
                   />
                 </div>
-              </div>
-              <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: drives ? 'var(--nr-red)' : 'var(--nr-green)' }}>
-                {positive ? '+' : ''}{fmt(r.contribution)}
-              </div>
-              <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-100)' }}>
-                {positive ? '+' : ''}{r.contributionPct.toFixed(0)}%
+                <span className="numeric-mono text-[10px] shrink-0 whitespace-nowrap" style={{ color: 'var(--ink-400)' }}>
+                  {fmt(r.previous)} <span style={{ color: 'var(--ink-500)' }}>→</span> {fmt(r.current)}
+                </span>
               </div>
             </div>
           )
@@ -1317,7 +1334,7 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
     <Area
       type="monotone"
       dataKey="baselineBand"
-      name="Stability ±2σ"
+      name="Expected range"
       stroke="none"
       fill="#7A8BA8"
       fillOpacity={0.08}
