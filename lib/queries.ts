@@ -5,9 +5,11 @@ import {
   AnalyticsFilters, IncidentRow, ReportRow, KPISummary, TrendPoint,
   CategoryDatum, LocationDatum, RepeatFault, RepeatAsset, InfraFailureDatum,
   DelayDensityDatum, ResponderLoad, OperatorImpact, ResponseDistribution,
-  HeatmapCell, IncidentCategory, CATEGORY_CONFIG, SAFETY_CATEGORIES,
+  HeatmapCell, IncidentCategory, CATEGORY_CONFIG, SEVERITY_CONFIG, SAFETY_CATEGORIES,
   REPEAT_ASSET_CATEGORIES, INFRA_MIX_CATEGORIES,
   Signal, SignalType, LineDatum, AttributionDatum, Chain,
+  ChangePoint, DeltaMetric, DeltaContribution, DeltaDecomposition, Severity,
+  Hypothesis, HypothesisCluster, HypothesisDimension,
 } from './types'
 
 const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
@@ -335,7 +337,415 @@ export function deriveTrend(data: RawData): TrendPoint[] {
     }
   }
 
+  // Stability band: rolling 14-day baseline (mean ± 2σ) on the incidents
+  // series. The lookback is causal (uses prior days only) so the band
+  // describes "what we'd expect today given the recent past" — days outside
+  // it are flagged anomalous and rendered with a marker on the trend chart.
+  const BASELINE_LOOKBACK = 14
+  const Z = 2
+  for (let i = 0; i < pts.length; i++) {
+    const start = Math.max(0, i - BASELINE_LOOKBACK)
+    const window = pts.slice(start, i)
+    if (window.length < 4) continue   // need a few priors before band is meaningful
+    const vals = window.map(p => p.incidents)
+    const mean = vals.reduce((s, v) => s + v, 0) / vals.length
+    const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length
+    const sigma = Math.sqrt(variance)
+    const low  = Math.max(0, mean - Z * sigma)
+    const high = mean + Z * sigma
+    pts[i].baselineMean = mean
+    pts[i].baselineLow  = low
+    pts[i].baselineHigh = high
+    pts[i].baselineBand = [low, high]
+    pts[i].isAnomalous  = pts[i].incidents > high || pts[i].incidents < low
+  }
+
   return pts
+}
+
+// ─── Change-point detection ──────────────────────────────────────────────────
+// Two-sided CUSUM scan: accumulate (xᵢ − μ̂) and reset whenever the running
+// sum dips back through zero. A change point fires when the running sum
+// exceeds k × σ̂ for an extended run — at that point we record the position
+// and start the next pass from the day after. Crude but effective for the
+// short series the dashboard runs over (7-365 days), and it produces stable
+// results without needing a stats library.
+
+function changePointsForSeries(
+  pts: TrendPoint[],
+  metric: 'incidents' | 'delayMins' | 'safetyCritical',
+  threshold = 4,             // higher = fewer / stronger change-points
+): ChangePoint[] {
+  if (pts.length < 14) return []
+  const xs = pts.map(p => p[metric])
+  const mean  = xs.reduce((s, v) => s + v, 0) / xs.length
+  const variance = xs.reduce((s, v) => s + (v - mean) ** 2, 0) / xs.length
+  const sigma = Math.sqrt(variance)
+  if (sigma === 0) return []
+
+  const k = threshold * sigma
+  const out: ChangePoint[] = []
+  let segStart = 0
+  let cumPos = 0
+  let cumNeg = 0
+  let cumPosMax = 0
+  let cumNegMax = 0
+  let cumPosMaxIdx = 0
+  let cumNegMaxIdx = 0
+
+  for (let i = 0; i < xs.length; i++) {
+    const dev = xs[i] - mean
+    cumPos = Math.max(0, cumPos + dev)
+    cumNeg = Math.min(0, cumNeg + dev)
+    if (cumPos > cumPosMax) { cumPosMax = cumPos; cumPosMaxIdx = i }
+    if (cumNeg < cumNegMax) { cumNegMax = cumNeg; cumNegMaxIdx = i }
+
+    if (cumPos > k || cumNeg < -k) {
+      const isUp = cumPos > k
+      const cpIdx = isUp ? cumPosMaxIdx : cumNegMaxIdx
+      // Only record if there's enough room either side for stable means
+      if (cpIdx - segStart >= 3 && xs.length - cpIdx - 1 >= 3) {
+        const before = xs.slice(segStart, cpIdx + 1)
+        const after  = xs.slice(cpIdx + 1, Math.min(xs.length, cpIdx + 1 + 14))
+        const beforeMean = before.reduce((s, v) => s + v, 0) / before.length
+        const afterMean  = after.reduce((s, v) => s + v, 0) / after.length
+        // Reject change-points where the actual shift in means is too small
+        // to be operationally meaningful (more than half a sigma).
+        if (Math.abs(afterMean - beforeMean) >= sigma * 0.5) {
+          out.push({
+            date: pts[cpIdx].date,
+            metric,
+            direction: isUp ? 'up' : 'down',
+            beforeMean,
+            afterMean,
+            magnitude: Math.abs(afterMean - beforeMean),
+          })
+        }
+      }
+      // Reset accumulators and segment marker
+      segStart = cpIdx + 1
+      cumPos = 0; cumNeg = 0
+      cumPosMax = 0; cumNegMax = 0
+      cumPosMaxIdx = segStart
+      cumNegMaxIdx = segStart
+    }
+  }
+  return out
+}
+
+export function deriveChangePoints(trend: TrendPoint[]): ChangePoint[] {
+  return [
+    ...changePointsForSeries(trend, 'incidents'),
+    ...changePointsForSeries(trend, 'delayMins'),
+  ].sort((a, b) => a.date.localeCompare(b.date))
+}
+
+// ─── Delta decomposition ─────────────────────────────────────────────────────
+// Given a metric (incidents / delay / safety), break the change vs the prior
+// window into per-dimension contributions: each row is "category X went from
+// 12 to 28, contributing +16 (40% of the total +40 movement)". Top of mind
+// for the "why did this change?" popover on KPI cards.
+
+const HOUR_BANDS: { label: string; from: number; to: number }[] = [
+  { label: 'Night 00–06', from: 0,  to: 6  },
+  { label: 'AM 06–12',    from: 6,  to: 12 },
+  { label: 'PM 12–18',    from: 12, to: 18 },
+  { label: 'Eve 18–24',   from: 18, to: 24 },
+]
+
+function metricValue(i: IncidentRow, m: DeltaMetric): number {
+  if (m === 'delay')   return effectiveDelay(i)
+  if (m === 'safety')  return SAFETY_CATEGORIES.includes(i.category) && !i.is_continuation ? 1 : 0
+  return i.is_continuation ? 0 : 1
+}
+
+function bandFor(hour: number | null): string | null {
+  if (hour == null) return null
+  for (const b of HOUR_BANDS) {
+    if (hour >= b.from && hour < b.to) return b.label
+  }
+  return null
+}
+
+function buildContributions<K extends string>(
+  curRows: IncidentRow[],
+  prevRows: IncidentRow[],
+  metric: DeltaMetric,
+  keyFn: (i: IncidentRow) => K | null,
+  labelFor: (k: K) => { label: string; color?: string },
+  totalDelta: number,
+  limit = 5,
+): DeltaContribution[] {
+  const acc = new Map<K, { current: number; previous: number }>()
+  for (const i of curRows) {
+    const k = keyFn(i); if (k == null) continue
+    const e = acc.get(k) ?? { current: 0, previous: 0 }
+    e.current += metricValue(i, metric)
+    acc.set(k, e)
+  }
+  for (const i of prevRows) {
+    const k = keyFn(i); if (k == null) continue
+    const e = acc.get(k) ?? { current: 0, previous: 0 }
+    e.previous += metricValue(i, metric)
+    acc.set(k, e)
+  }
+  const denom = Math.abs(totalDelta) || 1
+  const rows: DeltaContribution[] = Array.from(acc.entries()).map(([k, v]) => {
+    const meta = labelFor(k)
+    const contribution = v.current - v.previous
+    return {
+      key: String(k),
+      label: meta.label,
+      color: meta.color,
+      current: v.current,
+      previous: v.previous,
+      contribution,
+      contributionPct: (contribution / denom) * 100,
+    }
+  })
+  // Sort by absolute contribution descending, drop zero-contribution rows
+  return rows
+    .filter(r => r.contribution !== 0 || (r.current !== 0 && r.previous !== 0))
+    .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+    .slice(0, limit)
+}
+
+export function deriveDelta(data: RawData, metric: DeltaMetric): DeltaDecomposition {
+  // Apply continuation filtering for incident-count and safety metrics; for
+  // delay we *include* continuations because their delay_delta is a real
+  // contribution to the window's total delay-minutes.
+  const cur  = metric === 'delay' ? data.incidents      : data.incidents.filter(i => !i.is_continuation)
+  const prev = metric === 'delay' ? data.prevIncidents  : data.prevIncidents.filter(i => !i.is_continuation)
+
+  const currentTotal  = cur.reduce((s, i) => s + metricValue(i, metric), 0)
+  const previousTotal = prev.reduce((s, i) => s + metricValue(i, metric), 0)
+  const deltaAbs = currentTotal - previousTotal
+  const deltaPct = pctDelta(currentTotal, previousTotal)
+
+  const byCategory = buildContributions(
+    cur, prev, metric,
+    i => i.category as IncidentCategory,
+    k => ({ label: CATEGORY_CONFIG[k]?.label ?? String(k), color: CATEGORY_CONFIG[k]?.color }),
+    deltaAbs,
+  )
+
+  const byArea = buildContributions(
+    cur, prev, metric,
+    i => i.area ?? null,
+    k => ({ label: k }),
+    deltaAbs,
+  )
+
+  const bySeverity = buildContributions(
+    cur, prev, metric,
+    i => i.severity as Severity,
+    k => ({ label: k, color: SEVERITY_CONFIG[k]?.color }),
+    deltaAbs,
+  )
+
+  const byHourBand = buildContributions(
+    cur, prev, metric,
+    i => bandFor(incidentHour(i)),
+    k => ({ label: k }),
+    deltaAbs,
+  )
+
+  return {
+    metric,
+    currentTotal,
+    previousTotal,
+    deltaAbs,
+    deltaPct,
+    byCategory,
+    byArea,
+    bySeverity,
+    byHourBand,
+  }
+}
+
+// ─── Co-occurrence / candidate-explanation deriver ───────────────────────────
+// Given a set of "anomalous" incident rows and a "baseline" comparison set,
+// rank values across several dimensions by *lift* — how over-represented
+// each value is on the flagged days vs the baseline. Used to surface
+// candidate explanations whenever the system flags a level shift or
+// out-of-band day cluster. Strictly correlations, not causes.
+
+interface DimensionDef {
+  id: HypothesisDimension
+  label: string
+  keyOf: (i: IncidentRow) => string | null
+  metaOf: (k: string) => { label: string; color?: string }
+}
+
+const HYPOTHESIS_DIMS: DimensionDef[] = [
+  {
+    id: 'category',
+    label: 'Category',
+    keyOf: i => i.category,
+    metaOf: k => {
+      const cfg = CATEGORY_CONFIG[k as IncidentCategory]
+      return { label: cfg?.label ?? k, color: cfg?.color }
+    },
+  },
+  {
+    id: 'area',
+    label: 'Area',
+    keyOf: i => i.area?.trim() || null,
+    metaOf: k => ({ label: k }),
+  },
+  {
+    id: 'severity',
+    label: 'Severity',
+    keyOf: i => i.severity,
+    metaOf: k => ({ label: k, color: SEVERITY_CONFIG[k as Severity]?.color }),
+  },
+  {
+    id: 'hourBand',
+    label: 'Time of Day',
+    keyOf: i => bandFor(incidentHour(i)),
+    metaOf: k => ({ label: k }),
+  },
+  {
+    id: 'line',
+    label: 'Line',
+    keyOf: i => i.line?.trim() || null,
+    metaOf: k => ({ label: k }),
+  },
+  {
+    id: 'operator',
+    label: 'Operator',
+    keyOf: i => i.train_company?.trim().toUpperCase() || null,
+    metaOf: k => ({ label: k }),
+  },
+]
+
+// Lift threshold + min-count threshold balance signal vs noise. Lift > 1.6
+// (60% over-represented) is far enough from baseline to be operationally
+// interesting; min-count of 3 incidents prevents single-event spikes from
+// dominating with implausible "infinity" lifts.
+const LIFT_THRESHOLD = 1.6
+const MIN_ANOMALOUS_COUNT = 3
+const TOP_HYPOTHESES_PER_CLUSTER = 6
+
+function rankHypothesesForCluster(
+  anomalousRows: IncidentRow[],
+  baselineRows: IncidentRow[],
+): Hypothesis[] {
+  const aTotal = anomalousRows.length
+  const bTotal = baselineRows.length
+  if (aTotal === 0 || bTotal === 0) return []
+
+  const all: Hypothesis[] = []
+  for (const def of HYPOTHESIS_DIMS) {
+    const aCounts = new Map<string, number>()
+    const bCounts = new Map<string, number>()
+    for (const r of anomalousRows) {
+      const k = def.keyOf(r); if (k == null) continue
+      aCounts.set(k, (aCounts.get(k) ?? 0) + 1)
+    }
+    for (const r of baselineRows) {
+      const k = def.keyOf(r); if (k == null) continue
+      bCounts.set(k, (bCounts.get(k) ?? 0) + 1)
+    }
+    for (const [k, aCount] of aCounts.entries()) {
+      if (aCount < MIN_ANOMALOUS_COUNT) continue
+      const bCount = bCounts.get(k) ?? 0
+      const aShare = aCount / aTotal
+      // If a value has zero baseline incidents we treat lift as the share
+      // ratio against the smallest representable baseline (one incident in
+      // the entire baseline) — keeps the row finite and rankable while still
+      // signalling "this is brand new behaviour."
+      const bShare = bCount > 0 ? bCount / bTotal : 1 / Math.max(bTotal, 1)
+      const lift = aShare / bShare
+      if (lift < LIFT_THRESHOLD) continue
+      const meta = def.metaOf(k)
+      all.push({
+        dimension: def.id,
+        dimensionLabel: def.label,
+        key: k,
+        label: meta.label,
+        color: meta.color,
+        anomalousCount: aCount,
+        anomalousTotal: aTotal,
+        baselineCount: bCount,
+        baselineTotal: bTotal,
+        anomalousShare: aShare,
+        baselineShare: bCount > 0 ? bCount / bTotal : 0,
+        lift,
+      })
+    }
+  }
+  return all
+    .sort((a, b) => b.lift - a.lift || b.anomalousCount - a.anomalousCount)
+    .slice(0, TOP_HYPOTHESES_PER_CLUSTER)
+}
+
+function shortDateUK(iso: string): string {
+  const [y, m, d] = iso.split('-')
+  if (!y || !m || !d) return iso
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  return `${parseInt(d, 10)} ${months[parseInt(m, 10) - 1]}`
+}
+
+export function deriveHypotheses(
+  data: RawData,
+  trend: TrendPoint[],
+  changePoints: ChangePoint[],
+): HypothesisCluster[] {
+  const clusters: HypothesisCluster[] = []
+  const incidents = data.incidents.filter(i => !i.is_continuation)
+
+  // ── Cluster 1: anomalous days lumped together ─────────────────────────────
+  const anomalousDates = new Set(
+    trend.filter(p => p.isAnomalous && p.baselineHigh != null && p.incidents > (p.baselineHigh ?? 0))
+         .map(p => p.date),
+  )
+  if (anomalousDates.size >= 1) {
+    const anomalousRows = incidents.filter(i => anomalousDates.has(i.report_date))
+    // Baseline is the rest of the window — gives the cleanest contrast for
+    // "what was different about these days vs the rest of the period."
+    const baselineRows = incidents.filter(i => !anomalousDates.has(i.report_date))
+    const hypotheses = rankHypothesesForCluster(anomalousRows, baselineRows)
+    if (hypotheses.length > 0) {
+      const datesSorted = Array.from(anomalousDates).sort()
+      clusters.push({
+        id: 'anomalous-days',
+        trigger: 'anomalous-days',
+        title: `${anomalousDates.size} anomalous day${anomalousDates.size === 1 ? '' : 's'}`,
+        subtitle: `Days outside the expected range — over-represented vs the rest of the window`,
+        periodDates: datesSorted,
+        anomalousIncidentCount: anomalousRows.length,
+        baselineIncidentCount: baselineRows.length,
+        hypotheses,
+      })
+    }
+  }
+
+  // ── Cluster 2..N: one per detected change-point ───────────────────────────
+  // Only the incidents-series change-points generate clusters — comparing
+  // delay-mins shifts isn't a row-level comparison (delay is a sum, not a
+  // count), so it doesn't fit the over-representation framing.
+  const incidentCps = changePoints.filter(c => c.metric === 'incidents')
+  for (const cp of incidentCps) {
+    const afterRows  = incidents.filter(i => i.report_date >= cp.date)
+    const beforeRows = incidents.filter(i => i.report_date <  cp.date)
+    if (afterRows.length < 5 || beforeRows.length < 5) continue
+    const hypotheses = rankHypothesesForCluster(afterRows, beforeRows)
+    if (hypotheses.length === 0) continue
+    const arrow = cp.direction === 'up' ? '▲' : '▼'
+    clusters.push({
+      id: `cp-${cp.date}-${cp.direction}`,
+      trigger: 'change-point',
+      title: `After ${shortDateUK(cp.date)} level shift ${arrow}`,
+      subtitle: `${cp.direction === 'up' ? 'Step up' : 'Step down'} from ~${cp.beforeMean.toFixed(1)} to ~${cp.afterMean.toFixed(1)} incidents/day — over-represented vs the period before`,
+      periodDates: [cp.date],
+      anomalousIncidentCount: afterRows.length,
+      baselineIncidentCount: beforeRows.length,
+      hypotheses,
+    })
+  }
+
+  return clusters
 }
 
 export function deriveCategorySplit(data: RawData): CategoryDatum[] {
@@ -647,7 +1057,7 @@ export function deriveSignals(data: RawData): Signal[] {
         severity: z > 3 ? 'critical' : 'warning',
         type: 'INCIDENT_SURGE',
         title: `Incident surge on ${pt.date}`,
-        detail: `${pt.incidents} incidents — ${z.toFixed(1)}σ above the window average of ${mean.toFixed(1)}`,
+        detail: `${pt.incidents} incidents — well above the window average of ${mean.toFixed(1)} (about ${z.toFixed(1)}× the usual day-to-day variation)`,
         metric: pt.incidents,
         threshold: mean + 2 * sigma,
         delta: z,
@@ -661,7 +1071,7 @@ export function deriveSignals(data: RawData): Signal[] {
         severity: z > 3 ? 'critical' : 'warning',
         type: 'DELAY_SPIKE',
         title: `Delay spike on ${pt.date}`,
-        detail: `${Math.round(pt.delayMins)} min total delay — ${z.toFixed(1)}σ above average`,
+        detail: `${Math.round(pt.delayMins)} min total delay — well above average (about ${z.toFixed(1)}× the usual day-to-day variation)`,
         metric: pt.delayMins,
         threshold: delayMean + 2 * delaySigma,
         delta: z,
