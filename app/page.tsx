@@ -4,18 +4,19 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Activity, AlertTriangle, Bell, ChevronDown, ChevronLeft, ChevronRight,
   Clock, Download, Filter, Layers, MapPin, RefreshCw, Route, Search,
-  TrendingDown, TrendingUp, Train, Wrench, X, type LucideIcon,
+  TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
   Pie, PieChart, PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart,
-  ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
+  ReferenceDot, ReferenceLine, ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
 } from 'recharts'
 import { isSupabaseConfigured } from '@/lib/supabase'
 import {
   AnalyticsFilters, DEFAULT_FILTERS, IncidentCategory, IncidentRow, Severity,
   CATEGORY_CONFIG, SEVERITY_CONFIG, SAFETY_CATEGORIES,
-  TIME_WINDOWS, ChartKind, DistributionKind, Signal,
+  TIME_WINDOWS, ChartKind, DistributionKind, Signal, ChangePoint,
+  DeltaMetric, DeltaDecomposition,
 } from '@/lib/types'
 import {
   fetchAnalytics, deriveKPIs, deriveTrend, deriveCategorySplit,
@@ -23,8 +24,13 @@ import {
   deriveInfraFailureMix, deriveDelayDensity, deriveResponderLoad,
   deriveOperatorImpact, deriveHeatmap, deriveAreaList, deriveResponseDistribution,
   deriveSignals, deriveLineBreakdown, deriveDelayAttribution, deriveContinuationChains,
+  deriveChangePoints, deriveDelta,
   RawData,
 } from '@/lib/queries'
+import {
+  toggleCategoryFilter, toggleAreaFilter, toggleSeverityFilter,
+  removeSearchToken, clearCustomDate,
+} from '@/lib/filterActions'
 import { generateSyntheticData } from '@/lib/syntheticData'
 import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
 import { getFiltersFromUrl, setFiltersInUrl, clearFiltersFromUrl } from '@/lib/filterUrl'
@@ -153,10 +159,25 @@ export default function InsightDashboard() {
   const lines        = useMemo(() => data ? deriveLineBreakdown(data) : [], [data])
   const attribution  = useMemo(() => data ? deriveDelayAttribution(data) : [], [data])
   const chains       = useMemo(() => data ? deriveContinuationChains(data) : [], [data])
+  const changePoints = useMemo(() => deriveChangePoints(trend), [trend])
+
+  // Decomposition lookup for KPI cards — computed lazily per card via this
+  // closure rather than precomputed for every metric.
+  const decompose = useMemo(
+    () => (metric: DeltaMetric) => data ? deriveDelta(data, metric) : null,
+    [data],
+  )
 
   const handleDateClick = (date: string) => {
     setFilters(f => ({ ...f, startDate: date, endDate: date, windowDays: 1 }))
   }
+
+  // Cross-filter drill-down: chart elements push their underlying value into
+  // the corresponding filter list. Each helper toggles, so re-clicking a
+  // pinned slice removes it from the filter — same affordance both ways.
+  const handleAddCategoryFilter = (c: IncidentCategory) => setFilters(f => toggleCategoryFilter(f, c))
+  const handleAddAreaFilter     = (a: string)            => setFilters(f => toggleAreaFilter(f, a))
+  const handleAddSeverityFilter = (s: Severity)          => setFilters(f => toggleSeverityFilter(f, s))
 
   const handleSaveView = (name: string) => {
     const view = saveView(name, filters)
@@ -198,6 +219,16 @@ export default function InsightDashboard() {
         onExport={data ? () => exportCSV(data.incidents, data.windowFrom, data.windowTo) : undefined}
       />
 
+      <ActiveFilterChips
+        filters={filters}
+        onRemoveCategory={handleAddCategoryFilter}
+        onRemoveArea={handleAddAreaFilter}
+        onRemoveSeverity={handleAddSeverityFilter}
+        onRemoveSearch={(t) => setFilters(f => removeSearchToken(f, t))}
+        onClearDate={() => setFilters(f => clearCustomDate(f))}
+        onClearAll={handleResetFilters}
+      />
+
       {/* Tabs */}
       <div className="border-b border-[var(--line)] sticky top-0 z-20" style={{ background: 'rgba(7, 11, 22, 0.92)', backdropFilter: 'blur(12px)' }}>
         <div className="max-w-[1480px] mx-auto px-6 flex items-center gap-1 overflow-x-auto">
@@ -224,9 +255,9 @@ export default function InsightDashboard() {
 
         {kpis && data && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} signals={signals} signalsOpen={signalsOpen} setSignalsOpen={setSignalsOpen} />}
-            {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={data} />}
-            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} signals={signals} signalsOpen={signalsOpen} setSignalsOpen={setSignalsOpen} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
+            {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={data} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
+            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} />}
             {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={data.incidents} onDrillDown={setDrillDown} chains={chains} />}
@@ -453,7 +484,7 @@ function SignalsPanel({ signals, open, setOpen }: { signals: Signal[]; open: boo
   )
 }
 
-function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, signals, signalsOpen, setSignalsOpen }: any) {
+function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, signals, signalsOpen, setSignalsOpen, onAddCategoryFilter, decompose }: any) {
   return (
     <div className="space-y-6">
       <SignalsPanel signals={signals} open={signalsOpen} setOpen={setSignalsOpen} />
@@ -465,6 +496,8 @@ function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, d
           delta={kpis.incidentsDeltaPct}
           icon={Activity}
           deltaInverted
+          decompose={decompose}
+          metric="incidents"
         />
         <KPICard
           label="Total Delay"
@@ -474,6 +507,8 @@ function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, d
           icon={Clock}
           deltaInverted
           accent
+          decompose={decompose}
+          metric="delay"
         />
         <KPICard
           label="Safety-Critical"
@@ -482,6 +517,8 @@ function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, d
           icon={AlertTriangle}
           deltaInverted
           critical={kpis.safetyDeltaPct != null && kpis.safetyDeltaPct > 5}
+          decompose={decompose}
+          metric="safety"
         />
         <KPICard
           label="Avg Incident Duration"
@@ -506,14 +543,14 @@ function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, d
 
       {/* Trend + breakdown row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card title="Daily Activity" subtitle={`${trend.length}-day rolling window`} className="lg:col-span-2 tick-corners"
+        <Card title="Daily Activity" subtitle={`${trend.length}-day rolling window · stability band shaded`} className="lg:col-span-2 tick-corners"
               right={<ChartTypeToggle value={chart} onChange={setChart} />}>
-          <TrendChart data={trend} kind={chart} onDateClick={onDateClick} />
+          <TrendChart data={trend} kind={chart} onDateClick={onDateClick} changePoints={changePoints} showBaseline />
         </Card>
 
-        <Card title="Category Mix" subtitle={`${cats.length} categories`}
+        <Card title="Category Mix" subtitle={`${cats.length} categories · click to pin filter`}
               right={<DistributionToggle value={dist} onChange={setDist} />}>
-          <CategoryDistribution data={cats} kind={dist} />
+          <CategoryDistribution data={cats} kind={dist} onCategoryClick={onAddCategoryFilter} />
         </Card>
       </div>
 
@@ -532,7 +569,7 @@ function OverviewTab({ kpis, trend, cats, hots, repeatAssets, chart, setChart, d
 
 // ─── Safety tab ──────────────────────────────────────────────────────────────
 
-function SafetyTab({ kpis, trend, cats, data }: any) {
+function SafetyTab({ kpis, trend, cats, data, onAddCategoryFilter, decompose }: any) {
   const safetyOnly = cats.filter((c: any) => SAFETY_CATEGORIES.includes(c.category))
   const safetyCritical = data.incidents.filter((i: any) => SAFETY_CATEGORIES.includes(i.category) && !i.is_continuation)
 
@@ -546,7 +583,7 @@ function SafetyTab({ kpis, trend, cats, data }: any) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 stagger">
-        <KPICard label="Safety-Critical Events" value={kpis.safetyCriticalCount} delta={kpis.safetyDeltaPct} icon={AlertTriangle} deltaInverted critical accent />
+        <KPICard label="Safety-Critical Events" value={kpis.safetyCriticalCount} delta={kpis.safetyDeltaPct} icon={AlertTriangle} deltaInverted critical accent decompose={decompose} metric="safety" />
         <KPICard label="SPADs" value={data.incidents.filter((i: any) => i.category === 'SPAD' && !i.is_continuation).length} icon={AlertTriangle} />
         <KPICard label="Near Miss" value={data.incidents.filter((i: any) => i.category === 'NEAR_MISS' && !i.is_continuation).length} icon={AlertTriangle} />
       </div>
@@ -586,8 +623,8 @@ function SafetyTab({ kpis, trend, cats, data }: any) {
         </Card>
       </div>
 
-      <Card title="Safety Category Breakdown" subtitle="By count and total delay impact">
-        <SafetyTable rows={safetyOnly} />
+      <Card title="Safety Category Breakdown" subtitle="By count and total delay impact · click to pin filter">
+        <SafetyTable rows={safetyOnly} onCategoryClick={onAddCategoryFilter} />
       </Card>
 
       <Card title="Recent Safety-Critical Events" subtitle="Latest 10 in window">
@@ -599,11 +636,11 @@ function SafetyTab({ kpis, trend, cats, data }: any) {
 
 // ─── Performance tab ─────────────────────────────────────────────────────────
 
-function PerformanceTab({ kpis, trend, hots, resp, responderLoad, ops, attribution, chart, setChart, incidents, onDrillDown, onDateClick }: any) {
+function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, ops, attribution, chart, setChart, incidents, onDrillDown, onDateClick, decompose }: any) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 stagger">
-        <KPICard label="Total Delay (mins)" value={kpis.totalDelayMins.toLocaleString()} delta={kpis.delayDeltaPct} icon={Clock} deltaInverted accent />
+        <KPICard label="Total Delay (mins)" value={kpis.totalDelayMins.toLocaleString()} delta={kpis.delayDeltaPct} icon={Clock} deltaInverted accent decompose={decompose} metric="delay" />
         <KPICard label="Cancelled" value={kpis.totalCancelled} icon={X} />
         <KPICard label="Part Cancelled" value={kpis.totalPartCancelled} icon={X} />
         <KPICard
@@ -620,8 +657,8 @@ function PerformanceTab({ kpis, trend, hots, resp, responderLoad, ops, attributi
         />
       </div>
 
-      <Card title="Delay Minutes — Daily" subtitle="Aggregate impact" right={<ChartTypeToggle value={chart} onChange={setChart} />} className="tick-corners">
-        <TrendChart data={trend} kind={chart} dataKey="delayMins" gradient="orange" onDateClick={onDateClick} />
+      <Card title="Delay Minutes — Daily" subtitle="Aggregate impact · change-points marked" right={<ChartTypeToggle value={chart} onChange={setChart} />} className="tick-corners">
+        <TrendChart data={trend} kind={chart} dataKey="delayMins" gradient="orange" onDateClick={onDateClick} changePoints={changePoints} />
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -989,11 +1026,20 @@ function Card({ title, subtitle, children, className = '', right }: any) {
   )
 }
 
-function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, critical, accent }: any) {
+function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, critical, accent, decompose, metric }: any) {
   // delta: positive = up, negative = down. deltaInverted: up is bad (more delay = bad)
   const deltaColor = delta == null ? 'var(--ink-400)'
     : (delta > 0) === !!deltaInverted ? 'var(--nr-red)' : 'var(--nr-green)'
   const TrendIcon = delta == null ? null : delta > 0 ? TrendingUp : TrendingDown
+
+  const [open, setOpen] = useState(false)
+  const canDecompose = !!decompose && !!metric && delta != null
+  // Lazy compute the decomposition only when the popover is opened — keeps
+  // the row of KPI cards cheap to render even when none of them are clicked.
+  const decomp: DeltaDecomposition | null = useMemo(
+    () => (open && canDecompose) ? decompose(metric as DeltaMetric) : null,
+    [open, canDecompose, decompose, metric],
+  )
 
   return (
     <div className={`card p-5 animate-count-up relative overflow-hidden ${accent ? 'card-hi' : ''}`}>
@@ -1010,12 +1056,199 @@ function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, cri
       </div>
       {subValue && <div className="numeric-mono text-xs mt-1" style={{ color: 'var(--ink-400)' }}>{subValue}</div>}
       {delta != null && TrendIcon && (
-        <div className="flex items-center gap-1 mt-3 text-xs numeric-mono" style={{ color: deltaColor }}>
+        <button
+          type="button"
+          onClick={() => canDecompose && setOpen(true)}
+          disabled={!canDecompose}
+          className={`flex items-center gap-1 mt-3 text-xs numeric-mono ${canDecompose ? 'cursor-pointer hover:opacity-80' : 'cursor-default'}`}
+          style={{ color: deltaColor, background: 'transparent', border: 'none', padding: 0 }}
+          title={canDecompose ? 'Why did this change?' : undefined}
+        >
           <TrendIcon size={12} />
           <span>{delta > 0 ? '+' : ''}{delta.toFixed(1)}%</span>
           <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>vs prev window</span>
-        </div>
+          {canDecompose && <Zap size={10} style={{ color: 'var(--ink-500)' }} />}
+        </button>
       )}
+      {open && decomp && (
+        <DeltaDecompositionModal label={label} decomp={decomp} onClose={() => setOpen(false)} />
+      )}
+    </div>
+  )
+}
+
+// ─── Delta-decomposition popover ─────────────────────────────────────────────
+// Opens from a KPI's delta-pill click. Answers "why did this number change?"
+// by ranking the per-dimension contributions to the absolute movement vs the
+// previous equivalent window — top categories, areas, severities, hour-bands.
+
+function DeltaDecompositionModal({ label, decomp, onClose }: {
+  label: string
+  decomp: DeltaDecomposition
+  onClose: () => void
+}) {
+  const dirSign = decomp.deltaAbs > 0 ? '+' : ''
+  const sections: { title: string; rows: typeof decomp.byCategory }[] = [
+    { title: 'By Category', rows: decomp.byCategory },
+    { title: 'By Area',     rows: decomp.byArea },
+    { title: 'By Severity', rows: decomp.bySeverity },
+    { title: 'By Time of Day', rows: decomp.byHourBand },
+  ]
+  const fmt = (n: number) => decomp.metric === 'delay' ? fmtMins(Math.round(n)) : Math.round(n).toLocaleString()
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-2xl max-h-[85vh] bg-[var(--bg-panel)] border border-[var(--line-hi)] rounded overflow-hidden flex flex-col animate-fade-up">
+        <div className="flex items-start justify-between p-4 border-b border-[var(--line)] shrink-0">
+          <div>
+            <div className="label-micro">Why did this change?</div>
+            <h3 className="serif text-xl font-medium mt-1" style={{ color: 'var(--ink-100)' }}>{label}</h3>
+            <p className="text-xs mt-1" style={{ color: 'var(--ink-400)' }}>
+              Window: <span className="numeric-mono" style={{ color: 'var(--ink-200)' }}>{fmt(decomp.currentTotal)}</span>
+              <span className="mx-2">·</span>
+              Previous: <span className="numeric-mono" style={{ color: 'var(--ink-200)' }}>{fmt(decomp.previousTotal)}</span>
+              <span className="mx-2">·</span>
+              Change: <span className="numeric-mono" style={{ color: decomp.deltaAbs >= 0 ? 'var(--nr-red)' : 'var(--nr-green)' }}>
+                {dirSign}{fmt(decomp.deltaAbs)}{decomp.deltaPct != null ? ` (${dirSign}${decomp.deltaPct.toFixed(1)}%)` : ''}
+              </span>
+            </p>
+          </div>
+          <button onClick={onClose} className="btn !p-2 shrink-0"><X size={14} /></button>
+        </div>
+        <div className="overflow-y-auto p-4 space-y-5 flex-1">
+          {sections.map(s => (
+            <DecompositionSection key={s.title} title={s.title} rows={s.rows} fmt={fmt} totalDelta={decomp.deltaAbs} />
+          ))}
+          <p className="text-[11px] mt-2" style={{ color: 'var(--ink-500)' }}>
+            Contribution % is each row&apos;s share of the absolute change vs the prior window.
+            A positive contribution means that dimension drove the metric up; negative means it pulled it down.
+            Rows summing to under 100% reflect uncategorised or minor movements not shown.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DecompositionSection({ title, rows, fmt, totalDelta }: {
+  title: string
+  rows: DeltaDecomposition['byCategory']
+  fmt: (n: number) => string
+  totalDelta: number
+}) {
+  if (!rows.length) return null
+  const maxAbs = Math.max(...rows.map(r => Math.abs(r.contribution)), 1)
+  return (
+    <div>
+      <div className="label-micro mb-2">{title}</div>
+      <div className="space-y-1.5">
+        {rows.map(r => {
+          const positive = r.contribution >= 0
+          // Same-direction contributions match the headline movement (i.e.
+          // the dimension *drove* the change). Opposite-direction rows partly
+          // counteracted it — render in the opposing accent so reviewers can
+          // tell at a glance which is which.
+          const drives = (totalDelta >= 0) === positive
+          const bar = drives ? 'var(--nr-red)' : 'var(--nr-green)'
+          return (
+            <div key={r.key} className="grid grid-cols-12 gap-3 items-center text-xs">
+              <div className="col-span-4 flex items-center gap-2 min-w-0">
+                {r.color && <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: r.color }} />}
+                <span className="truncate" style={{ color: 'var(--ink-200)' }} title={r.label}>{r.label}</span>
+              </div>
+              <div className="col-span-2 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-400)' }}>
+                {fmt(r.previous)} <span style={{ color: 'var(--ink-500)' }}>→</span> {fmt(r.current)}
+              </div>
+              <div className="col-span-4">
+                <div className="h-1.5 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden relative">
+                  <div
+                    className="h-full rounded-sm absolute top-0"
+                    style={{
+                      width: `${(Math.abs(r.contribution) / maxAbs) * 100}%`,
+                      background: bar,
+                      [positive ? 'left' : 'right']: '0',
+                    } as React.CSSProperties}
+                  />
+                </div>
+              </div>
+              <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: drives ? 'var(--nr-red)' : 'var(--nr-green)' }}>
+                {positive ? '+' : ''}{fmt(r.contribution)}
+              </div>
+              <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-100)' }}>
+                {positive ? '+' : ''}{r.contributionPct.toFixed(0)}%
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ─── Active filter chips ─────────────────────────────────────────────────────
+// Renders a horizontal strip of removable chips for every active filter
+// dimension below the header. Drives the cross-filter drill-down loop —
+// click anything in a chart, see it land here, click the X to remove.
+
+function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onClearDate, onClearAll }: {
+  filters: AnalyticsFilters
+  onRemoveCategory: (c: IncidentCategory) => void
+  onRemoveArea: (a: string) => void
+  onRemoveSeverity: (s: Severity) => void
+  onRemoveSearch: (s: string) => void
+  onClearDate: () => void
+  onClearAll: () => void
+}) {
+  const hasCustomDate = !!filters.startDate
+  const total =
+    filters.categories.length + filters.areas.length + filters.severities.length +
+    filters.searches.length + (hasCustomDate ? 1 : 0)
+  if (total === 0) return null
+
+  const chip = (key: string, label: string, onRemove: () => void, color?: string, title?: string) => (
+    <button
+      key={key}
+      onClick={onRemove}
+      title={title ?? `Remove ${label}`}
+      className="group inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-medium transition-colors hover:bg-[var(--bg-card-hi)]"
+      style={{
+        fontFamily: 'JetBrains Mono, monospace',
+        letterSpacing: '0.06em',
+        background: color ? `${color}20` : 'var(--bg-card)',
+        border: `1px solid ${color ?? 'var(--line-hi)'}`,
+        color: color ?? 'var(--ink-200)',
+      }}
+    >
+      <span className="truncate max-w-[160px]">{label}</span>
+      <X size={10} className="opacity-60 group-hover:opacity-100" />
+    </button>
+  )
+
+  return (
+    <div className="border-b border-[var(--line)] bg-[var(--bg-panel)]/60 backdrop-blur-md">
+      <div className="max-w-[1480px] mx-auto px-6 py-2.5 flex items-center gap-2 flex-wrap">
+        <span className="label-micro shrink-0">Active filters · {total}</span>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {hasCustomDate && chip(
+            'date',
+            `${filters.startDate}${filters.endDate && filters.endDate !== filters.startDate ? ` → ${filters.endDate}` : ''}`,
+            onClearDate,
+            'var(--nr-orange)',
+            'Clear custom date range',
+          )}
+          {filters.categories.map(c => chip(
+            `cat-${c}`,
+            CATEGORY_CONFIG[c]?.short ?? c,
+            () => onRemoveCategory(c),
+            CATEGORY_CONFIG[c]?.color,
+            CATEGORY_CONFIG[c]?.label,
+          ))}
+          {filters.areas.map(a => chip(`area-${a}`, a, () => onRemoveArea(a), 'var(--nr-steel)'))}
+          {filters.severities.map(s => chip(`sev-${s}`, s, () => onRemoveSeverity(s), SEVERITY_CONFIG[s]?.color))}
+          {filters.searches.map(t => chip(`q-${t}`, `"${t}"`, () => onRemoveSearch(t), 'var(--ink-300)'))}
+        </div>
+        <button onClick={onClearAll} className="ml-auto btn !py-1 !px-2 !text-[10px] shrink-0">Clear all</button>
+      </div>
     </div>
   )
 }
@@ -1050,7 +1283,7 @@ const ROLLING_KEY: Record<string, string> = {
   safetyCritical: 'rolling7SafetyAvg',
 }
 
-function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick }: any) {
+function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick, changePoints, showBaseline }: any) {
   const stroke = gradient === 'orange' ? '#E05206' : '#4A6FA5'
   const gradientId = `grad-${dataKey}-${gradient}`
 
@@ -1062,6 +1295,10 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
   const rollingKey = ROLLING_KEY[dataKey] ?? 'rolling7Avg'
   const hasRolling = data.some((d: any) => d[rollingKey] != null)
   const hasRegression = dataKey === 'incidents' && data.some((d: any) => d.regressionY != null)
+  const hasBaseline = showBaseline && dataKey === 'incidents' && data.some((d: any) => d.baselineBand != null)
+
+  // Change-points are only rendered for the metric this chart is showing.
+  const cps: ChangePoint[] = (changePoints ?? []).filter((c: ChangePoint) => c.metric === dataKey)
 
   const movingAvgLine = hasRolling ? (
     <Line type="monotone" dataKey={rollingKey} name="7d avg" stroke="#7A8BA8" strokeWidth={1.5}
@@ -1073,41 +1310,67 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
           strokeDasharray="6 3" dot={false} activeDot={false} strokeOpacity={0.7} connectNulls />
   ) : null
 
-  if (kind === 'bar') {
-    return (
-      <ResponsiveContainer width="100%" height={300}>
-        <ComposedChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
-          <CartesianGrid strokeDasharray="2 6" />
-          <XAxis dataKey="date" tickFormatter={shortDate} />
-          <YAxis />
-          <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
-          <Bar dataKey={dataKey} fill={stroke} radius={[2, 2, 0, 0]} />
-          {movingAvgLine}
-          {regressionLine}
-        </ComposedChart>
-      </ResponsiveContainer>
-    )
-  }
+  // Stability band rendered behind the main series. Recharts renders Areas
+  // whose dataKey is a tuple [low, high] as a vertical range — perfect for
+  // a "what we'd expect" envelope around the rolling baseline.
+  const baselineBand = hasBaseline ? (
+    <Area
+      type="monotone"
+      dataKey="baselineBand"
+      name="Stability ±2σ"
+      stroke="none"
+      fill="#7A8BA8"
+      fillOpacity={0.08}
+      isAnimationActive={false}
+      connectNulls
+    />
+  ) : null
 
-  if (kind === 'line') {
-    return (
-      <ResponsiveContainer width="100%" height={300}>
-        <LineChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
-          <CartesianGrid strokeDasharray="2 6" />
-          <XAxis dataKey="date" tickFormatter={shortDate} />
-          <YAxis />
-          <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
-          <Line type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.8} dot={false} activeDot={{ r: 4 }} />
-          {movingAvgLine}
-          {regressionLine}
-        </LineChart>
-      </ResponsiveContainer>
-    )
-  }
+  // Change-point reference lines: a vertical guide on the date the level
+  // shift was detected, with a small label telling the reader the direction.
+  const changePointLines = cps.map((cp, i) => (
+    <ReferenceLine
+      key={`cp-${i}`}
+      x={cp.date}
+      stroke={cp.direction === 'up' ? '#E74C3C' : '#27AE60'}
+      strokeDasharray="3 3"
+      strokeOpacity={0.7}
+      label={{
+        value: cp.direction === 'up' ? '▲ shift' : '▼ shift',
+        position: 'insideTop',
+        fill: cp.direction === 'up' ? '#E74C3C' : '#27AE60',
+        fontSize: 9,
+        fontFamily: 'JetBrains Mono',
+        letterSpacing: '0.08em',
+      }}
+    />
+  ))
+
+  // Markers on the days flagged anomalous (outside the stability band).
+  const anomalyMarkers = hasBaseline
+    ? data.filter((d: any) => d.isAnomalous).map((d: any, i: number) => (
+        <ReferenceDot
+          key={`anom-${i}`}
+          x={d.date}
+          y={d[dataKey]}
+          r={3.5}
+          fill="#E74C3C"
+          stroke="#070B16"
+          strokeWidth={1}
+          ifOverflow="extendDomain"
+        />
+      ))
+    : null
+
+  const mainSeries = kind === 'bar'
+    ? <Bar dataKey={dataKey} fill={stroke} radius={[2, 2, 0, 0]} />
+    : kind === 'line'
+      ? <Line type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.8} dot={false} activeDot={{ r: 4 }} />
+      : <Area type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.5} fill={`url(#${gradientId})`} />
 
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <AreaChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
+      <ComposedChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%"   stopColor={stroke} stopOpacity={0.55} />
@@ -1118,25 +1381,37 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
         <XAxis dataKey="date" tickFormatter={shortDate} />
         <YAxis />
         <Tooltip content={<CustomTooltip footer="Click to focus this date" />} />
-        <Area type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.5} fill={`url(#${gradientId})`} />
+        {baselineBand}
+        {changePointLines}
+        {mainSeries}
         {movingAvgLine}
         {regressionLine}
-      </AreaChart>
+        {anomalyMarkers}
+      </ComposedChart>
     </ResponsiveContainer>
   )
 }
 
-function CategoryDistribution({ data, kind }: any) {
+function CategoryDistribution({ data, kind, onCategoryClick }: any) {
   if (!data.length) return <Empty />
+  // Recharts onClick on Pie/Bar passes the data row through `payload`. The
+  // dashboard caller wires this to toggleCategoryFilter so clicking any slice
+  // pins (or unpins) that category as a filter chip across the whole UI.
+  const onSliceClick = (entry: any) => {
+    if (!onCategoryClick) return
+    const cat = entry?.category ?? entry?.payload?.category
+    if (cat) onCategoryClick(cat)
+  }
+  const cursor = onCategoryClick ? 'pointer' : 'default'
   if (kind === 'bar') {
     return (
       <ResponsiveContainer width="100%" height={300}>
-        <BarChart data={data.slice(0, 8)} layout="vertical" margin={{ left: 0, right: 20 }}>
+        <BarChart data={data.slice(0, 8)} layout="vertical" margin={{ left: 0, right: 20 }} style={{ cursor }}>
           <CartesianGrid strokeDasharray="2 6" horizontal={false} />
           <XAxis type="number" />
           <YAxis dataKey="short" type="category" width={56} />
-          <Tooltip content={<CustomTooltip />} />
-          <Bar dataKey="count" radius={[0, 2, 2, 0]}>
+          <Tooltip content={<CustomTooltip footer={onCategoryClick ? 'Click to pin filter' : undefined} />} />
+          <Bar dataKey="count" radius={[0, 2, 2, 0]} onClick={onSliceClick}>
             {data.slice(0, 8).map((d: any, i: number) => <Cell key={i} fill={d.color} />)}
           </Bar>
         </BarChart>
@@ -1147,21 +1422,23 @@ function CategoryDistribution({ data, kind }: any) {
     return (
       <ResponsiveContainer width="100%" height={300}>
         <Treemap
-          data={data.map((d: any) => ({ name: d.short, size: d.count, fill: d.color }))}
+          data={data.map((d: any) => ({ name: d.short, size: d.count, fill: d.color, category: d.category }))}
           dataKey="size"
           stroke="#070B16"
           content={<TreemapContent />}
+          onClick={onSliceClick}
+          style={{ cursor }}
         />
       </ResponsiveContainer>
     )
   }
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <PieChart>
-        <Pie data={data} dataKey="count" nameKey="short" innerRadius={70} outerRadius={110} paddingAngle={2}>
+      <PieChart style={{ cursor }}>
+        <Pie data={data} dataKey="count" nameKey="short" innerRadius={70} outerRadius={110} paddingAngle={2} onClick={onSliceClick}>
           {data.map((d: any, i: number) => <Cell key={i} fill={d.color} />)}
         </Pie>
-        <Tooltip content={<CustomTooltip />} />
+        <Tooltip content={<CustomTooltip footer={onCategoryClick ? 'Click to pin filter' : undefined} />} />
         <Legend wrapperStyle={{ fontSize: 10, fontFamily: 'JetBrains Mono', letterSpacing: '0.05em' }} />
       </PieChart>
     </ResponsiveContainer>
@@ -1379,13 +1656,18 @@ function RepeatAssetsTable({ data, expanded, incidents, onDrillDown }: any) {
   )
 }
 
-function SafetyTable({ rows }: any) {
+function SafetyTable({ rows, onCategoryClick }: any) {
   if (!rows.length) return <Empty />
   const max = Math.max(...rows.map((r: any) => r.count), 1)
   return (
     <div className="space-y-2">
       {rows.map((r: any, i: number) => (
-        <div key={i} className="grid grid-cols-12 gap-3 items-center text-xs py-1.5 border-b border-[var(--line)] last:border-0">
+        <div
+          key={i}
+          className={`grid grid-cols-12 gap-3 items-center text-xs py-1.5 border-b border-[var(--line)] last:border-0 ${onCategoryClick ? 'cursor-pointer hover:bg-[var(--bg-card-hi)] -mx-1 px-1 rounded-sm' : ''}`}
+          onClick={() => onCategoryClick?.(r.category)}
+          title={onCategoryClick ? `Pin ${r.label} as a filter` : undefined}
+        >
           <div className="col-span-3">
             <span className="pill" style={{ background: `${r.color}1A`, color: r.color, borderColor: `${r.color}50`, border: `1px solid ${r.color}50` }}>
               {r.short}

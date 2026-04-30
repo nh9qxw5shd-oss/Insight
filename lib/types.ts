@@ -201,6 +201,51 @@ export interface TrendPoint {
   rolling7DelayAvg?: number    // 7-day rolling average of delay minutes
   rolling7SafetyAvg?: number   // 7-day rolling average of safety-critical count
   regressionY?: number         // least-squares regression value for that date index
+
+  // Stability band — rolling 14-day baseline ± 2σ on the incidents series.
+  // Days where `incidents` falls outside this band are flagged as anomalous.
+  baselineMean?: number
+  baselineLow?: number
+  baselineHigh?: number
+  baselineBand?: [number, number]   // tuple form for Recharts <Area>
+  isAnomalous?: boolean
+}
+
+// Change-point on a daily series — a level shift detected by a CUSUM pass.
+// Used to mark trend reversals and breaks from stability on the trend chart.
+export interface ChangePoint {
+  date: string
+  metric: 'incidents' | 'delayMins' | 'safetyCritical'
+  direction: 'up' | 'down'
+  beforeMean: number
+  afterMean: number
+  magnitude: number   // absolute |afterMean - beforeMean|
+}
+
+// Per-dimension contribution to a KPI's delta vs the previous window. Used by
+// the "why did this change?" popover on KPI cards.
+export type DeltaMetric = 'incidents' | 'delay' | 'safety'
+
+export interface DeltaContribution {
+  key: string                 // raw value: category code, area name, severity, hour-band label
+  label: string               // human-readable label (CategoryConfig.label etc)
+  color?: string              // optional palette colour for the row's accent bar
+  current: number
+  previous: number
+  contribution: number        // signed contribution to the total delta (current - previous)
+  contributionPct: number     // % of the total delta attributable to this row (signed)
+}
+
+export interface DeltaDecomposition {
+  metric: DeltaMetric
+  currentTotal: number
+  previousTotal: number
+  deltaAbs: number
+  deltaPct: number | null
+  byCategory: DeltaContribution[]
+  byArea: DeltaContribution[]
+  bySeverity: DeltaContribution[]
+  byHourBand: DeltaContribution[]
 }
 
 export interface ResponseDistribution {

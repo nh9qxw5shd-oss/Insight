@@ -5,9 +5,10 @@ import {
   AnalyticsFilters, IncidentRow, ReportRow, KPISummary, TrendPoint,
   CategoryDatum, LocationDatum, RepeatFault, RepeatAsset, InfraFailureDatum,
   DelayDensityDatum, ResponderLoad, OperatorImpact, ResponseDistribution,
-  HeatmapCell, IncidentCategory, CATEGORY_CONFIG, SAFETY_CATEGORIES,
+  HeatmapCell, IncidentCategory, CATEGORY_CONFIG, SEVERITY_CONFIG, SAFETY_CATEGORIES,
   REPEAT_ASSET_CATEGORIES, INFRA_MIX_CATEGORIES,
   Signal, SignalType, LineDatum, AttributionDatum, Chain,
+  ChangePoint, DeltaMetric, DeltaContribution, DeltaDecomposition, Severity,
 } from './types'
 
 const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
@@ -335,7 +336,230 @@ export function deriveTrend(data: RawData): TrendPoint[] {
     }
   }
 
+  // Stability band: rolling 14-day baseline (mean ± 2σ) on the incidents
+  // series. The lookback is causal (uses prior days only) so the band
+  // describes "what we'd expect today given the recent past" — days outside
+  // it are flagged anomalous and rendered with a marker on the trend chart.
+  const BASELINE_LOOKBACK = 14
+  const Z = 2
+  for (let i = 0; i < pts.length; i++) {
+    const start = Math.max(0, i - BASELINE_LOOKBACK)
+    const window = pts.slice(start, i)
+    if (window.length < 4) continue   // need a few priors before band is meaningful
+    const vals = window.map(p => p.incidents)
+    const mean = vals.reduce((s, v) => s + v, 0) / vals.length
+    const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length
+    const sigma = Math.sqrt(variance)
+    const low  = Math.max(0, mean - Z * sigma)
+    const high = mean + Z * sigma
+    pts[i].baselineMean = mean
+    pts[i].baselineLow  = low
+    pts[i].baselineHigh = high
+    pts[i].baselineBand = [low, high]
+    pts[i].isAnomalous  = pts[i].incidents > high || pts[i].incidents < low
+  }
+
   return pts
+}
+
+// ─── Change-point detection ──────────────────────────────────────────────────
+// Two-sided CUSUM scan: accumulate (xᵢ − μ̂) and reset whenever the running
+// sum dips back through zero. A change point fires when the running sum
+// exceeds k × σ̂ for an extended run — at that point we record the position
+// and start the next pass from the day after. Crude but effective for the
+// short series the dashboard runs over (7-365 days), and it produces stable
+// results without needing a stats library.
+
+function changePointsForSeries(
+  pts: TrendPoint[],
+  metric: 'incidents' | 'delayMins' | 'safetyCritical',
+  threshold = 4,             // higher = fewer / stronger change-points
+): ChangePoint[] {
+  if (pts.length < 14) return []
+  const xs = pts.map(p => p[metric])
+  const mean  = xs.reduce((s, v) => s + v, 0) / xs.length
+  const variance = xs.reduce((s, v) => s + (v - mean) ** 2, 0) / xs.length
+  const sigma = Math.sqrt(variance)
+  if (sigma === 0) return []
+
+  const k = threshold * sigma
+  const out: ChangePoint[] = []
+  let segStart = 0
+  let cumPos = 0
+  let cumNeg = 0
+  let cumPosMax = 0
+  let cumNegMax = 0
+  let cumPosMaxIdx = 0
+  let cumNegMaxIdx = 0
+
+  for (let i = 0; i < xs.length; i++) {
+    const dev = xs[i] - mean
+    cumPos = Math.max(0, cumPos + dev)
+    cumNeg = Math.min(0, cumNeg + dev)
+    if (cumPos > cumPosMax) { cumPosMax = cumPos; cumPosMaxIdx = i }
+    if (cumNeg < cumNegMax) { cumNegMax = cumNeg; cumNegMaxIdx = i }
+
+    if (cumPos > k || cumNeg < -k) {
+      const isUp = cumPos > k
+      const cpIdx = isUp ? cumPosMaxIdx : cumNegMaxIdx
+      // Only record if there's enough room either side for stable means
+      if (cpIdx - segStart >= 3 && xs.length - cpIdx - 1 >= 3) {
+        const before = xs.slice(segStart, cpIdx + 1)
+        const after  = xs.slice(cpIdx + 1, Math.min(xs.length, cpIdx + 1 + 14))
+        const beforeMean = before.reduce((s, v) => s + v, 0) / before.length
+        const afterMean  = after.reduce((s, v) => s + v, 0) / after.length
+        // Reject change-points where the actual shift in means is too small
+        // to be operationally meaningful (more than half a sigma).
+        if (Math.abs(afterMean - beforeMean) >= sigma * 0.5) {
+          out.push({
+            date: pts[cpIdx].date,
+            metric,
+            direction: isUp ? 'up' : 'down',
+            beforeMean,
+            afterMean,
+            magnitude: Math.abs(afterMean - beforeMean),
+          })
+        }
+      }
+      // Reset accumulators and segment marker
+      segStart = cpIdx + 1
+      cumPos = 0; cumNeg = 0
+      cumPosMax = 0; cumNegMax = 0
+      cumPosMaxIdx = segStart
+      cumNegMaxIdx = segStart
+    }
+  }
+  return out
+}
+
+export function deriveChangePoints(trend: TrendPoint[]): ChangePoint[] {
+  return [
+    ...changePointsForSeries(trend, 'incidents'),
+    ...changePointsForSeries(trend, 'delayMins'),
+  ].sort((a, b) => a.date.localeCompare(b.date))
+}
+
+// ─── Delta decomposition ─────────────────────────────────────────────────────
+// Given a metric (incidents / delay / safety), break the change vs the prior
+// window into per-dimension contributions: each row is "category X went from
+// 12 to 28, contributing +16 (40% of the total +40 movement)". Top of mind
+// for the "why did this change?" popover on KPI cards.
+
+const HOUR_BANDS: { label: string; from: number; to: number }[] = [
+  { label: 'Night 00–06', from: 0,  to: 6  },
+  { label: 'AM 06–12',    from: 6,  to: 12 },
+  { label: 'PM 12–18',    from: 12, to: 18 },
+  { label: 'Eve 18–24',   from: 18, to: 24 },
+]
+
+function metricValue(i: IncidentRow, m: DeltaMetric): number {
+  if (m === 'delay')   return effectiveDelay(i)
+  if (m === 'safety')  return SAFETY_CATEGORIES.includes(i.category) && !i.is_continuation ? 1 : 0
+  return i.is_continuation ? 0 : 1
+}
+
+function bandFor(hour: number | null): string | null {
+  if (hour == null) return null
+  for (const b of HOUR_BANDS) {
+    if (hour >= b.from && hour < b.to) return b.label
+  }
+  return null
+}
+
+function buildContributions<K extends string>(
+  curRows: IncidentRow[],
+  prevRows: IncidentRow[],
+  metric: DeltaMetric,
+  keyFn: (i: IncidentRow) => K | null,
+  labelFor: (k: K) => { label: string; color?: string },
+  totalDelta: number,
+  limit = 5,
+): DeltaContribution[] {
+  const acc = new Map<K, { current: number; previous: number }>()
+  for (const i of curRows) {
+    const k = keyFn(i); if (k == null) continue
+    const e = acc.get(k) ?? { current: 0, previous: 0 }
+    e.current += metricValue(i, metric)
+    acc.set(k, e)
+  }
+  for (const i of prevRows) {
+    const k = keyFn(i); if (k == null) continue
+    const e = acc.get(k) ?? { current: 0, previous: 0 }
+    e.previous += metricValue(i, metric)
+    acc.set(k, e)
+  }
+  const denom = Math.abs(totalDelta) || 1
+  const rows: DeltaContribution[] = Array.from(acc.entries()).map(([k, v]) => {
+    const meta = labelFor(k)
+    const contribution = v.current - v.previous
+    return {
+      key: String(k),
+      label: meta.label,
+      color: meta.color,
+      current: v.current,
+      previous: v.previous,
+      contribution,
+      contributionPct: (contribution / denom) * 100,
+    }
+  })
+  // Sort by absolute contribution descending, drop zero-contribution rows
+  return rows
+    .filter(r => r.contribution !== 0 || (r.current !== 0 && r.previous !== 0))
+    .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+    .slice(0, limit)
+}
+
+export function deriveDelta(data: RawData, metric: DeltaMetric): DeltaDecomposition {
+  // Apply continuation filtering for incident-count and safety metrics; for
+  // delay we *include* continuations because their delay_delta is a real
+  // contribution to the window's total delay-minutes.
+  const cur  = metric === 'delay' ? data.incidents      : data.incidents.filter(i => !i.is_continuation)
+  const prev = metric === 'delay' ? data.prevIncidents  : data.prevIncidents.filter(i => !i.is_continuation)
+
+  const currentTotal  = cur.reduce((s, i) => s + metricValue(i, metric), 0)
+  const previousTotal = prev.reduce((s, i) => s + metricValue(i, metric), 0)
+  const deltaAbs = currentTotal - previousTotal
+  const deltaPct = pctDelta(currentTotal, previousTotal)
+
+  const byCategory = buildContributions(
+    cur, prev, metric,
+    i => i.category as IncidentCategory,
+    k => ({ label: CATEGORY_CONFIG[k]?.label ?? String(k), color: CATEGORY_CONFIG[k]?.color }),
+    deltaAbs,
+  )
+
+  const byArea = buildContributions(
+    cur, prev, metric,
+    i => i.area ?? null,
+    k => ({ label: k }),
+    deltaAbs,
+  )
+
+  const bySeverity = buildContributions(
+    cur, prev, metric,
+    i => i.severity as Severity,
+    k => ({ label: k, color: SEVERITY_CONFIG[k]?.color }),
+    deltaAbs,
+  )
+
+  const byHourBand = buildContributions(
+    cur, prev, metric,
+    i => bandFor(incidentHour(i)),
+    k => ({ label: k }),
+    deltaAbs,
+  )
+
+  return {
+    metric,
+    currentTotal,
+    previousTotal,
+    deltaAbs,
+    deltaPct,
+    byCategory,
+    byArea,
+    bySeverity,
+    byHourBand,
+  }
 }
 
 export function deriveCategorySplit(data: RawData): CategoryDatum[] {
