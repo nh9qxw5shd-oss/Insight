@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, Bell, ChevronDown, ChevronLeft, ChevronRight,
-  Clock, Download, Filter, Layers, MapPin, RefreshCw, Route, Search,
+  Clock, Download, Filter, GitBranch, Layers, MapPin, RefreshCw, Route, Search,
   TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -39,7 +39,7 @@ import { exportCSV } from '@/lib/export'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes'
+type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -48,6 +48,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'patterns',    label: 'Patterns',    icon: Layers },
   { id: 'assets',      label: 'Assets',      icon: Wrench },
   { id: 'routes',      label: 'Routes',      icon: Route },
+  { id: 'trends',      label: 'Trends',      icon: GitBranch },
 ]
 
 // ─── Window navigation helper ────────────────────────────────────────────────
@@ -264,6 +265,7 @@ export default function InsightDashboard() {
             {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} />}
             {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={data.incidents} onDrillDown={setDrillDown} chains={chains} />}
             {tab === 'routes'      && <RoutesTab lines={lines} incidents={data.incidents} onDrillDown={setDrillDown} />}
+            {tab === 'trends'      && <TrendsTab incidents={data.incidents} windowFrom={data.windowFrom} windowDays={data.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
           </>
         )}
       </div>
@@ -1121,6 +1123,493 @@ function RoutesTab({ lines, incidents, onDrillDown }: any) {
           </table>
         </div>
       </Card>
+    </div>
+  )
+}
+
+// ─── Trend Composer ──────────────────────────────────────────────────────────
+
+const SERIES_PALETTE = [
+  '#E05206', '#4A9FE5', '#27AE60', '#9B59B6',
+  '#E74C3C', '#F39C12', '#1ABC9C', '#E91E9C',
+]
+
+interface TrendSeriesDef {
+  id: string
+  label: string
+  color: string
+  metric: 'incidents' | 'delayMins' | 'safetyCritical'
+  categories: IncidentCategory[]
+  severities: Severity[]
+  areas: string[]
+}
+
+const METRIC_OPTS: { key: TrendSeriesDef['metric']; label: string }[] = [
+  { key: 'incidents',      label: 'Incidents' },
+  { key: 'delayMins',      label: 'Delay Mins' },
+  { key: 'safetyCritical', label: 'Safety Critical' },
+]
+
+const CAT_GROUPS: { label: string; cats: IncidentCategory[] }[] = [
+  { label: 'Safety',      cats: ['FATALITY', 'PERSON_STRUCK', 'SPAD', 'TPWS', 'IRREGULAR_WORKING', 'NEAR_MISS', 'LEVEL_CROSSING', 'FIRE', 'PASSENGER_INJURY', 'HABD_WILD', 'BRIDGE_STRIKE', 'DERAILMENT'] },
+  { label: 'Asset',       cats: ['INFRASTRUCTURE', 'TRACTION_FAILURE', 'TRAIN_FAULT', 'POSSESSION'] },
+  { label: 'Performance', cats: ['STATION_OVERRUN', 'STRANDED_TRAIN'] },
+  { label: 'Other',       cats: ['CRIME', 'WEATHER', 'GENERAL'] },
+]
+
+function buildAutoLabel(draft: Omit<TrendSeriesDef, 'id'>): string {
+  const parts: string[] = []
+  if (draft.categories.length) parts.push(draft.categories.map(c => CATEGORY_CONFIG[c].short).join('+'))
+  if (draft.severities.length) parts.push(draft.severities.join('+'))
+  if (draft.areas.length) parts.push(draft.areas[0] + (draft.areas.length > 1 ? `+${draft.areas.length - 1}` : ''))
+  return parts.length ? parts.join(' · ') : (METRIC_OPTS.find(m => m.key === draft.metric)?.label ?? 'Series')
+}
+
+function buildComposerData(
+  incidents: IncidentRow[],
+  windowFrom: string,
+  windowDays: number,
+  series: TrendSeriesDef[],
+  normalise: boolean,
+): Record<string, any>[] {
+  const startMs = new Date(windowFrom + 'T00:00:00Z').getTime()
+  const dates: string[] = []
+  for (let i = 0; i < windowDays; i++) {
+    dates.push(new Date(startMs + i * 86_400_000).toISOString().slice(0, 10))
+  }
+
+  const rawMaps = new Map<string, Map<string, number>>()
+  for (const s of series) {
+    const byDate = new Map<string, number>(dates.map(d => [d, 0]))
+    const filtered = incidents.filter(inc => {
+      if (s.categories.length && !s.categories.includes(inc.category)) return false
+      if (s.severities.length && !s.severities.includes(inc.severity)) return false
+      if (s.areas.length && !s.areas.includes(inc.area ?? '')) return false
+      return true
+    })
+    for (const inc of filtered) {
+      const prev = byDate.get(inc.report_date)
+      if (prev === undefined) continue
+      if (s.metric === 'incidents' && !inc.is_continuation) {
+        byDate.set(inc.report_date, prev + 1)
+      } else if (s.metric === 'delayMins') {
+        byDate.set(inc.report_date, prev + (inc.is_continuation ? (inc.delay_delta ?? 0) : (inc.minutes_delay ?? 0)))
+      } else if (s.metric === 'safetyCritical' && !inc.is_continuation && SAFETY_CATEGORIES.includes(inc.category)) {
+        byDate.set(inc.report_date, prev + 1)
+      }
+    }
+    rawMaps.set(s.id, byDate)
+  }
+
+  const maxByS = new Map<string, number>()
+  if (normalise) {
+    for (const s of series) {
+      const vals = Array.from(rawMaps.get(s.id)!.values())
+      maxByS.set(s.id, Math.max(1, ...vals))
+    }
+  }
+
+  const rows = dates.map(d => {
+    const row: Record<string, any> = { date: d }
+    for (const s of series) {
+      const raw = rawMaps.get(s.id)!.get(d) ?? 0
+      const max = maxByS.get(s.id) ?? 1
+      row[s.id] = normalise ? +(raw / max * 100).toFixed(1) : raw
+    }
+    return row
+  })
+
+  // rolling 7-day avg overlay keys
+  for (const s of series) {
+    for (let i = 0; i < rows.length; i++) {
+      const window = rows.slice(Math.max(0, i - 6), i + 1)
+      const avg = window.reduce((sum, r) => sum + (r[s.id] ?? 0), 0) / window.length
+      rows[i][s.id + '_r7'] = +avg.toFixed(2)
+    }
+  }
+
+  return rows
+}
+
+function TrendsTooltip({ active, payload, label, series, normalise }: any) {
+  if (!active || !payload?.length) return null
+  const defs: TrendSeriesDef[] = series ?? []
+  const items = (payload as any[]).filter(p => !String(p.dataKey).endsWith('_r7'))
+  return (
+    <div className="card !bg-[var(--bg-card-hi)] !border-[var(--line-hi)] p-2.5 text-xs min-w-[160px]">
+      <div className="label-micro mb-1.5">{label}</div>
+      {items.map((p: any, i: number) => {
+        const s = defs.find(d => d.id === p.dataKey)
+        return (
+          <div key={i} className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: s?.color ?? p.color }} />
+            <span className="truncate" style={{ color: 'var(--ink-300)' }}>{s?.label ?? p.name}:</span>
+            <span className="numeric-mono ml-auto" style={{ color: 'var(--ink-100)' }}>
+              {normalise ? `${p.value}%` : (typeof p.value === 'number' ? p.value.toLocaleString() : p.value)}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function TrendsTab({ incidents, windowFrom, windowDays, areaOptions }: {
+  incidents: IncidentRow[]
+  windowFrom: string
+  windowDays: number
+  areaOptions: string[]
+}) {
+  const [series, setSeries] = useState<TrendSeriesDef[]>([{
+    id: 'default',
+    label: 'All incidents',
+    color: SERIES_PALETTE[0],
+    metric: 'incidents',
+    categories: [],
+    severities: [],
+    areas: [],
+  }])
+  const [showRolling, setShowRolling] = useState(false)
+  const [normalise, setNormalise]     = useState(false)
+  const [formOpen, setFormOpen]       = useState(false)
+  const [draft, setDraft] = useState<Omit<TrendSeriesDef, 'id'>>({
+    label: '', color: SERIES_PALETTE[1], metric: 'incidents',
+    categories: [], severities: [], areas: [],
+  })
+
+  const chartData = useMemo(
+    () => buildComposerData(incidents, windowFrom, windowDays, series, normalise),
+    [incidents, windowFrom, windowDays, series, normalise],
+  )
+
+  const crossings = useMemo(() => {
+    if (series.length < 2) return []
+    const result: { date: string; a: string; b: string }[] = []
+    for (let i = 0; i < series.length; i++) {
+      for (let j = i + 1; j < series.length; j++) {
+        const sa = series[i], sb = series[j]
+        for (let k = 1; k < chartData.length; k++) {
+          const prev = (chartData[k - 1][sa.id] ?? 0) - (chartData[k - 1][sb.id] ?? 0)
+          const curr = (chartData[k][sa.id]     ?? 0) - (chartData[k][sb.id]     ?? 0)
+          if (prev !== 0 && Math.sign(prev) !== Math.sign(curr)) {
+            result.push({ date: chartData[k].date, a: sa.label, b: sb.label })
+          }
+        }
+      }
+    }
+    return result
+  }, [chartData, series])
+
+  const usedColors = series.map(s => s.color)
+  const nextColor  = SERIES_PALETTE.find(c => !usedColors.includes(c)) ?? SERIES_PALETTE[series.length % SERIES_PALETTE.length]
+
+  const openForm = () => {
+    setDraft({ label: '', color: nextColor, metric: 'incidents', categories: [], severities: [], areas: [] })
+    setFormOpen(true)
+  }
+
+  const addSeries = () => {
+    if (series.length >= 8) return
+    const id    = `s${Date.now()}`
+    const label = draft.label.trim() || buildAutoLabel(draft)
+    setSeries(s => [...s, { ...draft, id, label }])
+    setFormOpen(false)
+  }
+
+  const toggleDraftCat = (cat: IncidentCategory) =>
+    setDraft(d => ({ ...d, categories: d.categories.includes(cat) ? d.categories.filter(c => c !== cat) : [...d.categories, cat] }))
+
+  const toggleDraftSev = (sev: Severity) =>
+    setDraft(d => ({ ...d, severities: d.severities.includes(sev) ? d.severities.filter(s => s !== sev) : [...d.severities, sev] }))
+
+  const toggleDraftArea = (area: string) =>
+    setDraft(d => ({ ...d, areas: d.areas.includes(area) ? d.areas.filter(a => a !== area) : [...d.areas, area] }))
+
+  return (
+    <div className="space-y-4">
+      {/* Header row */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold" style={{ color: 'var(--ink-100)' }}>Trend Composer</h2>
+          <p className="text-xs mt-0.5" style={{ color: 'var(--ink-400)' }}>Stack filtered series to spot where trends interact</p>
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none" style={{ color: 'var(--ink-300)' }}>
+            <input type="checkbox" checked={showRolling} onChange={e => setShowRolling(e.target.checked)} className="accent-[var(--nr-orange)]" />
+            7d avg
+          </label>
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none" style={{ color: 'var(--ink-300)' }}>
+            <input type="checkbox" checked={normalise} onChange={e => setNormalise(e.target.checked)} className="accent-[var(--nr-orange)]" />
+            Normalise
+          </label>
+          {series.length < 8 && (
+            <button
+              onClick={openForm}
+              className="btn-outline text-xs px-2.5 py-1 flex items-center gap-1.5"
+              style={{ color: 'var(--nr-orange)', borderColor: 'var(--nr-orange)' }}
+            >
+              <span style={{ fontSize: 14, lineHeight: 1 }}>+</span> Add series
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Series chips */}
+      {series.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {series.map(s => (
+            <div
+              key={s.id}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs border"
+              style={{ background: `${s.color}18`, borderColor: `${s.color}50`, color: 'var(--ink-200)' }}
+            >
+              <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: s.color }} />
+              <span>{s.label}</span>
+              <span style={{ color: `${s.color}80` }}>·</span>
+              <span style={{ color: 'var(--ink-400)' }}>{METRIC_OPTS.find(m => m.key === s.metric)?.label}</span>
+              {series.length > 1 && (
+                <button onClick={() => setSeries(prev => prev.filter(x => x.id !== s.id))} className="ml-0.5 opacity-50 hover:opacity-100">
+                  <X size={10} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Chart */}
+      <div className="card p-4">
+        {chartData.length === 0 ? <Empty /> : (
+          <ResponsiveContainer width="100%" height={380}>
+            <ComposedChart data={chartData}>
+              <CartesianGrid strokeDasharray="2 6" />
+              <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 10, fill: 'var(--ink-400)', fontFamily: 'JetBrains Mono' }} />
+              <YAxis
+                tick={{ fontSize: 10, fill: 'var(--ink-400)', fontFamily: 'JetBrains Mono' }}
+                tickFormatter={normalise ? (v: number) => `${v}%` : undefined}
+                allowDecimals={false}
+                width={40}
+              />
+              <Tooltip content={<TrendsTooltip series={series} normalise={normalise} />} position={{ x: 50, y: 8 }} />
+              <Legend
+                wrapperStyle={{ fontSize: 10, fontFamily: 'JetBrains Mono', color: 'var(--ink-400)', paddingTop: 8 }}
+                formatter={(value: string) => {
+                  const s = series.find(s => s.label === value || s.id === value)
+                  return <span style={{ color: s?.color ?? 'var(--ink-400)' }}>{value}</span>
+                }}
+              />
+              {series.flatMap(s => [
+                <Line
+                  key={s.id}
+                  type="monotone"
+                  dataKey={s.id}
+                  name={s.label}
+                  stroke={s.color}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4, fill: s.color, stroke: '#070B16', strokeWidth: 1.5 }}
+                  connectNulls
+                />,
+                ...(showRolling ? [
+                  <Line
+                    key={s.id + '_r7'}
+                    type="monotone"
+                    dataKey={s.id + '_r7'}
+                    name={s.label + ' 7d avg'}
+                    stroke={s.color}
+                    strokeWidth={1}
+                    strokeDasharray="4 2"
+                    strokeOpacity={0.45}
+                    dot={false}
+                    activeDot={false}
+                    connectNulls
+                    legendType="none"
+                  />,
+                ] : []),
+              ])}
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
+      {/* Crossings callout */}
+      {crossings.length > 0 && (
+        <div className="card p-3 space-y-1.5">
+          <div className="label-micro">Trend crossings detected</div>
+          <div className="flex flex-wrap gap-x-6 gap-y-1">
+            {crossings.slice(0, 10).map((c, i) => (
+              <div key={i} className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--ink-300)' }}>
+                <span className="numeric-mono label-micro" style={{ color: 'var(--ink-100)' }}>{shortDate(c.date)}</span>
+                <span style={{ color: 'var(--ink-500)' }}>—</span>
+                <span>{c.a}</span>
+                <span style={{ color: 'var(--ink-500)' }}>×</span>
+                <span>{c.b}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Add-series form */}
+      {formOpen && (
+        <div className="card p-4 space-y-4">
+          <div className="label-micro">New series</div>
+
+          <div>
+            <div className="text-xs mb-1" style={{ color: 'var(--ink-400)' }}>Label</div>
+            <input
+              type="text"
+              placeholder={buildAutoLabel(draft) || 'Series label…'}
+              value={draft.label}
+              onChange={e => setDraft(d => ({ ...d, label: e.target.value }))}
+              className="w-full bg-[var(--bg-card-hi)] border border-[var(--line)] rounded px-2.5 py-1.5 text-xs outline-none focus:border-[var(--nr-orange)]"
+              style={{ color: 'var(--ink-100)' }}
+            />
+          </div>
+
+          <div>
+            <div className="text-xs mb-1.5" style={{ color: 'var(--ink-400)' }}>Colour</div>
+            <div className="flex gap-1.5">
+              {SERIES_PALETTE.map(c => (
+                <button
+                  key={c}
+                  onClick={() => setDraft(d => ({ ...d, color: c }))}
+                  className="w-5 h-5 rounded-sm transition-transform"
+                  style={{
+                    background: c,
+                    transform: draft.color === c ? 'scale(1.3)' : 'scale(1)',
+                    outline: draft.color === c ? `2px solid ${c}` : 'none',
+                    outlineOffset: 2,
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs mb-1.5" style={{ color: 'var(--ink-400)' }}>Metric</div>
+            <div className="flex gap-1.5">
+              {METRIC_OPTS.map(opt => (
+                <button
+                  key={opt.key}
+                  onClick={() => setDraft(d => ({ ...d, metric: opt.key }))}
+                  className="px-2.5 py-1 text-xs rounded border transition-colors"
+                  style={{
+                    background: draft.metric === opt.key ? `${draft.color}25` : 'transparent',
+                    borderColor: draft.metric === opt.key ? draft.color : 'var(--line)',
+                    color: draft.metric === opt.key ? draft.color : 'var(--ink-400)',
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs mb-1.5" style={{ color: 'var(--ink-400)' }}>
+              Categories <span style={{ color: 'var(--ink-500)' }}>(empty = all)</span>
+            </div>
+            <div className="space-y-2">
+              {CAT_GROUPS.map(group => (
+                <div key={group.label}>
+                  <div className="label-micro mb-1">{group.label}</div>
+                  <div className="flex flex-wrap gap-1">
+                    {group.cats.map(cat => {
+                      const cfg = CATEGORY_CONFIG[cat]
+                      const on  = draft.categories.includes(cat)
+                      return (
+                        <button
+                          key={cat}
+                          onClick={() => toggleDraftCat(cat)}
+                          className="px-1.5 py-0.5 text-[10px] rounded border transition-colors"
+                          style={{
+                            background:  on ? `${cfg.color}25` : 'transparent',
+                            borderColor: on ? cfg.color : 'var(--line)',
+                            color:       on ? cfg.color : 'var(--ink-500)',
+                          }}
+                        >
+                          {cfg.short}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs mb-1.5" style={{ color: 'var(--ink-400)' }}>
+              Severities <span style={{ color: 'var(--ink-500)' }}>(empty = all)</span>
+            </div>
+            <div className="flex gap-1.5">
+              {(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as Severity[]).map(sev => {
+                const cfg = SEVERITY_CONFIG[sev]
+                const on  = draft.severities.includes(sev)
+                return (
+                  <button
+                    key={sev}
+                    onClick={() => toggleDraftSev(sev)}
+                    className="px-2 py-0.5 text-[10px] rounded border transition-colors"
+                    style={{
+                      background:  on ? `${cfg.color}25` : 'transparent',
+                      borderColor: on ? cfg.color : 'var(--line)',
+                      color:       on ? cfg.color : 'var(--ink-400)',
+                    }}
+                  >
+                    {sev}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {areaOptions.length > 0 && (
+            <div>
+              <div className="text-xs mb-1.5" style={{ color: 'var(--ink-400)' }}>
+                Areas <span style={{ color: 'var(--ink-500)' }}>(empty = all)</span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {areaOptions.map(area => {
+                  const on = draft.areas.includes(area)
+                  return (
+                    <button
+                      key={area}
+                      onClick={() => toggleDraftArea(area)}
+                      className="px-1.5 py-0.5 text-[10px] rounded border transition-colors"
+                      style={{
+                        background:  on ? `${draft.color}25` : 'transparent',
+                        borderColor: on ? draft.color : 'var(--line)',
+                        color:       on ? draft.color : 'var(--ink-500)',
+                      }}
+                    >
+                      {area}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-2 border-t border-[var(--line)]">
+            <button
+              onClick={addSeries}
+              className="px-3 py-1.5 text-xs rounded font-medium"
+              style={{ background: draft.color, color: '#fff' }}
+            >
+              Add series
+            </button>
+            <button
+              onClick={() => setFormOpen(false)}
+              className="px-3 py-1.5 text-xs rounded border border-[var(--line)]"
+              style={{ color: 'var(--ink-400)' }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
