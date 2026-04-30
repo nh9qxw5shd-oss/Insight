@@ -248,6 +248,45 @@ export interface DeltaDecomposition {
   byHourBand: DeltaContribution[]
 }
 
+// ─── Co-occurrence / candidate explanations ──────────────────────────────────
+// When a change-point fires or days fall outside the stability band, a single
+// number ("incidents up 37%") doesn't tell the user *what* moved. The
+// hypothesis panel ranks dimensions whose values are over-represented on the
+// flagged period vs an equivalent baseline — surfacing things like "POINTS
+// FAILURE was 4× more common on the spike days." Always presented as
+// correlations, never causes.
+
+export type HypothesisDimension =
+  | 'category' | 'area' | 'severity' | 'hourBand' | 'line' | 'operator'
+
+export interface Hypothesis {
+  dimension: HypothesisDimension
+  dimensionLabel: string
+  key: string                 // raw value (category code, area name, etc.)
+  label: string               // human label (CategoryConfig.label / area / band etc.)
+  color?: string              // accent for the chip
+  anomalousCount: number      // count of incidents in the flagged period
+  anomalousTotal: number      // total incidents in the flagged period
+  baselineCount: number       // count in the comparison period
+  baselineTotal: number       // total in the comparison period
+  anomalousShare: number      // anomalousCount / anomalousTotal
+  baselineShare: number       // baselineCount / baselineTotal
+  lift: number                // anomalousShare / baselineShare (>1 = over-represented)
+}
+
+export type HypothesisTrigger = 'anomalous-days' | 'change-point'
+
+export interface HypothesisCluster {
+  id: string
+  trigger: HypothesisTrigger
+  title: string               // "5 anomalous days" / "After 14 Apr level shift (▲)"
+  subtitle: string            // explanation of the comparison being made
+  periodDates: string[]       // dates included in the flagged period
+  anomalousIncidentCount: number
+  baselineIncidentCount: number
+  hypotheses: Hypothesis[]
+}
+
 export interface ResponseDistribution {
   toAdvised:  { raw: number[]; p50: number | null; p95: number | null }
   toResponse: { raw: number[]; p50: number | null; p95: number | null }

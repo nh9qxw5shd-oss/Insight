@@ -9,6 +9,7 @@ import {
   REPEAT_ASSET_CATEGORIES, INFRA_MIX_CATEGORIES,
   Signal, SignalType, LineDatum, AttributionDatum, Chain,
   ChangePoint, DeltaMetric, DeltaContribution, DeltaDecomposition, Severity,
+  Hypothesis, HypothesisCluster, HypothesisDimension,
 } from './types'
 
 const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
@@ -560,6 +561,191 @@ export function deriveDelta(data: RawData, metric: DeltaMetric): DeltaDecomposit
     bySeverity,
     byHourBand,
   }
+}
+
+// ─── Co-occurrence / candidate-explanation deriver ───────────────────────────
+// Given a set of "anomalous" incident rows and a "baseline" comparison set,
+// rank values across several dimensions by *lift* — how over-represented
+// each value is on the flagged days vs the baseline. Used to surface
+// candidate explanations whenever the system flags a level shift or
+// out-of-band day cluster. Strictly correlations, not causes.
+
+interface DimensionDef {
+  id: HypothesisDimension
+  label: string
+  keyOf: (i: IncidentRow) => string | null
+  metaOf: (k: string) => { label: string; color?: string }
+}
+
+const HYPOTHESIS_DIMS: DimensionDef[] = [
+  {
+    id: 'category',
+    label: 'Category',
+    keyOf: i => i.category,
+    metaOf: k => {
+      const cfg = CATEGORY_CONFIG[k as IncidentCategory]
+      return { label: cfg?.label ?? k, color: cfg?.color }
+    },
+  },
+  {
+    id: 'area',
+    label: 'Area',
+    keyOf: i => i.area?.trim() || null,
+    metaOf: k => ({ label: k }),
+  },
+  {
+    id: 'severity',
+    label: 'Severity',
+    keyOf: i => i.severity,
+    metaOf: k => ({ label: k, color: SEVERITY_CONFIG[k as Severity]?.color }),
+  },
+  {
+    id: 'hourBand',
+    label: 'Time of Day',
+    keyOf: i => bandFor(incidentHour(i)),
+    metaOf: k => ({ label: k }),
+  },
+  {
+    id: 'line',
+    label: 'Line',
+    keyOf: i => i.line?.trim() || null,
+    metaOf: k => ({ label: k }),
+  },
+  {
+    id: 'operator',
+    label: 'Operator',
+    keyOf: i => i.train_company?.trim().toUpperCase() || null,
+    metaOf: k => ({ label: k }),
+  },
+]
+
+// Lift threshold + min-count threshold balance signal vs noise. Lift > 1.6
+// (60% over-represented) is far enough from baseline to be operationally
+// interesting; min-count of 3 incidents prevents single-event spikes from
+// dominating with implausible "infinity" lifts.
+const LIFT_THRESHOLD = 1.6
+const MIN_ANOMALOUS_COUNT = 3
+const TOP_HYPOTHESES_PER_CLUSTER = 6
+
+function rankHypothesesForCluster(
+  anomalousRows: IncidentRow[],
+  baselineRows: IncidentRow[],
+): Hypothesis[] {
+  const aTotal = anomalousRows.length
+  const bTotal = baselineRows.length
+  if (aTotal === 0 || bTotal === 0) return []
+
+  const all: Hypothesis[] = []
+  for (const def of HYPOTHESIS_DIMS) {
+    const aCounts = new Map<string, number>()
+    const bCounts = new Map<string, number>()
+    for (const r of anomalousRows) {
+      const k = def.keyOf(r); if (k == null) continue
+      aCounts.set(k, (aCounts.get(k) ?? 0) + 1)
+    }
+    for (const r of baselineRows) {
+      const k = def.keyOf(r); if (k == null) continue
+      bCounts.set(k, (bCounts.get(k) ?? 0) + 1)
+    }
+    for (const [k, aCount] of aCounts.entries()) {
+      if (aCount < MIN_ANOMALOUS_COUNT) continue
+      const bCount = bCounts.get(k) ?? 0
+      const aShare = aCount / aTotal
+      // If a value has zero baseline incidents we treat lift as the share
+      // ratio against the smallest representable baseline (one incident in
+      // the entire baseline) — keeps the row finite and rankable while still
+      // signalling "this is brand new behaviour."
+      const bShare = bCount > 0 ? bCount / bTotal : 1 / Math.max(bTotal, 1)
+      const lift = aShare / bShare
+      if (lift < LIFT_THRESHOLD) continue
+      const meta = def.metaOf(k)
+      all.push({
+        dimension: def.id,
+        dimensionLabel: def.label,
+        key: k,
+        label: meta.label,
+        color: meta.color,
+        anomalousCount: aCount,
+        anomalousTotal: aTotal,
+        baselineCount: bCount,
+        baselineTotal: bTotal,
+        anomalousShare: aShare,
+        baselineShare: bCount > 0 ? bCount / bTotal : 0,
+        lift,
+      })
+    }
+  }
+  return all
+    .sort((a, b) => b.lift - a.lift || b.anomalousCount - a.anomalousCount)
+    .slice(0, TOP_HYPOTHESES_PER_CLUSTER)
+}
+
+function shortDateUK(iso: string): string {
+  const [y, m, d] = iso.split('-')
+  if (!y || !m || !d) return iso
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  return `${parseInt(d, 10)} ${months[parseInt(m, 10) - 1]}`
+}
+
+export function deriveHypotheses(
+  data: RawData,
+  trend: TrendPoint[],
+  changePoints: ChangePoint[],
+): HypothesisCluster[] {
+  const clusters: HypothesisCluster[] = []
+  const incidents = data.incidents.filter(i => !i.is_continuation)
+
+  // ── Cluster 1: anomalous days lumped together ─────────────────────────────
+  const anomalousDates = new Set(
+    trend.filter(p => p.isAnomalous && p.baselineHigh != null && p.incidents > (p.baselineHigh ?? 0))
+         .map(p => p.date),
+  )
+  if (anomalousDates.size >= 1) {
+    const anomalousRows = incidents.filter(i => anomalousDates.has(i.report_date))
+    // Baseline is the rest of the window — gives the cleanest contrast for
+    // "what was different about these days vs the rest of the period."
+    const baselineRows = incidents.filter(i => !anomalousDates.has(i.report_date))
+    const hypotheses = rankHypothesesForCluster(anomalousRows, baselineRows)
+    if (hypotheses.length > 0) {
+      const datesSorted = Array.from(anomalousDates).sort()
+      clusters.push({
+        id: 'anomalous-days',
+        trigger: 'anomalous-days',
+        title: `${anomalousDates.size} anomalous day${anomalousDates.size === 1 ? '' : 's'}`,
+        subtitle: `Days outside the expected range — over-represented vs the rest of the window`,
+        periodDates: datesSorted,
+        anomalousIncidentCount: anomalousRows.length,
+        baselineIncidentCount: baselineRows.length,
+        hypotheses,
+      })
+    }
+  }
+
+  // ── Cluster 2..N: one per detected change-point ───────────────────────────
+  // Only the incidents-series change-points generate clusters — comparing
+  // delay-mins shifts isn't a row-level comparison (delay is a sum, not a
+  // count), so it doesn't fit the over-representation framing.
+  const incidentCps = changePoints.filter(c => c.metric === 'incidents')
+  for (const cp of incidentCps) {
+    const afterRows  = incidents.filter(i => i.report_date >= cp.date)
+    const beforeRows = incidents.filter(i => i.report_date <  cp.date)
+    if (afterRows.length < 5 || beforeRows.length < 5) continue
+    const hypotheses = rankHypothesesForCluster(afterRows, beforeRows)
+    if (hypotheses.length === 0) continue
+    const arrow = cp.direction === 'up' ? '▲' : '▼'
+    clusters.push({
+      id: `cp-${cp.date}-${cp.direction}`,
+      trigger: 'change-point',
+      title: `After ${shortDateUK(cp.date)} level shift ${arrow}`,
+      subtitle: `${cp.direction === 'up' ? 'Step up' : 'Step down'} from ~${cp.beforeMean.toFixed(1)} to ~${cp.afterMean.toFixed(1)} incidents/day — over-represented vs the period before`,
+      periodDates: [cp.date],
+      anomalousIncidentCount: afterRows.length,
+      baselineIncidentCount: beforeRows.length,
+      hypotheses,
+    })
+  }
+
+  return clusters
 }
 
 export function deriveCategorySplit(data: RawData): CategoryDatum[] {

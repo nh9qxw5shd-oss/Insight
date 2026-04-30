@@ -17,7 +17,7 @@ import {
   AnalyticsFilters, DEFAULT_FILTERS, IncidentCategory, IncidentRow, Severity,
   CATEGORY_CONFIG, SEVERITY_CONFIG, SAFETY_CATEGORIES,
   TIME_WINDOWS, ChartKind, DistributionKind, Signal, ChangePoint,
-  DeltaMetric, DeltaDecomposition,
+  DeltaMetric, DeltaDecomposition, HypothesisCluster, Hypothesis,
 } from '@/lib/types'
 import {
   fetchAnalytics, deriveKPIs, deriveTrend, deriveCategorySplit,
@@ -25,7 +25,7 @@ import {
   deriveInfraFailureMix, deriveDelayDensity, deriveResponderLoad,
   deriveOperatorImpact, deriveHeatmap, deriveAreaList, deriveResponseDistribution,
   deriveSignals, deriveLineBreakdown, deriveDelayAttribution, deriveContinuationChains,
-  deriveChangePoints, deriveDelta,
+  deriveChangePoints, deriveDelta, deriveHypotheses,
   RawData,
 } from '@/lib/queries'
 import {
@@ -161,6 +161,7 @@ export default function InsightDashboard() {
   const attribution  = useMemo(() => data ? deriveDelayAttribution(data) : [], [data])
   const chains       = useMemo(() => data ? deriveContinuationChains(data) : [], [data])
   const changePoints = useMemo(() => deriveChangePoints(trend), [trend])
+  const hypotheses   = useMemo(() => data ? deriveHypotheses(data, trend, changePoints) : [], [data, trend, changePoints])
 
   // Decomposition lookup for KPI cards — computed lazily per card via this
   // closure rather than precomputed for every metric.
@@ -256,7 +257,7 @@ export default function InsightDashboard() {
 
         {kpis && data && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} signals={signals} signalsOpen={signalsOpen} setSignalsOpen={setSignalsOpen} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} signals={signals} signalsOpen={signalsOpen} setSignalsOpen={setSignalsOpen} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} hypotheses={hypotheses} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={data} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
             {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={data.incidents} onDrillDown={setDrillDown} />}
@@ -485,10 +486,158 @@ function SignalsPanel({ signals, open, setOpen }: { signals: Signal[]; open: boo
   )
 }
 
-function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, signals, signalsOpen, setSignalsOpen, onAddCategoryFilter, decompose }: any) {
+// ─── Hypothesis panel ────────────────────────────────────────────────────────
+// "What stood out" — for any anomalous-day cluster or detected change-point,
+// rank dimensions over-represented on the flagged period vs the comparison
+// baseline. Dimensions that map to existing filters (category/area/severity)
+// are clickable to pin as a filter chip; the rest are informational. Always
+// labelled as correlations, not causes.
+
+function HypothesisPanel({
+  clusters, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter,
+}: {
+  clusters: HypothesisCluster[]
+  onAddCategoryFilter: (c: IncidentCategory) => void
+  onAddAreaFilter: (a: string) => void
+  onAddSeverityFilter: (s: Severity) => void
+}) {
+  const [open, setOpen] = useState(true)
+  if (!clusters.length) return null
+  const totalHypotheses = clusters.reduce((s, c) => s + c.hypotheses.length, 0)
+
+  const onChipClick = (h: Hypothesis) => {
+    if (h.dimension === 'category')      onAddCategoryFilter(h.key as IncidentCategory)
+    else if (h.dimension === 'area')     onAddAreaFilter(h.key)
+    else if (h.dimension === 'severity') onAddSeverityFilter(h.key as Severity)
+    // hourBand / line / operator are display-only for now
+  }
+
+  const isFilterable = (h: Hypothesis) =>
+    h.dimension === 'category' || h.dimension === 'area' || h.dimension === 'severity'
+
+  return (
+    <div className="card animate-fade-up" style={{ borderColor: 'var(--line-hi)', overflow: 'hidden' }}>
+      <button
+        className="w-full flex items-center justify-between px-5 py-4"
+        onClick={() => setOpen(!open)}
+      >
+        <div className="flex items-center gap-3">
+          <Zap size={14} style={{ color: 'var(--nr-orange)' }} />
+          <span className="label-micro text-[11px]" style={{ color: 'var(--nr-orange)' }}>
+            What stood out · {totalHypotheses} candidate{totalHypotheses !== 1 ? 's' : ''}
+          </span>
+          <span className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>
+            {clusters.length} cluster{clusters.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+        <ChevronDown size={14} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', color: 'var(--ink-400)' }} />
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5 border-t border-[var(--line)]">
+          <div className="space-y-5 mt-4">
+            {clusters.map(cluster => (
+              <HypothesisClusterBlock
+                key={cluster.id}
+                cluster={cluster}
+                onChipClick={onChipClick}
+                isFilterable={isFilterable}
+              />
+            ))}
+          </div>
+          <p className="text-[11px] mt-4 pt-3 border-t border-[var(--line)]" style={{ color: 'var(--ink-500)' }}>
+            These are correlations, not causes — values listed here were over-represented
+            on the flagged period compared with the baseline. Investigate before acting.
+            Click any category, area, or severity chip to pin it as a filter and explore further.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function HypothesisClusterBlock({ cluster, onChipClick, isFilterable }: {
+  cluster: HypothesisCluster
+  onChipClick: (h: Hypothesis) => void
+  isFilterable: (h: Hypothesis) => boolean
+}) {
+  const maxLift = Math.max(...cluster.hypotheses.map(h => h.lift), 1)
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2 mb-1.5">
+        <h4 className="text-sm font-medium" style={{ color: 'var(--ink-100)' }}>{cluster.title}</h4>
+        <span className="numeric-mono text-[9px] shrink-0" style={{ color: 'var(--ink-500)' }}>
+          {cluster.anomalousIncidentCount} flagged · {cluster.baselineIncidentCount} baseline
+        </span>
+      </div>
+      <p className="text-[11px] mb-3" style={{ color: 'var(--ink-400)' }}>{cluster.subtitle}</p>
+      <div className="space-y-1.5">
+        {cluster.hypotheses.map(h => (
+          <HypothesisRow
+            key={`${h.dimension}-${h.key}`}
+            h={h}
+            maxLift={maxLift}
+            onClick={isFilterable(h) ? () => onChipClick(h) : undefined}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function HypothesisRow({ h, maxLift, onClick }: {
+  h: Hypothesis
+  maxLift: number
+  onClick?: () => void
+}) {
+  const accent = h.color ?? 'var(--nr-orange)'
+  const liftPct = Math.min(100, (h.lift / maxLift) * 100)
+  return (
+    <div className="text-xs">
+      <div className="flex items-center gap-3 mb-1">
+        <span className="label-micro text-[9px] shrink-0 w-16 truncate" title={h.dimensionLabel}>
+          {h.dimensionLabel}
+        </span>
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={!onClick}
+          className={`pill text-[10px] shrink-0 max-w-[200px] truncate ${onClick ? 'cursor-pointer hover:opacity-80' : 'cursor-default'}`}
+          style={{
+            background: `${accent}1A`,
+            color: accent,
+            border: `1px solid ${accent}50`,
+          }}
+          title={onClick ? `Pin "${h.label}" as a filter` : h.label}
+        >
+          <span className="truncate">{h.label}</span>
+        </button>
+        <span className="numeric-mono text-[10px] shrink-0" style={{ color: 'var(--ink-100)' }}>
+          {h.lift.toFixed(1)}× over-represented
+        </span>
+        <span className="numeric-mono text-[10px] shrink-0 ml-auto" style={{ color: 'var(--ink-400)' }}>
+          {h.anomalousCount}/{h.anomalousTotal}
+          <span className="mx-1" style={{ color: 'var(--ink-500)' }}>vs</span>
+          {h.baselineCount}/{h.baselineTotal}
+        </span>
+      </div>
+      <div className="h-1.5 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden ml-[76px]">
+        <div className="h-full rounded-sm" style={{ width: `${liftPct}%`, background: accent }} />
+      </div>
+    </div>
+  )
+}
+
+function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, signals, signalsOpen, setSignalsOpen, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, hypotheses }: any) {
   return (
     <div className="space-y-6">
       <SignalsPanel signals={signals} open={signalsOpen} setOpen={setSignalsOpen} />
+      <HypothesisPanel
+        clusters={hypotheses}
+        onAddCategoryFilter={onAddCategoryFilter}
+        onAddAreaFilter={onAddAreaFilter}
+        onAddSeverityFilter={onAddSeverityFilter}
+      />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 stagger">
         <KPICard
