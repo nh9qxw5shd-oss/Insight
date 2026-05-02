@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Activity, AlertTriangle, Bell, ChevronDown, ChevronLeft, ChevronRight,
+  Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
   Clock, Download, Filter, GitBranch, Layers, MapPin, RefreshCw, Route, Search,
   TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
@@ -39,7 +39,7 @@ import { exportCSV } from '@/lib/export'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends'
+type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'analytics'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -49,6 +49,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'assets',      label: 'Assets',      icon: Wrench },
   { id: 'routes',      label: 'Routes',      icon: Route },
   { id: 'trends',      label: 'Trends',      icon: GitBranch },
+  { id: 'analytics',   label: 'Analytics',   icon: BarChart2 },
 ]
 
 // ─── Window navigation helper ────────────────────────────────────────────────
@@ -266,6 +267,7 @@ export default function InsightDashboard() {
             {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={data.incidents} onDrillDown={setDrillDown} chains={chains} />}
             {tab === 'routes'      && <RoutesTab lines={lines} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'trends'      && <TrendsTab incidents={data.incidents} windowFrom={data.windowFrom} windowDays={data.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
+            {tab === 'analytics'   && <AnalyticsTab incidents={data.incidents} />}
           </>
         )}
       </div>
@@ -3095,6 +3097,342 @@ function fmtMins(m: number): string {
   const d = Math.floor(h / 24)
   const hr = h % 24
   return hr ? `${d}d ${hr}h` : `${d}d`
+}
+
+// ─── Analytics Tab ───────────────────────────────────────────────────────────
+// Pick a location + incident type combination to see average response metrics
+// (time to arrive, time to restore) and the matched incident list.
+
+function AnalyticsTab({ incidents }: { incidents: IncidentRow[] }) {
+  const [selectedLocation, setSelectedLocation] = useState<string | null>(null)
+  const [selectedType, setSelectedType]         = useState<string | null>(null)
+  const [locationSearch, setLocationSearch]     = useState('')
+  const [typeSearch, setTypeSearch]             = useState('')
+
+  // Derive sorted unique locations
+  const locations = useMemo(() => {
+    const seen = new Set<string>()
+    for (const inc of incidents) {
+      if (inc.location) seen.add(inc.location)
+    }
+    return [...seen].sort((a, b) => a.localeCompare(b))
+  }, [incidents])
+
+  // Derive sorted unique incident types (label first, fall back to category label)
+  const incidentTypes = useMemo(() => {
+    const seen = new Set<string>()
+    for (const inc of incidents) {
+      const label = inc.incident_type_label ?? CATEGORY_CONFIG[inc.category]?.label ?? inc.category
+      seen.add(label)
+    }
+    return [...seen].sort((a, b) => a.localeCompare(b))
+  }, [incidents])
+
+  // Matched incidents for the selected combination
+  const matchedIncidents = useMemo(() => {
+    if (!selectedLocation && !selectedType) return []
+    return incidents.filter(inc => {
+      const typeLabel = inc.incident_type_label ?? CATEGORY_CONFIG[inc.category]?.label ?? inc.category
+      const locMatch  = !selectedLocation || inc.location === selectedLocation
+      const typeMatch = !selectedType     || typeLabel === selectedType
+      return locMatch && typeMatch && !inc.is_continuation
+    }).sort((a, b) => b.report_date.localeCompare(a.report_date))
+  }, [incidents, selectedLocation, selectedType])
+
+  // Compute averages only over rows that have the timing fields populated
+  const stats = useMemo(() => {
+    const withArrival  = matchedIncidents.filter(i => i.mins_to_arrival != null)
+    const withDuration = matchedIncidents.filter(i => i.incident_duration != null)
+    const avgArrival   = withArrival.length
+      ? Math.round(withArrival.reduce((s, i) => s + i.mins_to_arrival!, 0) / withArrival.length)
+      : null
+    const avgDuration  = withDuration.length
+      ? Math.round(withDuration.reduce((s, i) => s + i.incident_duration!, 0) / withDuration.length)
+      : null
+    return { avgArrival, avgDuration, arrivalN: withArrival.length, durationN: withDuration.length }
+  }, [matchedIncidents])
+
+  const filteredLocations = locationSearch
+    ? locations.filter(l => l.toLowerCase().includes(locationSearch.toLowerCase()))
+    : locations
+
+  const filteredTypes = typeSearch
+    ? incidentTypes.filter(t => t.toLowerCase().includes(typeSearch.toLowerCase()))
+    : incidentTypes
+
+  const hasSelection = selectedLocation || selectedType
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-base font-semibold" style={{ color: 'var(--ink-100)' }}>Response Analytics</h2>
+        <p className="text-xs mt-0.5" style={{ color: 'var(--ink-400)' }}>
+          Select a location and incident type to compare average arrival and resolution times
+        </p>
+      </div>
+
+      {/* Pickers */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Location picker */}
+        <div className="card p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="label-micro">Location</div>
+            {selectedLocation && (
+              <button
+                onClick={() => setSelectedLocation(null)}
+                className="flex items-center gap-1 text-[10px] hover:opacity-70 transition-opacity"
+                style={{ color: 'var(--ink-400)' }}
+              >
+                <X size={10} /> Clear
+              </button>
+            )}
+          </div>
+          {selectedLocation && (
+            <div
+              className="px-2.5 py-1.5 rounded text-xs border truncate"
+              style={{ background: 'rgba(224,82,6,0.12)', borderColor: 'var(--nr-orange)', color: 'var(--nr-orange)' }}
+            >
+              <MapPin size={10} className="inline mr-1 shrink-0" />
+              {selectedLocation}
+            </div>
+          )}
+          <div className="relative">
+            <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--ink-500)' }} />
+            <input
+              type="text"
+              placeholder="Filter locations…"
+              value={locationSearch}
+              onChange={e => setLocationSearch(e.target.value)}
+              className="w-full pl-7 pr-2 py-1.5 text-xs rounded border outline-none bg-[var(--bg-card-hi)] focus:border-[var(--nr-orange)] transition-colors"
+              style={{ borderColor: 'var(--line)', color: 'var(--ink-200)' }}
+            />
+          </div>
+          <div className="overflow-y-auto max-h-56 space-y-0.5">
+            {filteredLocations.length === 0 && (
+              <div className="text-xs py-4 text-center" style={{ color: 'var(--ink-500)' }}>No locations match</div>
+            )}
+            {filteredLocations.map(loc => (
+              <button
+                key={loc}
+                onClick={() => setSelectedLocation(loc === selectedLocation ? null : loc)}
+                className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-colors truncate"
+                style={{
+                  background: loc === selectedLocation ? 'rgba(224,82,6,0.15)' : 'transparent',
+                  color: loc === selectedLocation ? 'var(--nr-orange)' : 'var(--ink-300)',
+                  border: `1px solid ${loc === selectedLocation ? 'rgba(224,82,6,0.4)' : 'transparent'}`,
+                }}
+                title={loc}
+              >
+                {loc}
+              </button>
+            ))}
+          </div>
+          <div className="label-micro pt-1 border-t border-[var(--line)]" style={{ color: 'var(--ink-500)' }}>
+            {locations.length} recorded location{locations.length !== 1 ? 's' : ''} in window
+          </div>
+        </div>
+
+        {/* Incident type picker */}
+        <div className="card p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="label-micro">Incident Type</div>
+            {selectedType && (
+              <button
+                onClick={() => setSelectedType(null)}
+                className="flex items-center gap-1 text-[10px] hover:opacity-70 transition-opacity"
+                style={{ color: 'var(--ink-400)' }}
+              >
+                <X size={10} /> Clear
+              </button>
+            )}
+          </div>
+          {selectedType && (
+            <div
+              className="px-2.5 py-1.5 rounded text-xs border truncate"
+              style={{ background: 'rgba(74,111,165,0.15)', borderColor: 'var(--nr-steel)', color: 'var(--nr-steel)' }}
+            >
+              {selectedType}
+            </div>
+          )}
+          <div className="relative">
+            <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--ink-500)' }} />
+            <input
+              type="text"
+              placeholder="Filter types…"
+              value={typeSearch}
+              onChange={e => setTypeSearch(e.target.value)}
+              className="w-full pl-7 pr-2 py-1.5 text-xs rounded border outline-none bg-[var(--bg-card-hi)] focus:border-[var(--nr-orange)] transition-colors"
+              style={{ borderColor: 'var(--line)', color: 'var(--ink-200)' }}
+            />
+          </div>
+          <div className="overflow-y-auto max-h-56 space-y-0.5">
+            {filteredTypes.length === 0 && (
+              <div className="text-xs py-4 text-center" style={{ color: 'var(--ink-500)' }}>No types match</div>
+            )}
+            {filteredTypes.map(type => (
+              <button
+                key={type}
+                onClick={() => setSelectedType(type === selectedType ? null : type)}
+                className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-colors truncate"
+                style={{
+                  background: type === selectedType ? 'rgba(74,111,165,0.18)' : 'transparent',
+                  color: type === selectedType ? 'var(--nr-steel)' : 'var(--ink-300)',
+                  border: `1px solid ${type === selectedType ? 'rgba(74,111,165,0.45)' : 'transparent'}`,
+                }}
+                title={type}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+          <div className="label-micro pt-1 border-t border-[var(--line)]" style={{ color: 'var(--ink-500)' }}>
+            {incidentTypes.length} incident type{incidentTypes.length !== 1 ? 's' : ''} in window
+          </div>
+        </div>
+      </div>
+
+      {/* Results */}
+      {!hasSelection ? (
+        <div className="card p-8 flex flex-col items-center justify-center gap-2 text-center">
+          <BarChart2 size={24} style={{ color: 'var(--ink-500)' }} />
+          <p className="text-sm" style={{ color: 'var(--ink-400)' }}>Select a location or incident type above to see response metrics</p>
+        </div>
+      ) : (
+        <>
+          {/* Metric summary cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="card p-4">
+              <div className="label-micro mb-2">Matched Events</div>
+              <div className="numeric-mono text-2xl font-semibold" style={{ color: 'var(--ink-100)' }}>
+                {matchedIncidents.length}
+              </div>
+              <div className="text-[11px] mt-1" style={{ color: 'var(--ink-500)' }}>total incidents</div>
+            </div>
+
+            <div className="card p-4">
+              <div className="label-micro mb-2">Avg Time to Arrive</div>
+              {stats.avgArrival != null ? (
+                <>
+                  <div className="numeric-mono text-2xl font-semibold" style={{ color: 'var(--nr-orange)' }}>
+                    {fmtMins(stats.avgArrival)}
+                  </div>
+                  <div className="text-[11px] mt-1" style={{ color: 'var(--ink-500)' }}>
+                    from {stats.arrivalN} of {matchedIncidents.length} events
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="numeric-mono text-2xl" style={{ color: 'var(--ink-500)' }}>—</div>
+                  <div className="text-[11px] mt-1" style={{ color: 'var(--ink-500)' }}>no arrival data</div>
+                </>
+              )}
+            </div>
+
+            <div className="card p-4">
+              <div className="label-micro mb-2">Avg Time to Restore</div>
+              {stats.avgDuration != null ? (
+                <>
+                  <div className="numeric-mono text-2xl font-semibold" style={{ color: 'var(--nr-steel)' }}>
+                    {fmtMins(stats.avgDuration)}
+                  </div>
+                  <div className="text-[11px] mt-1" style={{ color: 'var(--ink-500)' }}>
+                    from {stats.durationN} of {matchedIncidents.length} events
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="numeric-mono text-2xl" style={{ color: 'var(--ink-500)' }}>—</div>
+                  <div className="text-[11px] mt-1" style={{ color: 'var(--ink-500)' }}>no duration data</div>
+                </>
+              )}
+            </div>
+
+            <div className="card p-4">
+              <div className="label-micro mb-2">Total Delay</div>
+              <div className="numeric-mono text-2xl font-semibold" style={{ color: 'var(--ink-100)' }}>
+                {fmtMins(matchedIncidents.reduce((s, i) => s + i.minutes_delay, 0))}
+              </div>
+              <div className="text-[11px] mt-1" style={{ color: 'var(--ink-500)' }}>cumulative delay minutes</div>
+            </div>
+          </div>
+
+          {/* Matched events list */}
+          <div className="card p-4">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="label-micro">Matched Events</div>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--ink-500)' }}>
+                  {selectedLocation && selectedType
+                    ? `${selectedType} · ${selectedLocation}`
+                    : selectedLocation ?? selectedType}
+                </p>
+              </div>
+              <span className="numeric-mono text-xs px-2 py-1 rounded border" style={{ color: 'var(--ink-400)', borderColor: 'var(--line)' }}>
+                {matchedIncidents.length} event{matchedIncidents.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+
+            {matchedIncidents.length === 0 ? (
+              <Empty msg="No incidents match this combination in the current window" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="label-micro border-b border-[var(--line)]">
+                      <th className="text-left py-2 pr-3">Date</th>
+                      <th className="text-left pr-3">Type</th>
+                      <th className="text-left pr-3">Location</th>
+                      <th className="text-left pr-3">Severity</th>
+                      <th className="text-right pr-3">Arrival</th>
+                      <th className="text-right pr-3">Duration</th>
+                      <th className="text-right">Delay</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {matchedIncidents.map(inc => {
+                      const cfg      = CATEGORY_CONFIG[inc.category]
+                      const typeLabel = inc.incident_type_label ?? cfg?.label ?? inc.category
+                      return (
+                        <tr key={inc.id} className="border-b border-[var(--line)] last:border-0 hover:bg-[var(--bg-card-hi)] transition-colors">
+                          <td className="py-2 pr-3 numeric-mono" style={{ color: 'var(--ink-400)', whiteSpace: 'nowrap' }}>
+                            {shortDate(inc.report_date)}
+                          </td>
+                          <td className="pr-3 max-w-[140px]">
+                            <span
+                              className="pill truncate block"
+                              style={{ background: `${cfg.color}20`, color: cfg.color, borderColor: `${cfg.color}50` }}
+                              title={typeLabel}
+                            >
+                              {typeLabel}
+                            </span>
+                          </td>
+                          <td className="pr-3 truncate max-w-[160px]" style={{ color: 'var(--ink-300)' }} title={inc.location ?? undefined}>
+                            {inc.location ?? '—'}
+                          </td>
+                          <td className="pr-3">
+                            <span className={`pill pill-${inc.severity.toLowerCase()}`}>{inc.severity}</span>
+                          </td>
+                          <td className="text-right pr-3 numeric-mono" style={{ color: inc.mins_to_arrival != null ? 'var(--nr-orange)' : 'var(--ink-500)' }}>
+                            {inc.mins_to_arrival != null ? fmtMins(inc.mins_to_arrival) : '—'}
+                          </td>
+                          <td className="text-right pr-3 numeric-mono" style={{ color: inc.incident_duration != null ? 'var(--nr-steel)' : 'var(--ink-500)' }}>
+                            {inc.incident_duration != null ? fmtMins(inc.incident_duration) : '—'}
+                          </td>
+                          <td className="text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>
+                            {fmtMins(inc.minutes_delay)}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 function shortDate(d: string): string {
