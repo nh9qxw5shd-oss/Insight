@@ -505,7 +505,7 @@ function HypothesisPanel({
   onAddAreaFilter: (a: string) => void
   onAddSeverityFilter: (s: Severity) => void
 }) {
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(false)
   if (!clusters.length) return null
   const totalHypotheses = clusters.reduce((s, c) => s + c.hypotheses.length, 0)
 
