@@ -149,7 +149,7 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
   }
 }
 
-function searchMatch(i: IncidentRow, q: string): boolean {
+export function searchMatch(i: IncidentRow, q: string): boolean {
   const needle = q.toLowerCase()
   return (
     (i.title || '').toLowerCase().includes(needle) ||
@@ -157,7 +157,11 @@ function searchMatch(i: IncidentRow, q: string): boolean {
     (i.area || '').toLowerCase().includes(needle) ||
     (i.fault_number || '').toLowerCase().includes(needle) ||
     (i.train_id || '').toLowerCase().includes(needle) ||
-    (i.ccil || '').toLowerCase().includes(needle)
+    (i.ccil || '').toLowerCase().includes(needle) ||
+    (i.incident_type_label || '').toLowerCase().includes(needle) ||
+    (i.incident_type_code || '').toLowerCase().includes(needle) ||
+    (i.line || '').toLowerCase().includes(needle) ||
+    (i.train_company || '').toLowerCase().includes(needle)
   )
 }
 

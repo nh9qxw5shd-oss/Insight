@@ -27,6 +27,7 @@ import {
   deriveSignals, deriveLineBreakdown, deriveDelayAttribution, deriveContinuationChains,
   deriveChangePoints, deriveDelta, deriveHypotheses,
   effectiveDelay, effectiveMinsToArrival, effectiveDuration, SLA_THRESHOLD_MINS,
+  searchMatch,
   RawData,
 } from '@/lib/queries'
 import {
@@ -3535,11 +3536,35 @@ function buildInsights(cohort: IncidentRow[], segment: IncidentRow[]): { dimLabe
 
 function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; areaOptions: string[] }) {
   const [cats, setCats]       = useState<IncidentCategory[]>([])
+  const [types, setTypes]     = useState<string[]>([])
   const [sevs, setSevs]       = useState<Severity[]>([])
   const [areas, setAreas]     = useState<string[]>([])
+  const [searches, setSearches] = useState<string[]>([])
+  const [searchInput, setSearchInput] = useState('')
+  const [typeFilter, setTypeFilter]   = useState('')
+  const [typesOpen, setTypesOpen]     = useState(false)
   const [dim, setDim]         = useState<CohortDim>('arrivalBand')
   const [metric, setMetric]   = useState<CohortMetric>('avgDelay')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+
+  // Specific incident types in the window, sorted by frequency descending
+  const typeOptions = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const i of incidents) {
+      if (i.is_continuation) continue
+      const lbl = i.incident_type_label?.trim()
+      if (!lbl) continue
+      counts.set(lbl, (counts.get(lbl) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([label, count]) => ({ label, count }))
+  }, [incidents])
+
+  const filteredTypeOptions = useMemo(() => {
+    const q = typeFilter.trim().toLowerCase()
+    return q ? typeOptions.filter(t => t.label.toLowerCase().includes(q)) : typeOptions
+  }, [typeOptions, typeFilter])
 
   const segment = useMemo(() => {
     return incidents.filter(i => {
@@ -3547,9 +3572,19 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
       if (cats.length  && !cats.includes(i.category))   return false
       if (sevs.length  && !sevs.includes(i.severity))   return false
       if (areas.length && !areas.includes(i.area ?? '')) return false
+      if (types.length && !types.includes((i.incident_type_label ?? '').trim())) return false
+      if (searches.length && !searches.some(q => searchMatch(i, q))) return false
       return true
     })
-  }, [incidents, cats, sevs, areas])
+  }, [incidents, cats, sevs, areas, types, searches])
+
+  const commitSearch = () => {
+    const tok = searchInput.trim()
+    if (!tok) return
+    if (searches.includes(tok)) { setSearchInput(''); return }
+    setSearches(s => [...s, tok])
+    setSearchInput('')
+  }
 
   const cohorts = useMemo(() => buildCohortStats(segment, dim), [segment, dim])
 
@@ -3586,31 +3621,34 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
 
   const chartData = cohorts.map(c => ({ label: c.label, value: metricValueOf(c, metric) ?? 0, color: c.color, key: c.key }))
 
+  const segmentActive = cats.length + types.length + sevs.length + areas.length + searches.length > 0
+
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-base font-semibold" style={{ color: 'var(--ink-100)' }}>Cohort Explorer</h2>
-        <p className="text-xs mt-0.5" style={{ color: 'var(--ink-400)' }}>
+        <h2 className="text-lg font-semibold" style={{ color: 'var(--ink-100)' }}>Cohort Explorer</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--ink-400)' }}>
           Define a base segment, split it by a dimension, then compare metrics side-by-side. Click a cohort to see why it stands out.
         </p>
       </div>
 
       {/* Base segment */}
-      <div className="card p-4 space-y-4">
+      <div className="card p-5 space-y-5">
         <div className="flex items-center justify-between">
-          <div className="label-micro">Base segment <span style={{ color: 'var(--ink-500)' }}>(empty filter = all incidents)</span></div>
-          <span className="numeric-mono text-xs px-2 py-0.5 rounded border" style={{ color: 'var(--nr-orange)', borderColor: 'var(--nr-orange)' }}>
+          <div className="label-micro" style={{ fontSize: 11 }}>Base segment <span style={{ color: 'var(--ink-500)' }}>(empty filter = all incidents)</span></div>
+          <span className="numeric-mono text-sm px-2.5 py-1 rounded border" style={{ color: 'var(--nr-orange)', borderColor: 'var(--nr-orange)' }}>
             {segment.length} incidents
           </span>
         </div>
 
+        {/* Category groups */}
         <div>
-          <div className="text-[10px] mb-1.5 label-micro" style={{ color: 'var(--ink-500)' }}>Categories</div>
-          <div className="space-y-1.5">
+          <div className="label-micro mb-2" style={{ fontSize: 11, color: 'var(--ink-400)' }}>Category groups</div>
+          <div className="space-y-2">
             {CAT_GROUPS.map(group => (
-              <div key={group.label} className="flex items-center gap-2 flex-wrap">
-                <span className="label-micro w-16 shrink-0" style={{ color: 'var(--ink-500)' }}>{group.label}</span>
-                <div className="flex flex-wrap gap-1">
+              <div key={group.label} className="flex items-center gap-3 flex-wrap">
+                <span className="label-micro w-20 shrink-0" style={{ fontSize: 11, color: 'var(--ink-500)' }}>{group.label}</span>
+                <div className="flex flex-wrap gap-1.5">
                   {group.cats.map(cat => {
                     const cfg = CATEGORY_CONFIG[cat]
                     const on = cats.includes(cat)
@@ -3618,12 +3656,13 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
                       <button
                         key={cat}
                         onClick={() => setCats(c => toggle(c, cat))}
-                        className="px-1.5 py-0.5 text-[10px] rounded border transition-colors"
+                        className="px-2 py-1 text-[11px] rounded border transition-colors"
                         style={{
                           background:  on ? `${cfg.color}25` : 'transparent',
                           borderColor: on ? cfg.color : 'var(--line)',
-                          color:       on ? cfg.color : 'var(--ink-500)',
+                          color:       on ? cfg.color : 'var(--ink-400)',
                         }}
+                        title={cfg.label}
                       >
                         {cfg.short}
                       </button>
@@ -3635,10 +3674,134 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-x-6 gap-y-3">
+        {/* Specific incident types — collapsible to keep the panel compact */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="label-micro" style={{ fontSize: 11, color: 'var(--ink-400)' }}>
+              Specific incident types
+              <span className="ml-2" style={{ color: 'var(--ink-500)' }}>
+                {types.length ? `${types.length} selected` : `${typeOptions.length} available`}
+              </span>
+            </div>
+            <button
+              onClick={() => setTypesOpen(o => !o)}
+              className="flex items-center gap-1 text-[11px] hover:opacity-80"
+              style={{ color: 'var(--ink-300)' }}
+            >
+              <ChevronDown size={12} style={{ transform: typesOpen ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }} />
+              {typesOpen ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+
+          {types.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {types.map(t => (
+                <span
+                  key={t}
+                  className="flex items-center gap-1 px-2 py-1 text-[11px] rounded border"
+                  style={{ background: 'rgba(74,159,229,0.12)', borderColor: '#4A9FE5', color: '#4A9FE5' }}
+                >
+                  {t}
+                  <button onClick={() => setTypes(arr => arr.filter(x => x !== t))} className="opacity-70 hover:opacity-100">
+                    <X size={10} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {typesOpen && (
+            <div className="space-y-2">
+              <div className="relative">
+                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--ink-500)' }} />
+                <input
+                  type="text"
+                  placeholder="Filter incident types…"
+                  value={typeFilter}
+                  onChange={e => setTypeFilter(e.target.value)}
+                  className="w-full pl-8 pr-2 py-1.5 text-[12px] rounded border outline-none bg-[var(--bg-card-hi)] focus:border-[var(--nr-orange)] transition-colors"
+                  style={{ borderColor: 'var(--line)', color: 'var(--ink-200)' }}
+                />
+              </div>
+              <div className="max-h-56 overflow-y-auto flex flex-wrap gap-1.5 p-0.5">
+                {filteredTypeOptions.length === 0 && (
+                  <span className="text-[11px] py-2" style={{ color: 'var(--ink-500)' }}>No types match</span>
+                )}
+                {filteredTypeOptions.map(({ label, count }) => {
+                  const on = types.includes(label)
+                  return (
+                    <button
+                      key={label}
+                      onClick={() => setTypes(t => toggle(t, label))}
+                      className="px-2 py-1 text-[11px] rounded border transition-colors flex items-center gap-1.5"
+                      style={{
+                        background:  on ? 'rgba(74,159,229,0.18)' : 'transparent',
+                        borderColor: on ? '#4A9FE5' : 'var(--line)',
+                        color:       on ? '#4A9FE5' : 'var(--ink-300)',
+                      }}
+                      title={`${label} · ${count} incident${count === 1 ? '' : 's'}`}
+                    >
+                      <span className="truncate max-w-[280px]">{label}</span>
+                      <span className="numeric-mono text-[10px] opacity-70">{count}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Free-text search across title / location / fault number / type / etc. */}
+        <div>
+          <div className="label-micro mb-2" style={{ fontSize: 11, color: 'var(--ink-400)' }}>
+            Free-text segment search
+            <span className="ml-2" style={{ color: 'var(--ink-500)' }}>
+              matches title, location, type, fault no., train ID, CCIL, line, operator
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[220px]">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--ink-500)' }} />
+              <input
+                type="text"
+                placeholder="Type a token, press Enter to add…"
+                value={searchInput}
+                onChange={e => setSearchInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commitSearch() }
+                  if (e.key === 'Backspace' && !searchInput && searches.length) {
+                    setSearches(s => s.slice(0, -1))
+                  }
+                }}
+                onBlur={commitSearch}
+                className="w-full pl-8 pr-2 py-1.5 text-[12px] rounded border outline-none bg-[var(--bg-card-hi)] focus:border-[var(--nr-orange)] transition-colors"
+                style={{ borderColor: 'var(--line)', color: 'var(--ink-200)' }}
+              />
+            </div>
+            {searches.map(s => (
+              <span
+                key={s}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded border"
+                style={{ background: 'rgba(224,82,6,0.12)', borderColor: 'var(--nr-orange)', color: 'var(--nr-orange)' }}
+              >
+                "{s}"
+                <button onClick={() => setSearches(arr => arr.filter(x => x !== s))} className="opacity-70 hover:opacity-100">
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+            {searches.length > 1 && (
+              <span className="numeric-mono text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-card-hi)', color: 'var(--ink-500)' }}>
+                OR
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-x-8 gap-y-4 pt-1">
           <div>
-            <div className="text-[10px] mb-1.5 label-micro" style={{ color: 'var(--ink-500)' }}>Severities</div>
-            <div className="flex gap-1">
+            <div className="label-micro mb-2" style={{ fontSize: 11, color: 'var(--ink-400)' }}>Severities</div>
+            <div className="flex gap-1.5">
               {(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as Severity[]).map(sev => {
                 const cfg = SEVERITY_CONFIG[sev]
                 const on  = sevs.includes(sev)
@@ -3646,11 +3809,11 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
                   <button
                     key={sev}
                     onClick={() => setSevs(s => toggle(s, sev))}
-                    className="px-2 py-0.5 text-[10px] rounded border transition-colors"
+                    className="px-2.5 py-1 text-[11px] rounded border transition-colors"
                     style={{
                       background:  on ? `${cfg.color}25` : 'transparent',
                       borderColor: on ? cfg.color : 'var(--line)',
-                      color:       on ? cfg.color : 'var(--ink-400)',
+                      color:       on ? cfg.color : 'var(--ink-300)',
                     }}
                   >
                     {sev}
@@ -3661,20 +3824,20 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
           </div>
 
           {areaOptions.length > 0 && (
-            <div className="flex-1 min-w-[200px]">
-              <div className="text-[10px] mb-1.5 label-micro" style={{ color: 'var(--ink-500)' }}>Areas</div>
-              <div className="flex flex-wrap gap-1">
+            <div className="flex-1 min-w-[220px]">
+              <div className="label-micro mb-2" style={{ fontSize: 11, color: 'var(--ink-400)' }}>Areas</div>
+              <div className="flex flex-wrap gap-1.5">
                 {areaOptions.map(area => {
                   const on = areas.includes(area)
                   return (
                     <button
                       key={area}
                       onClick={() => setAreas(a => toggle(a, area))}
-                      className="px-1.5 py-0.5 text-[10px] rounded border transition-colors"
+                      className="px-2 py-1 text-[11px] rounded border transition-colors"
                       style={{
                         background:  on ? 'rgba(224,82,6,0.18)' : 'transparent',
                         borderColor: on ? 'var(--nr-orange)' : 'var(--line)',
-                        color:       on ? 'var(--nr-orange)' : 'var(--ink-500)',
+                        color:       on ? 'var(--nr-orange)' : 'var(--ink-300)',
                       }}
                     >
                       {area}
@@ -3685,32 +3848,34 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
             </div>
           )}
 
-          {(cats.length > 0 || sevs.length > 0 || areas.length > 0) && (
+          {segmentActive && (
             <button
-              onClick={() => { setCats([]); setSevs([]); setAreas([]); setSelectedKey(null) }}
-              className="text-[10px] self-end mb-0.5 hover:opacity-80"
+              onClick={() => {
+                setCats([]); setTypes([]); setSevs([]); setAreas([]); setSearches([]); setSearchInput(''); setSelectedKey(null)
+              }}
+              className="text-[11px] self-end mb-0.5 hover:opacity-80 flex items-center gap-1"
               style={{ color: 'var(--ink-400)' }}
             >
-              <X size={10} className="inline" /> Clear segment
+              <X size={11} /> Clear segment
             </button>
           )}
         </div>
       </div>
 
       {/* Split + metric controls */}
-      <div className="card p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="card p-5 grid grid-cols-1 md:grid-cols-2 gap-5">
         <div>
-          <div className="label-micro mb-2">Split segment by</div>
-          <div className="flex flex-wrap gap-1">
+          <div className="label-micro mb-2" style={{ fontSize: 11 }}>Split segment by</div>
+          <div className="flex flex-wrap gap-1.5">
             {COHORT_DIM_OPTS.map(opt => (
               <button
                 key={opt.key}
                 onClick={() => { setDim(opt.key); setSelectedKey(null) }}
-                className="px-2 py-1 text-[10px] rounded border transition-colors"
+                className="px-2.5 py-1.5 text-[12px] rounded border transition-colors"
                 style={{
                   background:  dim === opt.key ? 'rgba(74,159,229,0.15)' : 'transparent',
                   borderColor: dim === opt.key ? '#4A9FE5' : 'var(--line)',
-                  color:       dim === opt.key ? '#4A9FE5' : 'var(--ink-400)',
+                  color:       dim === opt.key ? '#4A9FE5' : 'var(--ink-300)',
                 }}
               >
                 {opt.label}
@@ -3719,17 +3884,17 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
           </div>
         </div>
         <div>
-          <div className="label-micro mb-2">Compare on metric</div>
-          <div className="flex flex-wrap gap-1">
+          <div className="label-micro mb-2" style={{ fontSize: 11 }}>Compare on metric</div>
+          <div className="flex flex-wrap gap-1.5">
             {COHORT_METRIC_OPTS.map(opt => (
               <button
                 key={opt.key}
                 onClick={() => setMetric(opt.key)}
-                className="px-2 py-1 text-[10px] rounded border transition-colors"
+                className="px-2.5 py-1.5 text-[12px] rounded border transition-colors"
                 style={{
                   background:  metric === opt.key ? 'rgba(224,82,6,0.18)' : 'transparent',
                   borderColor: metric === opt.key ? 'var(--nr-orange)' : 'var(--line)',
-                  color:       metric === opt.key ? 'var(--nr-orange)' : 'var(--ink-400)',
+                  color:       metric === opt.key ? 'var(--nr-orange)' : 'var(--ink-300)',
                 }}
               >
                 {opt.label}
@@ -3740,28 +3905,28 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
       </div>
 
       {/* Comparison table */}
-      <div className="card p-4">
+      <div className="card p-5">
         <div className="flex items-center justify-between mb-3">
           <div>
-            <div className="label-micro">Cohort comparison</div>
-            <p className="text-xs mt-0.5" style={{ color: 'var(--ink-500)' }}>
+            <div className="label-micro" style={{ fontSize: 11 }}>Cohort comparison</div>
+            <p className="text-[12px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
               {cohorts.length} cohort{cohorts.length === 1 ? '' : 's'} · split by {COHORT_DIM_OPTS.find(o => o.key === dim)?.label.toLowerCase()}
               {cohorts.length === 12 && <span> · capped at 12</span>}
             </p>
           </div>
           {selectedCohort && (
-            <button onClick={() => setSelectedKey(null)} className="flex items-center gap-1 text-[10px] hover:opacity-70" style={{ color: 'var(--ink-400)' }}>
-              <X size={10} /> Clear selection
+            <button onClick={() => setSelectedKey(null)} className="flex items-center gap-1 text-[11px] hover:opacity-70" style={{ color: 'var(--ink-400)' }}>
+              <X size={11} /> Clear selection
             </button>
           )}
         </div>
 
         {cohorts.length === 0 ? <Empty msg="No cohorts in this segment — try a wider filter or a different split." /> : (
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full text-[13px]">
               <thead>
-                <tr className="label-micro border-b border-[var(--line)]">
-                  <th className="text-left py-2 pr-3">Cohort</th>
+                <tr className="label-micro border-b border-[var(--line)]" style={{ fontSize: 11 }}>
+                  <th className="text-left py-2.5 pr-3">Cohort</th>
                   <th className="text-right pr-3">n</th>
                   <th className="text-right pr-3">Avg delay</th>
                   <th className="text-right pr-3">Median delay</th>
@@ -3781,22 +3946,22 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
                       className="border-b border-[var(--line)] last:border-0 cursor-pointer transition-colors"
                       style={{ background: sel ? `${c.color}18` : undefined }}
                     >
-                      <td className="py-2 pr-3">
+                      <td className="py-2.5 pr-3">
                         <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: c.color }} />
-                          <span style={{ color: sel ? c.color : 'var(--ink-200)' }}>{c.label}</span>
+                          <div className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: c.color }} />
+                          <span style={{ color: sel ? c.color : 'var(--ink-100)' }}>{c.label}</span>
                         </div>
                       </td>
                       <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-100)' }}>{c.count}</td>
-                      <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-200)' }}>{c.avgDelay != null ? fmtMins(Math.round(c.avgDelay)) : '—'}</td>
-                      <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-300)' }}>{c.p50Delay != null ? fmtMins(Math.round(c.p50Delay)) : '—'}</td>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-100)' }}>{c.avgDelay != null ? fmtMins(Math.round(c.avgDelay)) : '—'}</td>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-200)' }}>{c.p50Delay != null ? fmtMins(Math.round(c.p50Delay)) : '—'}</td>
                       <td className="text-right pr-3 numeric-mono" style={{ color: c.avgArrival != null ? 'var(--nr-orange)' : 'var(--ink-500)' }}>
                         {c.avgArrival != null ? `${Math.round(c.avgArrival)}m` : '—'}
                       </td>
                       <td className="text-right pr-3 numeric-mono" style={{ color: c.avgDuration != null ? 'var(--nr-steel)' : 'var(--ink-500)' }}>
                         {c.avgDuration != null ? fmtMins(Math.round(c.avgDuration)) : '—'}
                       </td>
-                      <td className="text-right pr-3 numeric-mono" style={{ color: c.pctSlaBreach != null ? (c.pctSlaBreach > 30 ? 'var(--nr-red,#E74C3C)' : 'var(--ink-200)') : 'var(--ink-500)' }}>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: c.pctSlaBreach != null ? (c.pctSlaBreach > 30 ? 'var(--nr-red,#E74C3C)' : 'var(--ink-100)') : 'var(--ink-500)' }}>
                         {c.pctSlaBreach != null ? `${c.pctSlaBreach.toFixed(0)}%` : '—'}
                       </td>
                       <td className="text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>{fmtMins(c.totalDelay)}</td>
@@ -3811,26 +3976,26 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
 
       {/* Comparison bar chart */}
       {cohorts.length > 0 && (
-        <div className="card p-4">
+        <div className="card p-5">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <div className="label-micro">{metricOpt.label} by {COHORT_DIM_OPTS.find(o => o.key === dim)?.label.toLowerCase()}</div>
-              <p className="text-xs mt-0.5" style={{ color: 'var(--ink-500)' }}>Click a bar to drill into a cohort</p>
+              <div className="label-micro" style={{ fontSize: 11 }}>{metricOpt.label} by {COHORT_DIM_OPTS.find(o => o.key === dim)?.label.toLowerCase()}</div>
+              <p className="text-[12px] mt-0.5" style={{ color: 'var(--ink-400)' }}>Click a bar to drill into a cohort</p>
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={Math.max(180, cohorts.length * 28 + 60)}>
+          <ResponsiveContainer width="100%" height={Math.max(200, cohorts.length * 32 + 70)}>
             <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 30, top: 8, bottom: 8 }}>
               <CartesianGrid strokeDasharray="2 6" horizontal={false} />
               <XAxis
                 type="number"
-                tick={{ fontSize: 10, fill: 'var(--ink-400)', fontFamily: 'JetBrains Mono' }}
+                tick={{ fontSize: 11, fill: 'var(--ink-400)', fontFamily: 'JetBrains Mono' }}
                 tickFormatter={(v: number) => `${v}${metricOpt.unit}`}
               />
               <YAxis
                 dataKey="label"
                 type="category"
-                width={120}
-                tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }}
+                width={140}
+                tick={{ fontSize: 11, fill: 'var(--ink-200)', fontFamily: 'JetBrains Mono' }}
               />
               <Tooltip
                 cursor={{ fill: 'rgba(255,255,255,0.04)' }}
@@ -3838,9 +4003,9 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
                   if (!active || !payload?.length) return null
                   const row = payload[0]?.payload
                   return (
-                    <div className="card !bg-[var(--bg-card-hi)] !border-[var(--line-hi)] p-2 text-xs">
-                      <div className="label-micro mb-1">{row.label}</div>
-                      <div className="numeric-mono" style={{ color: row.color }}>
+                    <div className="card !bg-[var(--bg-card-hi)] !border-[var(--line-hi)] p-2.5 text-[12px]">
+                      <div className="label-micro mb-1" style={{ fontSize: 11 }}>{row.label}</div>
+                      <div className="numeric-mono text-sm" style={{ color: row.color }}>
                         {Number(row.value).toLocaleString()}{metricOpt.unit}
                       </div>
                     </div>
@@ -3859,19 +4024,19 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
 
       {/* Why panel */}
       {selectedCohort && (
-        <div className="card p-4 space-y-4 tick-corners">
+        <div className="card p-5 space-y-5 tick-corners">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="label-micro">Why does this cohort stand out?</div>
-              <h3 className="text-sm mt-0.5" style={{ color: selectedCohort.color }}>
+              <div className="label-micro" style={{ fontSize: 11 }}>Why does this cohort stand out?</div>
+              <h3 className="text-base mt-0.5" style={{ color: selectedCohort.color }}>
                 {selectedCohort.label}
-                <span className="ml-2 text-xs" style={{ color: 'var(--ink-500)' }}>
+                <span className="ml-2 text-[12px]" style={{ color: 'var(--ink-400)' }}>
                   · {selectedCohort.count} of {segment.length} segment incidents
                 </span>
               </h3>
             </div>
-            <button onClick={() => setSelectedKey(null)} className="text-[10px] hover:opacity-70" style={{ color: 'var(--ink-400)' }}>
-              <X size={10} /> Close
+            <button onClick={() => setSelectedKey(null)} className="flex items-center gap-1 text-[11px] hover:opacity-70" style={{ color: 'var(--ink-400)' }}>
+              <X size={11} /> Close
             </button>
           </div>
 
@@ -3885,24 +4050,24 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
           )}
 
           {insights.length === 0 ? (
-            <div className="text-xs py-3" style={{ color: 'var(--ink-500)' }}>
+            <div className="text-[12px] py-3" style={{ color: 'var(--ink-400)' }}>
               No dimension was meaningfully over-represented in this cohort vs the rest of the segment.
               Try widening the base segment or splitting on a different dimension.
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {insights.map(group => (
-                <div key={group.dimLabel} className="border border-[var(--line)] rounded p-2.5">
-                  <div className="label-micro mb-2" style={{ color: 'var(--ink-400)' }}>{group.dimLabel}</div>
-                  <div className="space-y-1.5">
+                <div key={group.dimLabel} className="border border-[var(--line)] rounded p-3">
+                  <div className="label-micro mb-2" style={{ fontSize: 11, color: 'var(--ink-400)' }}>{group.dimLabel}</div>
+                  <div className="space-y-2">
                     {group.items.map(it => (
                       <div key={it.key} className="flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 rounded-sm shrink-0" style={{ background: it.color ?? 'var(--nr-orange)' }} />
-                        <span className="truncate text-xs" style={{ color: 'var(--ink-200)' }} title={it.label}>{it.label}</span>
-                        <span className="ml-auto numeric-mono text-[10px] px-1 py-0.5 rounded shrink-0" style={{ background: 'rgba(224,82,6,0.15)', color: 'var(--nr-orange)' }}>
+                        <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: it.color ?? 'var(--nr-orange)' }} />
+                        <span className="truncate text-[12px]" style={{ color: 'var(--ink-100)' }} title={it.label}>{it.label}</span>
+                        <span className="ml-auto numeric-mono text-[11px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'rgba(224,82,6,0.15)', color: 'var(--nr-orange)' }}>
                           ×{it.lift.toFixed(1)}
                         </span>
-                        <span className="numeric-mono text-[10px] shrink-0" style={{ color: 'var(--ink-500)' }}>
+                        <span className="numeric-mono text-[11px] shrink-0" style={{ color: 'var(--ink-400)' }}>
                           {it.cohortCount}/{it.segmentCount}
                         </span>
                       </div>
@@ -3913,7 +4078,7 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
             </div>
           )}
 
-          <p className="text-[10px] pt-2 border-t border-[var(--line)]" style={{ color: 'var(--ink-500)' }}>
+          <p className="text-[11px] pt-2 border-t border-[var(--line)]" style={{ color: 'var(--ink-500)' }}>
             Lift = how much more frequent a value is in this cohort vs the segment overall. Surfaced when share is at least
             {' '}{WHY_LIFT_THRESHOLD}× the segment baseline and at least {WHY_MIN_COHORT_HITS} incidents fall in the bucket.
             These are correlations, not causes — they help direct further investigation.
@@ -3936,18 +4101,18 @@ function CompareTile({ label, a, b, unit, goodWhenLower }: {
   const color = flat ? 'var(--ink-400)' : (bad ? 'var(--nr-orange)' : '#27AE60')
   const Icon = flat ? Minus : up ? TrendingUp : TrendingDown
   return (
-    <div className="border border-[var(--line)] rounded p-2.5">
-      <div className="label-micro mb-1">{label}</div>
-      <div className="numeric-mono text-base" style={{ color: 'var(--ink-100)' }}>
+    <div className="border border-[var(--line)] rounded p-3">
+      <div className="label-micro mb-1.5" style={{ fontSize: 11 }}>{label}</div>
+      <div className="numeric-mono text-lg" style={{ color: 'var(--ink-100)' }}>
         {a != null ? `${Math.round(a)}${unit}` : '—'}
       </div>
-      <div className="flex items-center gap-1 mt-0.5 text-[10px] numeric-mono" style={{ color }}>
-        <Icon size={9} />
+      <div className="flex items-center gap-1 mt-1 text-[11px] numeric-mono" style={{ color }}>
+        <Icon size={11} />
         {deltaPct != null ? `${deltaPct > 0 ? '+' : ''}${Math.round(deltaPct)}%` : '—'}
-        <span style={{ color: 'var(--ink-500)' }}>vs rest</span>
+        <span style={{ color: 'var(--ink-400)' }}>vs rest</span>
       </div>
       {b != null && (
-        <div className="text-[10px] mt-0.5" style={{ color: 'var(--ink-500)' }}>
+        <div className="text-[11px] mt-0.5" style={{ color: 'var(--ink-500)' }}>
           rest = {Math.round(b)}{unit}
         </div>
       )}
