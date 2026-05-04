@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
-  Clock, Download, Filter, GitBranch, Layers, MapPin, RefreshCw, Route, Search,
+  Clock, Compass, Download, Filter, GitBranch, Layers, MapPin, Minus, RefreshCw, Route, Search,
   TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -26,6 +26,8 @@ import {
   deriveOperatorImpact, deriveHeatmap, deriveAreaList, deriveResponseDistribution,
   deriveSignals, deriveLineBreakdown, deriveDelayAttribution, deriveContinuationChains,
   deriveChangePoints, deriveDelta, deriveHypotheses,
+  effectiveDelay, effectiveMinsToArrival, effectiveDuration, SLA_THRESHOLD_MINS,
+  searchMatch,
   RawData,
 } from '@/lib/queries'
 import {
@@ -39,7 +41,7 @@ import { exportCSV } from '@/lib/export'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'analytics'
+type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'explore' | 'analytics'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -49,6 +51,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'assets',      label: 'Assets',      icon: Wrench },
   { id: 'routes',      label: 'Routes',      icon: Route },
   { id: 'trends',      label: 'Trends',      icon: GitBranch },
+  { id: 'explore',     label: 'Explore',     icon: Compass },
   { id: 'analytics',   label: 'Analytics',   icon: BarChart2 },
 ]
 
@@ -267,6 +270,7 @@ export default function InsightDashboard() {
             {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={data.incidents} onDrillDown={setDrillDown} chains={chains} />}
             {tab === 'routes'      && <RoutesTab lines={lines} incidents={data.incidents} onDrillDown={setDrillDown} />}
             {tab === 'trends'      && <TrendsTab incidents={data.incidents} windowFrom={data.windowFrom} windowDays={data.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
+            {tab === 'explore'     && <ExploreTab incidents={data.incidents} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'analytics'   && <AnalyticsTab incidents={data.incidents} />}
           </>
         )}
@@ -1136,21 +1140,37 @@ const SERIES_PALETTE = [
   '#E74C3C', '#F39C12', '#1ABC9C', '#E91E9C',
 ]
 
+type SeriesMetric =
+  | 'incidents' | 'delayMins' | 'safetyCritical'
+  | 'delayPerIncident' | 'avgArrival' | 'avgDuration' | 'pctSlaBreach'
+
 interface TrendSeriesDef {
   id: string
   label: string
   color: string
-  metric: 'incidents' | 'delayMins' | 'safetyCritical'
+  metric: SeriesMetric
   categories: IncidentCategory[]
   severities: Severity[]
   areas: string[]
 }
 
-const METRIC_OPTS: { key: TrendSeriesDef['metric']; label: string }[] = [
-  { key: 'incidents',      label: 'Incidents' },
-  { key: 'delayMins',      label: 'Delay Mins' },
-  { key: 'safetyCritical', label: 'Safety Critical' },
+const METRIC_OPTS: { key: SeriesMetric; label: string; unit: string; ratio: boolean; risingIsBad: boolean }[] = [
+  { key: 'incidents',         label: 'Incidents',         unit: '',     ratio: false, risingIsBad: true  },
+  { key: 'delayMins',         label: 'Delay Mins',        unit: 'm',    ratio: false, risingIsBad: true  },
+  { key: 'safetyCritical',    label: 'Safety Critical',   unit: '',     ratio: false, risingIsBad: true  },
+  { key: 'delayPerIncident',  label: 'Delay / Incident',  unit: 'm',    ratio: true,  risingIsBad: true  },
+  { key: 'avgArrival',        label: 'Avg Arrival',       unit: 'm',    ratio: true,  risingIsBad: true  },
+  { key: 'avgDuration',       label: 'Avg Duration',      unit: 'm',    ratio: true,  risingIsBad: true  },
+  { key: 'pctSlaBreach',      label: '% SLA Breach',      unit: '%',    ratio: true,  risingIsBad: true  },
 ]
+
+function isRatioMetric(m: SeriesMetric): boolean {
+  return METRIC_OPTS.find(o => o.key === m)?.ratio ?? false
+}
+
+function metricUnit(m: SeriesMetric): string {
+  return METRIC_OPTS.find(o => o.key === m)?.unit ?? ''
+}
 
 const CAT_GROUPS: { label: string; cats: IncidentCategory[] }[] = [
   { label: 'Safety',      cats: ['FATALITY', 'PERSON_STRUCK', 'SPAD', 'TPWS', 'IRREGULAR_WORKING', 'NEAR_MISS', 'LEVEL_CROSSING', 'FIRE', 'PASSENGER_INJURY', 'HABD_WILD', 'BRIDGE_STRIKE', 'DERAILMENT'] },
@@ -1180,24 +1200,56 @@ function buildComposerData(
     dates.push(new Date(startMs + i * 86_400_000).toISOString().slice(0, 10))
   }
 
-  const rawMaps = new Map<string, Map<string, number>>()
+  const rawMaps = new Map<string, Map<string, number | null>>()
   for (const s of series) {
-    const byDate = new Map<string, number>(dates.map(d => [d, 0]))
+    const byDate = new Map<string, number | null>(dates.map(d => [d, isRatioMetric(s.metric) ? null : 0]))
     const filtered = incidents.filter(inc => {
       if (s.categories.length && !s.categories.includes(inc.category)) return false
       if (s.severities.length && !s.severities.includes(inc.severity)) return false
       if (s.areas.length && !s.areas.includes(inc.area ?? '')) return false
       return true
     })
-    for (const inc of filtered) {
-      const prev = byDate.get(inc.report_date)
-      if (prev === undefined) continue
-      if (s.metric === 'incidents' && !inc.is_continuation) {
-        byDate.set(inc.report_date, prev + 1)
-      } else if (s.metric === 'delayMins') {
-        byDate.set(inc.report_date, prev + (inc.is_continuation ? (inc.delay_delta ?? 0) : (inc.minutes_delay ?? 0)))
-      } else if (s.metric === 'safetyCritical' && !inc.is_continuation && SAFETY_CATEGORIES.includes(inc.category)) {
-        byDate.set(inc.report_date, prev + 1)
+
+    if (s.metric === 'incidents' || s.metric === 'safetyCritical') {
+      for (const inc of filtered) {
+        if (inc.is_continuation) continue
+        if (s.metric === 'safetyCritical' && !SAFETY_CATEGORIES.includes(inc.category)) continue
+        const cur = byDate.get(inc.report_date)
+        if (cur === undefined) continue
+        byDate.set(inc.report_date, (cur as number) + 1)
+      }
+    } else if (s.metric === 'delayMins') {
+      for (const inc of filtered) {
+        const cur = byDate.get(inc.report_date)
+        if (cur === undefined) continue
+        const add = inc.is_continuation ? (inc.delay_delta ?? 0) : (inc.minutes_delay ?? 0)
+        byDate.set(inc.report_date, (cur as number) + add)
+      }
+    } else {
+      // ratio metrics — accumulate per day as { sum, count } and average at the end
+      const acc = new Map<string, { sum: number; count: number }>(dates.map(d => [d, { sum: 0, count: 0 }]))
+      for (const inc of filtered) {
+        if (inc.is_continuation) continue
+        const a = acc.get(inc.report_date)
+        if (!a) continue
+        if (s.metric === 'delayPerIncident') {
+          a.sum += (inc.minutes_delay ?? 0); a.count += 1
+        } else if (s.metric === 'avgArrival') {
+          const v = effectiveMinsToArrival(inc)
+          if (v != null) { a.sum += v; a.count += 1 }
+        } else if (s.metric === 'avgDuration') {
+          const v = effectiveDuration(inc)
+          if (v != null) { a.sum += v; a.count += 1 }
+        } else if (s.metric === 'pctSlaBreach') {
+          const v = effectiveMinsToArrival(inc)
+          if (v != null) { a.sum += v > SLA_THRESHOLD_MINS ? 1 : 0; a.count += 1 }
+        }
+      }
+      for (const d of dates) {
+        const a = acc.get(d)!
+        if (a.count === 0) byDate.set(d, null)
+        else if (s.metric === 'pctSlaBreach') byDate.set(d, +(a.sum / a.count * 100).toFixed(1))
+        else byDate.set(d, +(a.sum / a.count).toFixed(1))
       }
     }
     rawMaps.set(s.id, byDate)
@@ -1206,7 +1258,7 @@ function buildComposerData(
   const maxByS = new Map<string, number>()
   if (normalise) {
     for (const s of series) {
-      const vals = Array.from(rawMaps.get(s.id)!.values())
+      const vals = Array.from(rawMaps.get(s.id)!.values()).filter((v): v is number => v != null)
       maxByS.set(s.id, Math.max(1, ...vals))
     }
   }
@@ -1214,23 +1266,56 @@ function buildComposerData(
   const rows = dates.map(d => {
     const row: Record<string, any> = { date: d }
     for (const s of series) {
-      const raw = rawMaps.get(s.id)!.get(d) ?? 0
-      const max = maxByS.get(s.id) ?? 1
-      row[s.id] = normalise ? +(raw / max * 100).toFixed(1) : raw
+      const raw = rawMaps.get(s.id)!.get(d)
+      if (raw == null) {
+        row[s.id] = null
+      } else {
+        const max = maxByS.get(s.id) ?? 1
+        row[s.id] = normalise ? +(raw / max * 100).toFixed(1) : raw
+      }
     }
     return row
   })
 
-  // rolling 7-day avg overlay keys
+  // rolling 7-day avg overlay keys (skip nulls)
   for (const s of series) {
     for (let i = 0; i < rows.length; i++) {
       const window = rows.slice(Math.max(0, i - 6), i + 1)
-      const avg = window.reduce((sum, r) => sum + (r[s.id] ?? 0), 0) / window.length
-      rows[i][s.id + '_r7'] = +avg.toFixed(2)
+      const vals = window.map(r => r[s.id]).filter((v): v is number => v != null)
+      rows[i][s.id + '_r7'] = vals.length ? +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(2) : null
     }
   }
 
   return rows
+}
+
+// Linear-regression slope expressed as "% change end-to-start". null when the
+// series has too few points or starts at zero (where % change is undefined).
+function trendDirection(rows: Record<string, any>[], key: string): {
+  slopePct: number | null
+  first: number | null
+  last: number | null
+  n: number
+} {
+  const series: number[] = []
+  for (const r of rows) {
+    const v = r[key]
+    if (v != null && !Number.isNaN(v)) series.push(v as number)
+  }
+  const n = series.length
+  if (n < 4) return { slopePct: null, first: null, last: null, n }
+  let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0
+  for (let i = 0; i < n; i++) {
+    sumX += i; sumY += series[i]; sumXY += i * series[i]; sumXX += i * i
+  }
+  const denom = n * sumXX - sumX * sumX
+  if (denom === 0) return { slopePct: null, first: null, last: null, n }
+  const slope = (n * sumXY - sumX * sumY) / denom
+  const intercept = (sumY - slope * sumX) / n
+  const first = intercept
+  const last = intercept + slope * (n - 1)
+  if (Math.abs(first) < 1e-9) return { slopePct: null, first, last, n }
+  return { slopePct: ((last - first) / Math.abs(first)) * 100, first, last, n }
 }
 
 function TrendsTooltip({ active, payload, label, series, normalise }: any) {
@@ -1238,21 +1323,48 @@ function TrendsTooltip({ active, payload, label, series, normalise }: any) {
   const defs: TrendSeriesDef[] = series ?? []
   const items = (payload as any[]).filter(p => !String(p.dataKey).endsWith('_r7'))
   return (
-    <div className="card !bg-[var(--bg-card-hi)] !border-[var(--line-hi)] p-2.5 text-xs min-w-[160px]">
+    <div className="card !bg-[var(--bg-card-hi)] !border-[var(--line-hi)] p-2.5 text-xs min-w-[180px]">
       <div className="label-micro mb-1.5">{label}</div>
       {items.map((p: any, i: number) => {
         const s = defs.find(d => d.id === p.dataKey)
+        const unit = s ? metricUnit(s.metric) : ''
+        const valStr = p.value == null
+          ? '—'
+          : normalise
+            ? `${p.value}%`
+            : typeof p.value === 'number' ? `${p.value.toLocaleString()}${unit}` : String(p.value)
         return (
           <div key={i} className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: s?.color ?? p.color }} />
             <span className="truncate" style={{ color: 'var(--ink-300)' }}>{s?.label ?? p.name}:</span>
-            <span className="numeric-mono ml-auto" style={{ color: 'var(--ink-100)' }}>
-              {normalise ? `${p.value}%` : (typeof p.value === 'number' ? p.value.toLocaleString() : p.value)}
-            </span>
+            <span className="numeric-mono ml-auto" style={{ color: 'var(--ink-100)' }}>{valStr}</span>
           </div>
         )
       })}
     </div>
+  )
+}
+
+function TrendBadge({ slopePct, risingIsBad }: { slopePct: number | null; risingIsBad: boolean }) {
+  if (slopePct == null || !Number.isFinite(slopePct)) {
+    return <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>· —</span>
+  }
+  const flat = Math.abs(slopePct) < 3
+  if (flat) {
+    return (
+      <span className="flex items-center gap-0.5 numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>
+        <Minus size={9} /> steady
+      </span>
+    )
+  }
+  const up = slopePct > 0
+  const bad = up ? risingIsBad : !risingIsBad
+  const color = bad ? 'var(--nr-orange)' : '#27AE60'
+  const Icon = up ? TrendingUp : TrendingDown
+  return (
+    <span className="flex items-center gap-0.5 numeric-mono text-[10px]" style={{ color }}>
+      <Icon size={9} /> {up ? '+' : ''}{Math.round(slopePct)}%
+    </span>
   )
 }
 
@@ -1359,23 +1471,30 @@ function TrendsTab({ incidents, windowFrom, windowDays, areaOptions }: {
       {/* Series chips */}
       {series.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {series.map(s => (
-            <div
-              key={s.id}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs border"
-              style={{ background: `${s.color}18`, borderColor: `${s.color}50`, color: 'var(--ink-200)' }}
-            >
-              <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: s.color }} />
-              <span>{s.label}</span>
-              <span style={{ color: `${s.color}80` }}>·</span>
-              <span style={{ color: 'var(--ink-400)' }}>{METRIC_OPTS.find(m => m.key === s.metric)?.label}</span>
-              {series.length > 1 && (
-                <button onClick={() => setSeries(prev => prev.filter(x => x.id !== s.id))} className="ml-0.5 opacity-50 hover:opacity-100">
-                  <X size={10} />
-                </button>
-              )}
-            </div>
-          ))}
+          {series.map(s => {
+            const opt = METRIC_OPTS.find(m => m.key === s.metric)
+            const dir = trendDirection(chartData, s.id + '_r7')
+            const fallback = dir.slopePct == null ? trendDirection(chartData, s.id) : dir
+            return (
+              <div
+                key={s.id}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs border"
+                style={{ background: `${s.color}18`, borderColor: `${s.color}50`, color: 'var(--ink-200)' }}
+              >
+                <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: s.color }} />
+                <span>{s.label}</span>
+                <span style={{ color: `${s.color}80` }}>·</span>
+                <span style={{ color: 'var(--ink-400)' }}>{opt?.label}</span>
+                <span style={{ color: `${s.color}60` }}>·</span>
+                <TrendBadge slopePct={fallback.slopePct} risingIsBad={opt?.risingIsBad ?? true} />
+                {series.length > 1 && (
+                  <button onClick={() => setSeries(prev => prev.filter(x => x.id !== s.id))} className="ml-0.5 opacity-50 hover:opacity-100">
+                    <X size={10} />
+                  </button>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -3097,6 +3216,908 @@ function fmtMins(m: number): string {
   const d = Math.floor(h / 24)
   const hr = h % 24
   return hr ? `${d}d ${hr}h` : `${d}d`
+}
+
+// ─── Explore Tab ─────────────────────────────────────────────────────────────
+// Pick a base segment (categories / severities / areas), split it by an
+// arrival-time band, duration band, hour band, day-of-week, severity, area or
+// line — then read per-cohort delay / arrival / duration / SLA stats side by
+// side. Click any cohort to open a "Why" panel that ranks dimensions
+// over-represented in that cohort vs the segment as a whole.
+
+type CohortDim = 'arrivalBand' | 'durationBand' | 'severity' | 'hourBand' | 'dow' | 'area' | 'line'
+type CohortMetric = 'avgDelay' | 'p50Delay' | 'avgArrival' | 'avgDuration' | 'pctSlaBreach' | 'count' | 'totalDelay'
+
+const COHORT_DIM_OPTS: { key: CohortDim; label: string }[] = [
+  { key: 'arrivalBand',  label: 'Arrival time band' },
+  { key: 'durationBand', label: 'Incident duration band' },
+  { key: 'severity',     label: 'Severity' },
+  { key: 'hourBand',     label: 'Hour of day' },
+  { key: 'dow',          label: 'Day of week' },
+  { key: 'area',         label: 'Area' },
+  { key: 'line',         label: 'Line' },
+]
+
+const COHORT_METRIC_OPTS: { key: CohortMetric; label: string; unit: string; risingIsBad: boolean }[] = [
+  { key: 'avgDelay',     label: 'Avg delay / incident', unit: 'm', risingIsBad: true  },
+  { key: 'p50Delay',     label: 'Median delay',         unit: 'm', risingIsBad: true  },
+  { key: 'avgArrival',   label: 'Avg arrival',          unit: 'm', risingIsBad: true  },
+  { key: 'avgDuration',  label: 'Avg duration',         unit: 'm', risingIsBad: true  },
+  { key: 'pctSlaBreach', label: '% SLA breach',         unit: '%', risingIsBad: true  },
+  { key: 'count',        label: 'Incident count',       unit: '',  risingIsBad: true  },
+  { key: 'totalDelay',   label: 'Total delay',          unit: 'm', risingIsBad: true  },
+]
+
+const ARRIVAL_BANDS = [
+  { key: '0-5',   label: '0–5 min',   min: 0,  max: 5  },
+  { key: '5-15',  label: '5–15 min',  min: 5,  max: 15 },
+  { key: '15-30', label: '15–30 min', min: 15, max: 30 },
+  { key: '30-60', label: '30–60 min', min: 30, max: 60 },
+  { key: '60+',   label: '60 min +',  min: 60, max: Number.POSITIVE_INFINITY },
+]
+
+const DURATION_BANDS = [
+  { key: '0-30',    label: '0–30 min',  min: 0,   max: 30  },
+  { key: '30-60',   label: '30–60 min', min: 30,  max: 60  },
+  { key: '60-120',  label: '1–2 h',     min: 60,  max: 120 },
+  { key: '120-240', label: '2–4 h',     min: 120, max: 240 },
+  { key: '240+',    label: '4 h +',     min: 240, max: Number.POSITIVE_INFINITY },
+]
+
+const HOUR_BANDS = [
+  { key: 'night',     label: 'Night 00–06',     from: 0,  to: 6  },
+  { key: 'morning',   label: 'Morning 06–12',   from: 6,  to: 12 },
+  { key: 'afternoon', label: 'Afternoon 12–18', from: 12, to: 18 },
+  { key: 'evening',   label: 'Evening 18–24',   from: 18, to: 24 },
+]
+
+const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+function exploreHour(i: IncidentRow): number | null {
+  if (i.hour_of_day != null && i.hour_of_day >= 0 && i.hour_of_day < 24) return i.hour_of_day
+  if (i.incident_start) {
+    const h = parseInt(i.incident_start.split(':')[0], 10)
+    if (!Number.isNaN(h) && h >= 0 && h < 24) return h
+  }
+  return null
+}
+
+function exploreDow(i: IncidentRow): number | null {
+  if (i.day_of_week != null && i.day_of_week >= 0 && i.day_of_week < 7) return i.day_of_week
+  if (i.report_date) {
+    const d = new Date(i.report_date + 'T00:00:00Z')
+    if (!Number.isNaN(d.getTime())) return d.getUTCDay()
+  }
+  return null
+}
+
+function arrivalBandKey(mins: number): string {
+  return ARRIVAL_BANDS.find(b => mins >= b.min && mins < b.max)?.key ?? '60+'
+}
+
+function durationBandKey(mins: number): string {
+  return DURATION_BANDS.find(b => mins >= b.min && mins < b.max)?.key ?? '240+'
+}
+
+function hourBandKey(h: number): string {
+  return HOUR_BANDS.find(b => h >= b.from && h < b.to)?.key ?? 'night'
+}
+
+function cohortKeyFor(i: IncidentRow, dim: CohortDim): { key: string; label: string } | null {
+  switch (dim) {
+    case 'arrivalBand': {
+      const v = effectiveMinsToArrival(i); if (v == null) return null
+      const k = arrivalBandKey(v); const b = ARRIVAL_BANDS.find(x => x.key === k)!
+      return { key: k, label: b.label }
+    }
+    case 'durationBand': {
+      const v = effectiveDuration(i); if (v == null) return null
+      const k = durationBandKey(v); const b = DURATION_BANDS.find(x => x.key === k)!
+      return { key: k, label: b.label }
+    }
+    case 'severity':
+      return { key: i.severity, label: i.severity }
+    case 'hourBand': {
+      const h = exploreHour(i); if (h == null) return null
+      const k = hourBandKey(h); const b = HOUR_BANDS.find(x => x.key === k)!
+      return { key: k, label: b.label }
+    }
+    case 'dow': {
+      const d = exploreDow(i); if (d == null) return null
+      return { key: String(d), label: DOW_LABELS[d] }
+    }
+    case 'area':
+      return i.area ? { key: i.area, label: i.area } : null
+    case 'line':
+      return i.line ? { key: i.line, label: i.line } : null
+  }
+}
+
+function cohortDimOrder(dim: CohortDim): string[] | null {
+  switch (dim) {
+    case 'arrivalBand':  return ARRIVAL_BANDS.map(b => b.key)
+    case 'durationBand': return DURATION_BANDS.map(b => b.key)
+    case 'hourBand':     return HOUR_BANDS.map(b => b.key)
+    case 'severity':     return ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']
+    case 'dow':          return ['1', '2', '3', '4', '5', '6', '0']  // Mon-first
+    default:             return null
+  }
+}
+
+function cohortColor(dim: CohortDim, key: string, idx: number): string {
+  if (dim === 'severity') return SEVERITY_CONFIG[key as Severity]?.color ?? SERIES_PALETTE[idx % SERIES_PALETTE.length]
+  return SERIES_PALETTE[idx % SERIES_PALETTE.length]
+}
+
+interface CohortStat {
+  key: string
+  label: string
+  color: string
+  count: number
+  totalDelay: number
+  avgDelay: number | null
+  p50Delay: number | null
+  avgArrival: number | null
+  avgDuration: number | null
+  pctSlaBreach: number | null
+  arrivalN: number
+  durationN: number
+  incidents: IncidentRow[]
+}
+
+function buildCohortStats(segment: IncidentRow[], dim: CohortDim): CohortStat[] {
+  const groups = new Map<string, { label: string; rows: IncidentRow[] }>()
+  for (const i of segment) {
+    if (i.is_continuation) continue
+    const k = cohortKeyFor(i, dim); if (!k) continue
+    const g = groups.get(k.key) ?? { label: k.label, rows: [] }
+    g.rows.push(i); groups.set(k.key, g)
+  }
+
+  const order = cohortDimOrder(dim)
+  const entries = [...groups.entries()]
+  entries.sort((a, b) => {
+    if (order) {
+      const ai = order.indexOf(a[0]), bi = order.indexOf(b[0])
+      if (ai !== -1 && bi !== -1) return ai - bi
+      if (ai !== -1) return -1
+      if (bi !== -1) return 1
+    }
+    return b[1].rows.length - a[1].rows.length
+  })
+
+  const slice = entries.slice(0, 12)  // cap to keep the chart readable
+
+  return slice.map(([key, g], idx) => {
+    const rows = g.rows
+    const delays = rows.map(r => r.minutes_delay ?? 0)
+    const arrivals = rows.map(effectiveMinsToArrival).filter((v): v is number => v != null)
+    const durations = rows.map(effectiveDuration).filter((v): v is number => v != null)
+    const breach = arrivals.filter(v => v > SLA_THRESHOLD_MINS).length
+    const totalDelay = delays.reduce((s, v) => s + v, 0)
+    const sortedDelays = [...delays].sort((a, b) => a - b)
+    const p50 = sortedDelays.length
+      ? (sortedDelays.length % 2
+          ? sortedDelays[(sortedDelays.length - 1) / 2]
+          : (sortedDelays[sortedDelays.length / 2 - 1] + sortedDelays[sortedDelays.length / 2]) / 2)
+      : null
+    return {
+      key,
+      label: g.label,
+      color: cohortColor(dim, key, idx),
+      count: rows.length,
+      totalDelay,
+      avgDelay: rows.length ? +(totalDelay / rows.length).toFixed(1) : null,
+      p50Delay: p50 != null ? +p50.toFixed(1) : null,
+      avgArrival: arrivals.length ? +(arrivals.reduce((s, v) => s + v, 0) / arrivals.length).toFixed(1) : null,
+      avgDuration: durations.length ? +(durations.reduce((s, v) => s + v, 0) / durations.length).toFixed(1) : null,
+      pctSlaBreach: arrivals.length ? +((breach / arrivals.length) * 100).toFixed(1) : null,
+      arrivalN: arrivals.length,
+      durationN: durations.length,
+      incidents: rows,
+    }
+  })
+}
+
+function metricValueOf(c: CohortStat, m: CohortMetric): number | null {
+  switch (m) {
+    case 'avgDelay':     return c.avgDelay
+    case 'p50Delay':     return c.p50Delay
+    case 'avgArrival':   return c.avgArrival
+    case 'avgDuration':  return c.avgDuration
+    case 'pctSlaBreach': return c.pctSlaBreach
+    case 'count':        return c.count
+    case 'totalDelay':   return c.totalDelay
+  }
+}
+
+interface InsightItem {
+  dimLabel: string
+  key: string
+  label: string
+  cohortCount: number
+  cohortShare: number
+  segmentCount: number
+  segmentShare: number
+  lift: number
+  color?: string
+}
+
+const WHY_DIMS: { dimLabel: string; getter: (i: IncidentRow) => { key: string; label: string; color?: string } | null }[] = [
+  {
+    dimLabel: 'Category',
+    getter: i => {
+      const cfg = CATEGORY_CONFIG[i.category]
+      return cfg ? { key: i.category, label: cfg.label, color: cfg.color } : null
+    },
+  },
+  { dimLabel: 'Area',     getter: i => i.area ? { key: i.area, label: i.area } : null },
+  { dimLabel: 'Line',     getter: i => i.line ? { key: i.line, label: i.line } : null },
+  {
+    dimLabel: 'Hour band',
+    getter: i => {
+      const h = exploreHour(i); if (h == null) return null
+      const k = hourBandKey(h); const b = HOUR_BANDS.find(x => x.key === k)!
+      return { key: k, label: b.label }
+    },
+  },
+  {
+    dimLabel: 'Day of week',
+    getter: i => {
+      const d = exploreDow(i); if (d == null) return null
+      return { key: String(d), label: DOW_LABELS[d] }
+    },
+  },
+  {
+    dimLabel: 'Severity',
+    getter: i => ({ key: i.severity, label: i.severity, color: SEVERITY_CONFIG[i.severity]?.color }),
+  },
+  { dimLabel: 'Location', getter: i => i.location ? { key: i.location, label: i.location } : null },
+  {
+    dimLabel: 'Incident type',
+    getter: i => {
+      const lbl = i.incident_type_label
+      return lbl ? { key: lbl, label: lbl } : null
+    },
+  },
+]
+
+const WHY_LIFT_THRESHOLD  = 1.6
+const WHY_MIN_COHORT_HITS = 3
+const WHY_MAX_PER_DIM     = 4
+
+function buildInsights(cohort: IncidentRow[], segment: IncidentRow[]): { dimLabel: string; items: InsightItem[] }[] {
+  const out: { dimLabel: string; items: InsightItem[] }[] = []
+  if (!cohort.length) return out
+
+  for (const dim of WHY_DIMS) {
+    const cohortCounts = new Map<string, { label: string; color?: string; n: number }>()
+    const segCounts    = new Map<string, number>()
+
+    for (const i of segment) {
+      const k = dim.getter(i); if (!k) continue
+      segCounts.set(k.key, (segCounts.get(k.key) ?? 0) + 1)
+    }
+    for (const i of cohort) {
+      const k = dim.getter(i); if (!k) continue
+      const cur = cohortCounts.get(k.key) ?? { label: k.label, color: k.color, n: 0 }
+      cur.n += 1; cohortCounts.set(k.key, cur)
+    }
+
+    const cTotal = cohort.length
+    const sTotal = segment.length
+    const items: InsightItem[] = []
+    for (const [key, info] of cohortCounts.entries()) {
+      if (info.n < WHY_MIN_COHORT_HITS) continue
+      const segN = segCounts.get(key) ?? 0
+      if (segN === 0) continue
+      const cShare = info.n / cTotal
+      const sShare = segN / sTotal
+      if (sShare === 0) continue
+      const lift = cShare / sShare
+      if (lift < WHY_LIFT_THRESHOLD) continue
+      items.push({
+        dimLabel: dim.dimLabel,
+        key,
+        label: info.label,
+        color: info.color,
+        cohortCount: info.n,
+        cohortShare: cShare,
+        segmentCount: segN,
+        segmentShare: sShare,
+        lift,
+      })
+    }
+    items.sort((a, b) => b.lift - a.lift)
+    if (items.length) out.push({ dimLabel: dim.dimLabel, items: items.slice(0, WHY_MAX_PER_DIM) })
+  }
+  return out
+}
+
+function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; areaOptions: string[] }) {
+  const [cats, setCats]       = useState<IncidentCategory[]>([])
+  const [types, setTypes]     = useState<string[]>([])
+  const [sevs, setSevs]       = useState<Severity[]>([])
+  const [areas, setAreas]     = useState<string[]>([])
+  const [searches, setSearches] = useState<string[]>([])
+  const [searchInput, setSearchInput] = useState('')
+  const [typeFilter, setTypeFilter]   = useState('')
+  const [typesOpen, setTypesOpen]     = useState(false)
+  const [dim, setDim]         = useState<CohortDim>('arrivalBand')
+  const [metric, setMetric]   = useState<CohortMetric>('avgDelay')
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+
+  // Specific incident types in the window, sorted by frequency descending
+  const typeOptions = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const i of incidents) {
+      if (i.is_continuation) continue
+      const lbl = i.incident_type_label?.trim()
+      if (!lbl) continue
+      counts.set(lbl, (counts.get(lbl) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([label, count]) => ({ label, count }))
+  }, [incidents])
+
+  const filteredTypeOptions = useMemo(() => {
+    const q = typeFilter.trim().toLowerCase()
+    return q ? typeOptions.filter(t => t.label.toLowerCase().includes(q)) : typeOptions
+  }, [typeOptions, typeFilter])
+
+  const segment = useMemo(() => {
+    return incidents.filter(i => {
+      if (i.is_continuation) return false
+      if (cats.length  && !cats.includes(i.category))   return false
+      if (sevs.length  && !sevs.includes(i.severity))   return false
+      if (areas.length && !areas.includes(i.area ?? '')) return false
+      if (types.length && !types.includes((i.incident_type_label ?? '').trim())) return false
+      if (searches.length && !searches.some(q => searchMatch(i, q))) return false
+      return true
+    })
+  }, [incidents, cats, sevs, areas, types, searches])
+
+  const commitSearch = () => {
+    const tok = searchInput.trim()
+    if (!tok) return
+    if (searches.includes(tok)) { setSearchInput(''); return }
+    setSearches(s => [...s, tok])
+    setSearchInput('')
+  }
+
+  const cohorts = useMemo(() => buildCohortStats(segment, dim), [segment, dim])
+
+  const selectedCohort = selectedKey ? cohorts.find(c => c.key === selectedKey) ?? null : null
+  const insights = useMemo(
+    () => selectedCohort ? buildInsights(selectedCohort.incidents, segment) : [],
+    [selectedCohort, segment],
+  )
+
+  // Comparison vs all other cohorts (segment minus selected) for headline contrast
+  const segmentMinusSelected = useMemo(() => {
+    if (!selectedCohort) return [] as IncidentRow[]
+    const ids = new Set(selectedCohort.incidents.map(i => i.id))
+    return segment.filter(i => !ids.has(i.id))
+  }, [segment, selectedCohort])
+
+  const restStats = useMemo(() => {
+    if (!selectedCohort || !segmentMinusSelected.length) return null
+    const arrivals = segmentMinusSelected.map(effectiveMinsToArrival).filter((v): v is number => v != null)
+    const durations = segmentMinusSelected.map(effectiveDuration).filter((v): v is number => v != null)
+    const breach = arrivals.filter(v => v > SLA_THRESHOLD_MINS).length
+    const delay = segmentMinusSelected.reduce((s, i) => s + (i.minutes_delay ?? 0), 0)
+    return {
+      avgDelay:    +(delay / segmentMinusSelected.length).toFixed(1),
+      avgArrival:  arrivals.length  ? +(arrivals.reduce((s, v) => s + v, 0) / arrivals.length).toFixed(1) : null,
+      avgDuration: durations.length ? +(durations.reduce((s, v) => s + v, 0) / durations.length).toFixed(1) : null,
+      pctSlaBreach: arrivals.length ? +((breach / arrivals.length) * 100).toFixed(1) : null,
+      count: segmentMinusSelected.length,
+    }
+  }, [selectedCohort, segmentMinusSelected])
+
+  const toggle = <T,>(arr: T[], v: T): T[] => arr.includes(v) ? arr.filter(x => x !== v) : [...arr, v]
+  const metricOpt = COHORT_METRIC_OPTS.find(o => o.key === metric)!
+
+  const chartData = cohorts.map(c => ({ label: c.label, value: metricValueOf(c, metric) ?? 0, color: c.color, key: c.key }))
+
+  const segmentActive = cats.length + types.length + sevs.length + areas.length + searches.length > 0
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold" style={{ color: 'var(--ink-100)' }}>Cohort Explorer</h2>
+        <p className="text-sm mt-1" style={{ color: 'var(--ink-400)' }}>
+          Define a base segment, split it by a dimension, then compare metrics side-by-side. Click a cohort to see why it stands out.
+        </p>
+      </div>
+
+      {/* Base segment */}
+      <div className="card p-5 space-y-5">
+        <div className="flex items-center justify-between">
+          <div className="label-micro" style={{ fontSize: 11 }}>Base segment <span style={{ color: 'var(--ink-500)' }}>(empty filter = all incidents)</span></div>
+          <span className="numeric-mono text-sm px-2.5 py-1 rounded border" style={{ color: 'var(--nr-orange)', borderColor: 'var(--nr-orange)' }}>
+            {segment.length} incidents
+          </span>
+        </div>
+
+        {/* Category groups */}
+        <div>
+          <div className="label-micro mb-2" style={{ fontSize: 11, color: 'var(--ink-400)' }}>Category groups</div>
+          <div className="space-y-2">
+            {CAT_GROUPS.map(group => (
+              <div key={group.label} className="flex items-center gap-3 flex-wrap">
+                <span className="label-micro w-20 shrink-0" style={{ fontSize: 11, color: 'var(--ink-500)' }}>{group.label}</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {group.cats.map(cat => {
+                    const cfg = CATEGORY_CONFIG[cat]
+                    const on = cats.includes(cat)
+                    return (
+                      <button
+                        key={cat}
+                        onClick={() => setCats(c => toggle(c, cat))}
+                        className="px-2 py-1 text-[11px] rounded border transition-colors"
+                        style={{
+                          background:  on ? `${cfg.color}25` : 'transparent',
+                          borderColor: on ? cfg.color : 'var(--line)',
+                          color:       on ? cfg.color : 'var(--ink-400)',
+                        }}
+                        title={cfg.label}
+                      >
+                        {cfg.short}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Specific incident types — collapsible to keep the panel compact */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="label-micro" style={{ fontSize: 11, color: 'var(--ink-400)' }}>
+              Specific incident types
+              <span className="ml-2" style={{ color: 'var(--ink-500)' }}>
+                {types.length ? `${types.length} selected` : `${typeOptions.length} available`}
+              </span>
+            </div>
+            <button
+              onClick={() => setTypesOpen(o => !o)}
+              className="flex items-center gap-1 text-[11px] hover:opacity-80"
+              style={{ color: 'var(--ink-300)' }}
+            >
+              <ChevronDown size={12} style={{ transform: typesOpen ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }} />
+              {typesOpen ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+
+          {types.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {types.map(t => (
+                <span
+                  key={t}
+                  className="flex items-center gap-1 px-2 py-1 text-[11px] rounded border"
+                  style={{ background: 'rgba(74,159,229,0.12)', borderColor: '#4A9FE5', color: '#4A9FE5' }}
+                >
+                  {t}
+                  <button onClick={() => setTypes(arr => arr.filter(x => x !== t))} className="opacity-70 hover:opacity-100">
+                    <X size={10} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {typesOpen && (
+            <div className="space-y-2">
+              <div className="relative">
+                <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--ink-500)' }} />
+                <input
+                  type="text"
+                  placeholder="Filter incident types…"
+                  value={typeFilter}
+                  onChange={e => setTypeFilter(e.target.value)}
+                  className="w-full pl-8 pr-2 py-1.5 text-[12px] rounded border outline-none bg-[var(--bg-card-hi)] focus:border-[var(--nr-orange)] transition-colors"
+                  style={{ borderColor: 'var(--line)', color: 'var(--ink-200)' }}
+                />
+              </div>
+              <div className="max-h-56 overflow-y-auto flex flex-wrap gap-1.5 p-0.5">
+                {filteredTypeOptions.length === 0 && (
+                  <span className="text-[11px] py-2" style={{ color: 'var(--ink-500)' }}>No types match</span>
+                )}
+                {filteredTypeOptions.map(({ label, count }) => {
+                  const on = types.includes(label)
+                  return (
+                    <button
+                      key={label}
+                      onClick={() => setTypes(t => toggle(t, label))}
+                      className="px-2 py-1 text-[11px] rounded border transition-colors flex items-center gap-1.5"
+                      style={{
+                        background:  on ? 'rgba(74,159,229,0.18)' : 'transparent',
+                        borderColor: on ? '#4A9FE5' : 'var(--line)',
+                        color:       on ? '#4A9FE5' : 'var(--ink-300)',
+                      }}
+                      title={`${label} · ${count} incident${count === 1 ? '' : 's'}`}
+                    >
+                      <span className="truncate max-w-[280px]">{label}</span>
+                      <span className="numeric-mono text-[10px] opacity-70">{count}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Free-text search across title / location / fault number / type / etc. */}
+        <div>
+          <div className="label-micro mb-2" style={{ fontSize: 11, color: 'var(--ink-400)' }}>
+            Free-text segment search
+            <span className="ml-2" style={{ color: 'var(--ink-500)' }}>
+              matches title, location, type, fault no., train ID, CCIL, line, operator
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[220px]">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--ink-500)' }} />
+              <input
+                type="text"
+                placeholder="Type a token, press Enter to add…"
+                value={searchInput}
+                onChange={e => setSearchInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commitSearch() }
+                  if (e.key === 'Backspace' && !searchInput && searches.length) {
+                    setSearches(s => s.slice(0, -1))
+                  }
+                }}
+                onBlur={commitSearch}
+                className="w-full pl-8 pr-2 py-1.5 text-[12px] rounded border outline-none bg-[var(--bg-card-hi)] focus:border-[var(--nr-orange)] transition-colors"
+                style={{ borderColor: 'var(--line)', color: 'var(--ink-200)' }}
+              />
+            </div>
+            {searches.map(s => (
+              <span
+                key={s}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded border"
+                style={{ background: 'rgba(224,82,6,0.12)', borderColor: 'var(--nr-orange)', color: 'var(--nr-orange)' }}
+              >
+                "{s}"
+                <button onClick={() => setSearches(arr => arr.filter(x => x !== s))} className="opacity-70 hover:opacity-100">
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+            {searches.length > 1 && (
+              <span className="numeric-mono text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-card-hi)', color: 'var(--ink-500)' }}>
+                OR
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-x-8 gap-y-4 pt-1">
+          <div>
+            <div className="label-micro mb-2" style={{ fontSize: 11, color: 'var(--ink-400)' }}>Severities</div>
+            <div className="flex gap-1.5">
+              {(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as Severity[]).map(sev => {
+                const cfg = SEVERITY_CONFIG[sev]
+                const on  = sevs.includes(sev)
+                return (
+                  <button
+                    key={sev}
+                    onClick={() => setSevs(s => toggle(s, sev))}
+                    className="px-2.5 py-1 text-[11px] rounded border transition-colors"
+                    style={{
+                      background:  on ? `${cfg.color}25` : 'transparent',
+                      borderColor: on ? cfg.color : 'var(--line)',
+                      color:       on ? cfg.color : 'var(--ink-300)',
+                    }}
+                  >
+                    {sev}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {areaOptions.length > 0 && (
+            <div className="flex-1 min-w-[220px]">
+              <div className="label-micro mb-2" style={{ fontSize: 11, color: 'var(--ink-400)' }}>Areas</div>
+              <div className="flex flex-wrap gap-1.5">
+                {areaOptions.map(area => {
+                  const on = areas.includes(area)
+                  return (
+                    <button
+                      key={area}
+                      onClick={() => setAreas(a => toggle(a, area))}
+                      className="px-2 py-1 text-[11px] rounded border transition-colors"
+                      style={{
+                        background:  on ? 'rgba(224,82,6,0.18)' : 'transparent',
+                        borderColor: on ? 'var(--nr-orange)' : 'var(--line)',
+                        color:       on ? 'var(--nr-orange)' : 'var(--ink-300)',
+                      }}
+                    >
+                      {area}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {segmentActive && (
+            <button
+              onClick={() => {
+                setCats([]); setTypes([]); setSevs([]); setAreas([]); setSearches([]); setSearchInput(''); setSelectedKey(null)
+              }}
+              className="text-[11px] self-end mb-0.5 hover:opacity-80 flex items-center gap-1"
+              style={{ color: 'var(--ink-400)' }}
+            >
+              <X size={11} /> Clear segment
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Split + metric controls */}
+      <div className="card p-5 grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div>
+          <div className="label-micro mb-2" style={{ fontSize: 11 }}>Split segment by</div>
+          <div className="flex flex-wrap gap-1.5">
+            {COHORT_DIM_OPTS.map(opt => (
+              <button
+                key={opt.key}
+                onClick={() => { setDim(opt.key); setSelectedKey(null) }}
+                className="px-2.5 py-1.5 text-[12px] rounded border transition-colors"
+                style={{
+                  background:  dim === opt.key ? 'rgba(74,159,229,0.15)' : 'transparent',
+                  borderColor: dim === opt.key ? '#4A9FE5' : 'var(--line)',
+                  color:       dim === opt.key ? '#4A9FE5' : 'var(--ink-300)',
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="label-micro mb-2" style={{ fontSize: 11 }}>Compare on metric</div>
+          <div className="flex flex-wrap gap-1.5">
+            {COHORT_METRIC_OPTS.map(opt => (
+              <button
+                key={opt.key}
+                onClick={() => setMetric(opt.key)}
+                className="px-2.5 py-1.5 text-[12px] rounded border transition-colors"
+                style={{
+                  background:  metric === opt.key ? 'rgba(224,82,6,0.18)' : 'transparent',
+                  borderColor: metric === opt.key ? 'var(--nr-orange)' : 'var(--line)',
+                  color:       metric === opt.key ? 'var(--nr-orange)' : 'var(--ink-300)',
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Comparison table */}
+      <div className="card p-5">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="label-micro" style={{ fontSize: 11 }}>Cohort comparison</div>
+            <p className="text-[12px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+              {cohorts.length} cohort{cohorts.length === 1 ? '' : 's'} · split by {COHORT_DIM_OPTS.find(o => o.key === dim)?.label.toLowerCase()}
+              {cohorts.length === 12 && <span> · capped at 12</span>}
+            </p>
+          </div>
+          {selectedCohort && (
+            <button onClick={() => setSelectedKey(null)} className="flex items-center gap-1 text-[11px] hover:opacity-70" style={{ color: 'var(--ink-400)' }}>
+              <X size={11} /> Clear selection
+            </button>
+          )}
+        </div>
+
+        {cohorts.length === 0 ? <Empty msg="No cohorts in this segment — try a wider filter or a different split." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="label-micro border-b border-[var(--line)]" style={{ fontSize: 11 }}>
+                  <th className="text-left py-2.5 pr-3">Cohort</th>
+                  <th className="text-right pr-3">n</th>
+                  <th className="text-right pr-3">Avg delay</th>
+                  <th className="text-right pr-3">Median delay</th>
+                  <th className="text-right pr-3">Avg arrival</th>
+                  <th className="text-right pr-3">Avg duration</th>
+                  <th className="text-right pr-3">% SLA breach</th>
+                  <th className="text-right">Total delay</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cohorts.map(c => {
+                  const sel = c.key === selectedKey
+                  return (
+                    <tr
+                      key={c.key}
+                      onClick={() => setSelectedKey(sel ? null : c.key)}
+                      className="border-b border-[var(--line)] last:border-0 cursor-pointer transition-colors"
+                      style={{ background: sel ? `${c.color}18` : undefined }}
+                    >
+                      <td className="py-2.5 pr-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: c.color }} />
+                          <span style={{ color: sel ? c.color : 'var(--ink-100)' }}>{c.label}</span>
+                        </div>
+                      </td>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-100)' }}>{c.count}</td>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-100)' }}>{c.avgDelay != null ? fmtMins(Math.round(c.avgDelay)) : '—'}</td>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: 'var(--ink-200)' }}>{c.p50Delay != null ? fmtMins(Math.round(c.p50Delay)) : '—'}</td>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: c.avgArrival != null ? 'var(--nr-orange)' : 'var(--ink-500)' }}>
+                        {c.avgArrival != null ? `${Math.round(c.avgArrival)}m` : '—'}
+                      </td>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: c.avgDuration != null ? 'var(--nr-steel)' : 'var(--ink-500)' }}>
+                        {c.avgDuration != null ? fmtMins(Math.round(c.avgDuration)) : '—'}
+                      </td>
+                      <td className="text-right pr-3 numeric-mono" style={{ color: c.pctSlaBreach != null ? (c.pctSlaBreach > 30 ? 'var(--nr-red,#E74C3C)' : 'var(--ink-100)') : 'var(--ink-500)' }}>
+                        {c.pctSlaBreach != null ? `${c.pctSlaBreach.toFixed(0)}%` : '—'}
+                      </td>
+                      <td className="text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>{fmtMins(c.totalDelay)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Comparison bar chart */}
+      {cohorts.length > 0 && (
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <div className="label-micro" style={{ fontSize: 11 }}>{metricOpt.label} by {COHORT_DIM_OPTS.find(o => o.key === dim)?.label.toLowerCase()}</div>
+              <p className="text-[12px] mt-0.5" style={{ color: 'var(--ink-400)' }}>Click a bar to drill into a cohort</p>
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={Math.max(200, cohorts.length * 32 + 70)}>
+            <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 30, top: 8, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="2 6" horizontal={false} />
+              <XAxis
+                type="number"
+                tick={{ fontSize: 11, fill: 'var(--ink-400)', fontFamily: 'JetBrains Mono' }}
+                tickFormatter={(v: number) => `${v}${metricOpt.unit}`}
+              />
+              <YAxis
+                dataKey="label"
+                type="category"
+                width={140}
+                tick={{ fontSize: 11, fill: 'var(--ink-200)', fontFamily: 'JetBrains Mono' }}
+              />
+              <Tooltip
+                cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                content={({ active, payload }: any) => {
+                  if (!active || !payload?.length) return null
+                  const row = payload[0]?.payload
+                  return (
+                    <div className="card !bg-[var(--bg-card-hi)] !border-[var(--line-hi)] p-2.5 text-[12px]">
+                      <div className="label-micro mb-1" style={{ fontSize: 11 }}>{row.label}</div>
+                      <div className="numeric-mono text-sm" style={{ color: row.color }}>
+                        {Number(row.value).toLocaleString()}{metricOpt.unit}
+                      </div>
+                    </div>
+                  )
+                }}
+              />
+              <Bar dataKey="value" radius={[0, 2, 2, 0]} onClick={(d: any) => setSelectedKey(d.key === selectedKey ? null : d.key)}>
+                {chartData.map(d => (
+                  <Cell key={d.key} fill={d.color} fillOpacity={selectedKey && selectedKey !== d.key ? 0.35 : 1} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Why panel */}
+      {selectedCohort && (
+        <div className="card p-5 space-y-5 tick-corners">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="label-micro" style={{ fontSize: 11 }}>Why does this cohort stand out?</div>
+              <h3 className="text-base mt-0.5" style={{ color: selectedCohort.color }}>
+                {selectedCohort.label}
+                <span className="ml-2 text-[12px]" style={{ color: 'var(--ink-400)' }}>
+                  · {selectedCohort.count} of {segment.length} segment incidents
+                </span>
+              </h3>
+            </div>
+            <button onClick={() => setSelectedKey(null)} className="flex items-center gap-1 text-[11px] hover:opacity-70" style={{ color: 'var(--ink-400)' }}>
+              <X size={11} /> Close
+            </button>
+          </div>
+
+          {restStats && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <CompareTile label="Avg delay"     a={selectedCohort.avgDelay}    b={restStats.avgDelay}     unit="m" goodWhenLower />
+              <CompareTile label="Avg arrival"   a={selectedCohort.avgArrival}  b={restStats.avgArrival}   unit="m" goodWhenLower />
+              <CompareTile label="Avg duration"  a={selectedCohort.avgDuration} b={restStats.avgDuration}  unit="m" goodWhenLower />
+              <CompareTile label="% SLA breach"  a={selectedCohort.pctSlaBreach} b={restStats.pctSlaBreach} unit="%" goodWhenLower />
+            </div>
+          )}
+
+          {insights.length === 0 ? (
+            <div className="text-[12px] py-3" style={{ color: 'var(--ink-400)' }}>
+              No dimension was meaningfully over-represented in this cohort vs the rest of the segment.
+              Try widening the base segment or splitting on a different dimension.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {insights.map(group => (
+                <div key={group.dimLabel} className="border border-[var(--line)] rounded p-3">
+                  <div className="label-micro mb-2" style={{ fontSize: 11, color: 'var(--ink-400)' }}>{group.dimLabel}</div>
+                  <div className="space-y-2">
+                    {group.items.map(it => (
+                      <div key={it.key} className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: it.color ?? 'var(--nr-orange)' }} />
+                        <span className="truncate text-[12px]" style={{ color: 'var(--ink-100)' }} title={it.label}>{it.label}</span>
+                        <span className="ml-auto numeric-mono text-[11px] px-1.5 py-0.5 rounded shrink-0" style={{ background: 'rgba(224,82,6,0.15)', color: 'var(--nr-orange)' }}>
+                          ×{it.lift.toFixed(1)}
+                        </span>
+                        <span className="numeric-mono text-[11px] shrink-0" style={{ color: 'var(--ink-400)' }}>
+                          {it.cohortCount}/{it.segmentCount}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <p className="text-[11px] pt-2 border-t border-[var(--line)]" style={{ color: 'var(--ink-500)' }}>
+            Lift = how much more frequent a value is in this cohort vs the segment overall. Surfaced when share is at least
+            {' '}{WHY_LIFT_THRESHOLD}× the segment baseline and at least {WHY_MIN_COHORT_HITS} incidents fall in the bucket.
+            These are correlations, not causes — they help direct further investigation.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CompareTile({ label, a, b, unit, goodWhenLower }: {
+  label: string; a: number | null; b: number | null; unit: string; goodWhenLower: boolean
+}) {
+  const hasBoth = a != null && b != null
+  let deltaPct: number | null = null
+  if (hasBoth && b !== 0) deltaPct = ((a - b) / Math.abs(b)) * 100
+  const flat = deltaPct == null || Math.abs(deltaPct) < 5
+  const up = deltaPct != null && deltaPct > 0
+  const bad = deltaPct != null && (goodWhenLower ? up : !up)
+  const color = flat ? 'var(--ink-400)' : (bad ? 'var(--nr-orange)' : '#27AE60')
+  const Icon = flat ? Minus : up ? TrendingUp : TrendingDown
+  return (
+    <div className="border border-[var(--line)] rounded p-3">
+      <div className="label-micro mb-1.5" style={{ fontSize: 11 }}>{label}</div>
+      <div className="numeric-mono text-lg" style={{ color: 'var(--ink-100)' }}>
+        {a != null ? `${Math.round(a)}${unit}` : '—'}
+      </div>
+      <div className="flex items-center gap-1 mt-1 text-[11px] numeric-mono" style={{ color }}>
+        <Icon size={11} />
+        {deltaPct != null ? `${deltaPct > 0 ? '+' : ''}${Math.round(deltaPct)}%` : '—'}
+        <span style={{ color: 'var(--ink-400)' }}>vs rest</span>
+      </div>
+      {b != null && (
+        <div className="text-[11px] mt-0.5" style={{ color: 'var(--ink-500)' }}>
+          rest = {Math.round(b)}{unit}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ─── Analytics Tab ───────────────────────────────────────────────────────────
