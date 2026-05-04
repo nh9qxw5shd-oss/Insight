@@ -12,7 +12,7 @@ import {
   Hypothesis, HypothesisCluster, HypothesisDimension,
 } from './types'
 
-const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
+export const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
 
 // ─── Date helpers ────────────────────────────────────────────────────────────
 
@@ -165,11 +165,11 @@ function searchMatch(i: IncidentRow, q: string): boolean {
 // Continuation-aware: a CCIL that re-appears day-by-day is a single event, so
 // it's counted once and only its incremental delay (delay_delta) is summed.
 
-function effectiveDelay(i: IncidentRow): number {
+export function effectiveDelay(i: IncidentRow): number {
   return i.is_continuation ? (i.delay_delta ?? 0) : (i.minutes_delay ?? 0)
 }
 
-function nonContinuation<T extends { is_continuation: boolean }>(rows: T[]): T[] {
+export function nonContinuation<T extends { is_continuation: boolean }>(rows: T[]): T[] {
   return rows.filter(r => !r.is_continuation)
 }
 
@@ -198,28 +198,28 @@ function minsFromTimes(start: string | null, end: string | null): number | null 
 // Effective timing getters — prefer precomputed DB columns, fall back to
 // parsing the raw HH:MM strings so incidents without computed columns still
 // contribute to distributions and median calculations.
-function effectiveMinsToAdvised(i: IncidentRow): number | null {
+export function effectiveMinsToAdvised(i: IncidentRow): number | null {
   if (i.mins_to_advised != null && i.mins_to_advised >= 0 && i.mins_to_advised < 1440)
     return i.mins_to_advised
   const v = minsFromTimes(i.incident_start, i.advised_time)
   return v != null && v >= 0 && v < 1440 ? v : null
 }
 
-function effectiveMinsToResponse(i: IncidentRow): number | null {
+export function effectiveMinsToResponse(i: IncidentRow): number | null {
   if (i.mins_to_response != null && i.mins_to_response >= 0 && i.mins_to_response < 1440)
     return i.mins_to_response
   const v = minsFromTimes(i.incident_start, i.initial_resp_time)
   return v != null && v >= 0 && v < 1440 ? v : null
 }
 
-function effectiveMinsToArrival(i: IncidentRow): number | null {
+export function effectiveMinsToArrival(i: IncidentRow): number | null {
   if (i.mins_to_arrival != null && i.mins_to_arrival >= 0 && i.mins_to_arrival < 1440)
     return i.mins_to_arrival
   const v = minsFromTimes(i.incident_start, i.arrived_at_time)
   return v != null && v >= 0 && v < 1440 ? v : null
 }
 
-function effectiveDuration(i: IncidentRow): number | null {
+export function effectiveDuration(i: IncidentRow): number | null {
   if (i.incident_duration != null && i.incident_duration > 0 && i.incident_duration < 1440)
     return i.incident_duration
   const v = minsFromTimes(i.incident_start, i.nwr_time)
