@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
-  Clock, Compass, Download, Filter, GitBranch, Layers, MapPin, Minus, RefreshCw, Route, Search,
+  Clock, Compass, Download, Filter, GitBranch, Layers, List, MapPin, Minus, RefreshCw, Route, Search,
   TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -32,7 +32,7 @@ import {
 } from '@/lib/queries'
 import {
   toggleCategoryFilter, toggleAreaFilter, toggleSeverityFilter,
-  removeSearchToken, clearCustomDate,
+  removeSearchToken, clearCustomDate, clearDelayFilter,
 } from '@/lib/filterActions'
 import { generateSyntheticData } from '@/lib/syntheticData'
 import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
@@ -218,7 +218,8 @@ export default function InsightDashboard() {
         onOpenFilters={() => setFiltersOpen(true)}
         activeFilterCount={
           filters.areas.length + filters.categories.length +
-          filters.severities.length + filters.searches.length
+          filters.severities.length + filters.searches.length +
+          (filters.minDelay != null || filters.maxDelay != null ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
         signalCount={signals.length}
@@ -233,6 +234,7 @@ export default function InsightDashboard() {
         onRemoveSeverity={handleAddSeverityFilter}
         onRemoveSearch={(t) => setFilters(f => removeSearchToken(f, t))}
         onClearDate={() => setFilters(f => clearCustomDate(f))}
+        onClearDelay={() => setFilters(f => clearDelayFilter(f))}
         onClearAll={handleResetFilters}
       />
 
@@ -656,6 +658,10 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           deltaInverted
           decompose={decompose}
           metric="incidents"
+          onListClick={() => onDrillDown({
+            title: 'All Incidents',
+            incidents: [...incidents].sort((a: any, b: any) => b.report_date.localeCompare(a.report_date)),
+          })}
         />
         <KPICard
           label="Total Delay"
@@ -1786,7 +1792,7 @@ function Card({ title, subtitle, children, className = '', right }: any) {
   )
 }
 
-function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, critical, accent, decompose, metric }: any) {
+function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, critical, accent, decompose, metric, onListClick }: any) {
   // delta: positive = up, negative = down. deltaInverted: up is bad (more delay = bad)
   const deltaColor = delta == null ? 'var(--ink-400)'
     : (delta > 0) === !!deltaInverted ? 'var(--nr-red)' : 'var(--nr-green)'
@@ -1802,14 +1808,22 @@ function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, cri
   )
 
   return (
-    <div className={`card p-5 animate-count-up relative overflow-hidden ${accent ? 'card-hi' : ''}`}>
+    <div
+      className={`card p-5 animate-count-up relative overflow-hidden group ${accent ? 'card-hi' : ''} ${onListClick ? 'cursor-pointer hover:border-[var(--line-hi)] transition-colors' : ''}`}
+      onClick={onListClick}
+    >
       {critical && (
         <div className="absolute top-0 right-0 w-12 h-12 pointer-events-none"
              style={{ background: 'radial-gradient(circle at top right, rgba(231, 76, 60, 0.4), transparent 70%)' }} />
       )}
       <div className="flex items-center justify-between mb-3">
         <span className="label-micro">{label}</span>
-        {Icon && <Icon size={14} style={{ color: 'var(--ink-400)' }} />}
+        <div className="flex items-center gap-1.5">
+          {onListClick && (
+            <List size={12} className="opacity-0 group-hover:opacity-60 transition-opacity" style={{ color: 'var(--ink-400)' }} />
+          )}
+          {Icon && <Icon size={14} style={{ color: 'var(--ink-400)' }} />}
+        </div>
       </div>
       <div className="numeric text-4xl font-light leading-none mb-1" style={{ color: 'var(--ink-100)' }}>
         {value}
@@ -1818,7 +1832,7 @@ function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, cri
       {delta != null && TrendIcon && (
         <button
           type="button"
-          onClick={() => canDecompose && setOpen(true)}
+          onClick={(e) => { e.stopPropagation(); canDecompose && setOpen(true) }}
           disabled={!canDecompose}
           className={`flex items-center gap-1 mt-3 text-xs numeric-mono ${canDecompose ? 'cursor-pointer hover:opacity-80' : 'cursor-default'}`}
           style={{ color: deltaColor, background: 'transparent', border: 'none', padding: 0 }}
@@ -1966,19 +1980,21 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
 // dimension below the header. Drives the cross-filter drill-down loop —
 // click anything in a chart, see it land here, click the X to remove.
 
-function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onClearDate, onClearAll }: {
+function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onClearDate, onClearDelay, onClearAll }: {
   filters: AnalyticsFilters
   onRemoveCategory: (c: IncidentCategory) => void
   onRemoveArea: (a: string) => void
   onRemoveSeverity: (s: Severity) => void
   onRemoveSearch: (s: string) => void
   onClearDate: () => void
+  onClearDelay: () => void
   onClearAll: () => void
 }) {
   const hasCustomDate = !!filters.startDate
+  const hasDelay = filters.minDelay != null || filters.maxDelay != null
   const total =
     filters.categories.length + filters.areas.length + filters.severities.length +
-    filters.searches.length + (hasCustomDate ? 1 : 0)
+    filters.searches.length + (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0)
   if (total === 0) return null
 
   const chip = (key: string, label: string, onRemove: () => void, color?: string, title?: string) => (
@@ -2011,6 +2027,17 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
             onClearDate,
             'var(--nr-orange)',
             'Clear custom date range',
+          )}
+          {hasDelay && chip(
+            'delay',
+            filters.minDelay != null && filters.maxDelay != null
+              ? `${filters.minDelay}–${filters.maxDelay} min delay`
+              : filters.minDelay != null
+              ? `≥${filters.minDelay} min delay`
+              : `≤${filters.maxDelay} min delay`,
+            onClearDelay,
+            'var(--nr-steel)',
+            'Clear delay range filter',
           )}
           {filters.categories.map(c => chip(
             `cat-${c}`,
@@ -2562,7 +2589,7 @@ function DelayDensityTable({ data, incidents, onDrillDown }: any) {
 }
 
 function DrillDownModal({ title, incidents, onClose }: { title: string; incidents: IncidentRow[]; onClose: () => void }) {
-  const sorted = [...incidents].slice(0, 30)
+  const sorted = [...incidents]
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
@@ -2952,6 +2979,42 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
                 />
               ))}
             </div>
+          </FilterGroup>
+
+          <FilterGroup label="Delay Range (minutes)">
+            <div className="flex items-center gap-2">
+              <div className="flex-1">
+                <label className="label-micro mb-1 block">Min</label>
+                <input
+                  type="number"
+                  min={0}
+                  className="input w-full"
+                  placeholder="e.g. 1000"
+                  value={draft.minDelay ?? ''}
+                  onChange={(e) => setDraft({ ...draft, minDelay: e.target.value === '' ? undefined : Number(e.target.value) })}
+                />
+              </div>
+              <div className="flex-1">
+                <label className="label-micro mb-1 block">Max</label>
+                <input
+                  type="number"
+                  min={0}
+                  className="input w-full"
+                  placeholder="no limit"
+                  value={draft.maxDelay ?? ''}
+                  onChange={(e) => setDraft({ ...draft, maxDelay: e.target.value === '' ? undefined : Number(e.target.value) })}
+                />
+              </div>
+            </div>
+            {(draft.minDelay != null || draft.maxDelay != null) && (
+              <button
+                onClick={() => setDraft({ ...draft, minDelay: undefined, maxDelay: undefined })}
+                className="text-xs mt-2"
+                style={{ color: 'var(--ink-400)' }}
+              >
+                Clear delay range
+              </button>
+            )}
           </FilterGroup>
 
           <FilterGroup label="Custom Date Range">
