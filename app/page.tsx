@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
-  Clock, Compass, Download, Filter, GitBranch, Layers, MapPin, Minus, RefreshCw, Route, Search,
+  Clock, Compass, Download, Filter, GitBranch, Layers, List, MapPin, Minus, RefreshCw, Route, Search,
   TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -658,6 +658,10 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           deltaInverted
           decompose={decompose}
           metric="incidents"
+          onListClick={() => onDrillDown({
+            title: 'All Incidents',
+            incidents: [...incidents].sort((a: any, b: any) => b.report_date.localeCompare(a.report_date)),
+          })}
         />
         <KPICard
           label="Total Delay"
@@ -1788,7 +1792,7 @@ function Card({ title, subtitle, children, className = '', right }: any) {
   )
 }
 
-function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, critical, accent, decompose, metric }: any) {
+function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, critical, accent, decompose, metric, onListClick }: any) {
   // delta: positive = up, negative = down. deltaInverted: up is bad (more delay = bad)
   const deltaColor = delta == null ? 'var(--ink-400)'
     : (delta > 0) === !!deltaInverted ? 'var(--nr-red)' : 'var(--nr-green)'
@@ -1804,14 +1808,22 @@ function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, cri
   )
 
   return (
-    <div className={`card p-5 animate-count-up relative overflow-hidden ${accent ? 'card-hi' : ''}`}>
+    <div
+      className={`card p-5 animate-count-up relative overflow-hidden group ${accent ? 'card-hi' : ''} ${onListClick ? 'cursor-pointer hover:border-[var(--line-hi)] transition-colors' : ''}`}
+      onClick={onListClick}
+    >
       {critical && (
         <div className="absolute top-0 right-0 w-12 h-12 pointer-events-none"
              style={{ background: 'radial-gradient(circle at top right, rgba(231, 76, 60, 0.4), transparent 70%)' }} />
       )}
       <div className="flex items-center justify-between mb-3">
         <span className="label-micro">{label}</span>
-        {Icon && <Icon size={14} style={{ color: 'var(--ink-400)' }} />}
+        <div className="flex items-center gap-1.5">
+          {onListClick && (
+            <List size={12} className="opacity-0 group-hover:opacity-60 transition-opacity" style={{ color: 'var(--ink-400)' }} />
+          )}
+          {Icon && <Icon size={14} style={{ color: 'var(--ink-400)' }} />}
+        </div>
       </div>
       <div className="numeric text-4xl font-light leading-none mb-1" style={{ color: 'var(--ink-100)' }}>
         {value}
@@ -1820,7 +1832,7 @@ function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, cri
       {delta != null && TrendIcon && (
         <button
           type="button"
-          onClick={() => canDecompose && setOpen(true)}
+          onClick={(e) => { e.stopPropagation(); canDecompose && setOpen(true) }}
           disabled={!canDecompose}
           className={`flex items-center gap-1 mt-3 text-xs numeric-mono ${canDecompose ? 'cursor-pointer hover:opacity-80' : 'cursor-default'}`}
           style={{ color: deltaColor, background: 'transparent', border: 'none', padding: 0 }}
@@ -2577,7 +2589,7 @@ function DelayDensityTable({ data, incidents, onDrillDown }: any) {
 }
 
 function DrillDownModal({ title, incidents, onClose }: { title: string; incidents: IncidentRow[]; onClose: () => void }) {
-  const sorted = [...incidents].slice(0, 30)
+  const sorted = [...incidents]
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
