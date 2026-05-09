@@ -90,6 +90,8 @@ export interface AnalyticsFilters {
   severities: Severity[]          // empty = all
   searches: string[]              // free-text tokens matched across title / location / fault
   searchMode: 'and' | 'or'       // 'or' = any token matches; 'and' = all tokens must match
+  minDelay?: number               // inclusive lower bound on per-incident delay minutes
+  maxDelay?: number               // inclusive upper bound on per-incident delay minutes
 }
 
 export const DEFAULT_FILTERS: AnalyticsFilters = {

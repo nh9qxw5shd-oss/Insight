@@ -32,7 +32,7 @@ import {
 } from '@/lib/queries'
 import {
   toggleCategoryFilter, toggleAreaFilter, toggleSeverityFilter,
-  removeSearchToken, clearCustomDate,
+  removeSearchToken, clearCustomDate, clearDelayFilter,
 } from '@/lib/filterActions'
 import { generateSyntheticData } from '@/lib/syntheticData'
 import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
@@ -218,7 +218,8 @@ export default function InsightDashboard() {
         onOpenFilters={() => setFiltersOpen(true)}
         activeFilterCount={
           filters.areas.length + filters.categories.length +
-          filters.severities.length + filters.searches.length
+          filters.severities.length + filters.searches.length +
+          (filters.minDelay != null || filters.maxDelay != null ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
         signalCount={signals.length}
@@ -233,6 +234,7 @@ export default function InsightDashboard() {
         onRemoveSeverity={handleAddSeverityFilter}
         onRemoveSearch={(t) => setFilters(f => removeSearchToken(f, t))}
         onClearDate={() => setFilters(f => clearCustomDate(f))}
+        onClearDelay={() => setFilters(f => clearDelayFilter(f))}
         onClearAll={handleResetFilters}
       />
 
@@ -1966,19 +1968,21 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
 // dimension below the header. Drives the cross-filter drill-down loop —
 // click anything in a chart, see it land here, click the X to remove.
 
-function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onClearDate, onClearAll }: {
+function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onClearDate, onClearDelay, onClearAll }: {
   filters: AnalyticsFilters
   onRemoveCategory: (c: IncidentCategory) => void
   onRemoveArea: (a: string) => void
   onRemoveSeverity: (s: Severity) => void
   onRemoveSearch: (s: string) => void
   onClearDate: () => void
+  onClearDelay: () => void
   onClearAll: () => void
 }) {
   const hasCustomDate = !!filters.startDate
+  const hasDelay = filters.minDelay != null || filters.maxDelay != null
   const total =
     filters.categories.length + filters.areas.length + filters.severities.length +
-    filters.searches.length + (hasCustomDate ? 1 : 0)
+    filters.searches.length + (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0)
   if (total === 0) return null
 
   const chip = (key: string, label: string, onRemove: () => void, color?: string, title?: string) => (
@@ -2011,6 +2015,17 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
             onClearDate,
             'var(--nr-orange)',
             'Clear custom date range',
+          )}
+          {hasDelay && chip(
+            'delay',
+            filters.minDelay != null && filters.maxDelay != null
+              ? `${filters.minDelay}–${filters.maxDelay} min delay`
+              : filters.minDelay != null
+              ? `≥${filters.minDelay} min delay`
+              : `≤${filters.maxDelay} min delay`,
+            onClearDelay,
+            'var(--nr-steel)',
+            'Clear delay range filter',
           )}
           {filters.categories.map(c => chip(
             `cat-${c}`,
@@ -2952,6 +2967,42 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
                 />
               ))}
             </div>
+          </FilterGroup>
+
+          <FilterGroup label="Delay Range (minutes)">
+            <div className="flex items-center gap-2">
+              <div className="flex-1">
+                <label className="label-micro mb-1 block">Min</label>
+                <input
+                  type="number"
+                  min={0}
+                  className="input w-full"
+                  placeholder="e.g. 1000"
+                  value={draft.minDelay ?? ''}
+                  onChange={(e) => setDraft({ ...draft, minDelay: e.target.value === '' ? undefined : Number(e.target.value) })}
+                />
+              </div>
+              <div className="flex-1">
+                <label className="label-micro mb-1 block">Max</label>
+                <input
+                  type="number"
+                  min={0}
+                  className="input w-full"
+                  placeholder="no limit"
+                  value={draft.maxDelay ?? ''}
+                  onChange={(e) => setDraft({ ...draft, maxDelay: e.target.value === '' ? undefined : Number(e.target.value) })}
+                />
+              </div>
+            </div>
+            {(draft.minDelay != null || draft.maxDelay != null) && (
+              <button
+                onClick={() => setDraft({ ...draft, minDelay: undefined, maxDelay: undefined })}
+                className="text-xs mt-2"
+                style={{ color: 'var(--ink-400)' }}
+              >
+                Clear delay range
+              </button>
+            )}
           </FilterGroup>
 
           <FilterGroup label="Custom Date Range">

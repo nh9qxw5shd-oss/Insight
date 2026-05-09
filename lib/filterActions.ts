@@ -42,3 +42,8 @@ export function clearCustomDate(f: AnalyticsFilters): AnalyticsFilters {
   const { startDate: _s, endDate: _e, ...rest } = f
   return { ...rest }
 }
+
+export function clearDelayFilter(f: AnalyticsFilters): AnalyticsFilters {
+  const { minDelay: _min, maxDelay: _max, ...rest } = f
+  return { ...rest }
+}

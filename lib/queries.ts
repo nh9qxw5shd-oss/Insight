@@ -137,7 +137,17 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
   const matchFn = f.searchMode === 'and'
     ? (i: IncidentRow) => activeSearches.every(q => searchMatch(i, q))
     : (i: IncidentRow) => activeSearches.some(q => searchMatch(i, q))
-  const filtered = activeSearches.length ? curRows.filter(matchFn) : curRows
+  const searched = activeSearches.length ? curRows.filter(matchFn) : curRows
+
+  // Apply delay range filter client-side (uses effectiveDelay so continuations use delay_delta)
+  const filtered = (f.minDelay != null || f.maxDelay != null)
+    ? searched.filter(i => {
+        const d = effectiveDelay(i)
+        if (f.minDelay != null && d < f.minDelay) return false
+        if (f.maxDelay != null && d > f.maxDelay) return false
+        return true
+      })
+    : searched
 
   return {
     incidents: filtered,
@@ -226,8 +236,12 @@ export function effectiveMinsToArrival(i: IncidentRow): number | null {
 export function effectiveDuration(i: IncidentRow): number | null {
   if (i.incident_duration != null && i.incident_duration > 0 && i.incident_duration < 1440)
     return i.incident_duration
-  const v = minsFromTimes(i.incident_start, i.nwr_time)
-  return v != null && v > 0 && v < 1440 ? v : null
+  // Use the earliest valid closing time: NWR (normal working) or BIO (booked in order).
+  // BIO column not yet in schema — only nwr_time available today.
+  const candidates = [
+    minsFromTimes(i.incident_start, i.nwr_time),
+  ].filter((v): v is number => v != null && v > 0 && v < 1440)
+  return candidates.length ? Math.min(...candidates) : null
 }
 
 function pctDelta(curr: number, prev: number): number | null {
