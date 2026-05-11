@@ -666,7 +666,6 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
         <KPICard
           label="Total Delay"
           value={fmtMins(kpis.totalDelayMins)}
-          subValue={`${kpis.totalDelayMins.toLocaleString()} min`}
           delta={kpis.delayDeltaPct}
           icon={Clock}
           deltaInverted
@@ -3272,13 +3271,7 @@ function Empty({ msg = 'No data in window' }: { msg?: string }) {
 
 function fmtMins(m: number): string {
   if (!m && m !== 0) return '—'
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  const r = m % 60
-  if (h < 24) return r ? `${h}h ${r}m` : `${h}h`
-  const d = Math.floor(h / 24)
-  const hr = h % 24
-  return hr ? `${d}d ${hr}h` : `${d}d`
+  return `${Math.round(m).toLocaleString()} min`
 }
 
 // ─── Explore Tab ─────────────────────────────────────────────────────────────
