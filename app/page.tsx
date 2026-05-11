@@ -3322,9 +3322,9 @@ const ARRIVAL_BANDS = [
 const DURATION_BANDS = [
   { key: '0-30',    label: '0–30 min',  min: 0,   max: 30  },
   { key: '30-60',   label: '30–60 min', min: 30,  max: 60  },
-  { key: '60-120',  label: '60–120 min',  min: 60,  max: 120 },
-  { key: '120-240', label: '120–240 min', min: 120, max: 240 },
-  { key: '240+',    label: '240+ min',    min: 240, max: Number.POSITIVE_INFINITY },
+  { key: '60-120',  label: '1–2 h',     min: 60,  max: 120 },
+  { key: '120-240', label: '2–4 h',     min: 120, max: 240 },
+  { key: '240+',    label: '4 h +',     min: 240, max: Number.POSITIVE_INFINITY },
 ]
 
 const HOUR_BANDS = [
