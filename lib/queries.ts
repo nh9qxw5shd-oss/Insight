@@ -10,7 +10,9 @@ import {
   Signal, SignalType, LineDatum, AttributionDatum, Chain,
   ChangePoint, DeltaMetric, DeltaContribution, DeltaDecomposition, Severity,
   Hypothesis, HypothesisCluster, HypothesisDimension,
+  IncidentReview, IncidentReviewInput,
 } from './types'
+import { railwayPeriodWeek } from './railwayCalendar'
 
 export const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
 
@@ -1337,4 +1339,193 @@ export function deriveIncidentTypeList(
   return Array.from(byLabel.entries())
     .map(([label, v]) => ({ label, ...v }))
     .sort((a, b) => b.count - a.count)
+}
+
+// ─── SNDM review tab — fetch + upsert + period grouping ──────────────────────
+
+const REVIEW_COLS =
+  'id, incident_id, report_date, reviewed_by, reviewed_at, updated_at, ' +
+  'technical_conference_outcome, commentary, ' +
+  'stranded_trains_occurred, stranded_trains, ' +
+  'itsr_required, time_huddle_held, incident_classification, ' +
+  'mom_responded, mom_depot, mom_response_time, first_50_30min_target_met, ' +
+  'target_recovery_time, actual_recovery_time, time_to_recover_mins, ' +
+  'title_override, location_override, area_override, ' +
+  'minutes_delay_override, trains_delayed_override, cancelled_override, part_cancelled_override, ' +
+  'notes'
+
+const REPORT_COLS =
+  'id, report_date, period, control_centre, created_by, ' +
+  'total_delay, total_cancelled, total_part_cancelled, incident_count'
+
+// All incidents in [from, to], regardless of analytics filters — the Review
+// tab works off raw dates so SNDMs always see the full day's incidents.
+export async function fetchIncidentsForRange(from: string, to: string): Promise<IncidentRow[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<IncidentRow>(() =>
+    sb!.from('incidents').select(INCIDENT_COLS)
+      .gte('report_date', from)
+      .lte('report_date', to)
+      .order('report_date', { ascending: true })
+      .order('incident_start', { ascending: true, nullsFirst: false }),
+  )
+}
+
+export async function fetchReportsForRange(from: string, to: string): Promise<ReportRow[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<ReportRow>(() =>
+    sb!.from('reports').select(REPORT_COLS)
+      .gte('report_date', from)
+      .lte('report_date', to)
+      .order('report_date', { ascending: true }),
+  )
+}
+
+export async function fetchReviewsForRange(from: string, to: string): Promise<IncidentReview[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<IncidentReview>(() =>
+    sb!.from('incident_reviews').select(REVIEW_COLS)
+      .gte('report_date', from)
+      .lte('report_date', to),
+  )
+}
+
+// Compute time_to_recover from incident_start → actual_recovery_time.
+function deriveTimeToRecover(incidentStart: string | null | undefined, actualRecovery: string | null | undefined): number | null {
+  if (!incidentStart || !actualRecovery) return null
+  return minsFromTimes(incidentStart, actualRecovery)
+}
+
+// Upsert a review row. Returns the saved row (with server-side timestamps).
+export async function upsertIncidentReview(
+  input: IncidentReviewInput,
+  incidentStart: string | null,
+): Promise<IncidentReview | null> {
+  const sb = getSupabase()
+  if (!sb) return null
+
+  const ttr = deriveTimeToRecover(incidentStart, input.actual_recovery_time)
+
+  const payload: Record<string, unknown> = { ...input, time_to_recover_mins: ttr }
+  // Strip undefined keys so a partial input doesn't blank out other columns
+  for (const k of Object.keys(payload)) {
+    if (payload[k] === undefined) delete payload[k]
+  }
+
+  const { data, error } = await sb
+    .from('incident_reviews')
+    .upsert(payload, { onConflict: 'incident_id' })
+    .select(REVIEW_COLS)
+    .single()
+  if (error) throw new Error(error.message)
+  return data as unknown as IncidentReview
+}
+
+export async function deleteIncidentReview(incidentId: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('incident_reviews').delete().eq('incident_id', incidentId)
+  if (error) throw new Error(error.message)
+}
+
+// Apply review overrides to an incident row so downstream UI displays the
+// SNDM-refined values transparently. Original row is left untouched.
+export function applyReviewOverrides(i: IncidentRow, r: IncidentReview | undefined): IncidentRow {
+  if (!r) return i
+  return {
+    ...i,
+    title:          r.title_override          ?? i.title,
+    location:       r.location_override       ?? i.location,
+    area:           r.area_override           ?? i.area,
+    minutes_delay:  r.minutes_delay_override  ?? i.minutes_delay,
+    trains_delayed: r.trains_delayed_override ?? i.trains_delayed,
+    cancelled:      r.cancelled_override      ?? i.cancelled,
+    part_cancelled: r.part_cancelled_override ?? i.part_cancelled,
+  }
+}
+
+// ─── Period / week grouping ──────────────────────────────────────────────────
+// Top level on the Review tab is Period · Week, computed directly from each
+// incident's report_date via the railway calendar (13 periods × 4 weeks).
+// Each group expands into the individual days that fall inside that period.
+
+export interface ReviewPeriodDay {
+  date: string
+  weekLabel: string         // "W3"
+  incidentCount: number
+  totalDelay: number
+  reviewedCount: number
+  incidents: IncidentRow[]
+}
+
+export interface ReviewPeriodGroup {
+  key: string               // "2025/26 · P02"
+  yearLabel: string         // "2025/26"
+  periodNumber: number      // 1..13
+  periodLabel: string       // "P02"
+  days: ReviewPeriodDay[]
+  totalIncidents: number
+  totalDelay: number
+  totalReviewed: number
+}
+
+export function deriveReviewPeriods(
+  incidents: IncidentRow[],
+  reviewByIncidentId: Map<string, IncidentReview>,
+): ReviewPeriodGroup[] {
+  const byDate = new Map<string, IncidentRow[]>()
+  for (const i of incidents) {
+    const arr = byDate.get(i.report_date) ?? []
+    arr.push(i)
+    byDate.set(i.report_date, arr)
+  }
+
+  const groups = new Map<string, ReviewPeriodGroup>()
+  for (const [date, dayIncidents] of byDate.entries()) {
+    const pw = railwayPeriodWeek(date)
+    const periodLabel = `P${String(pw.period).padStart(2, '0')}`
+    const key = `${pw.yearLabel} · ${periodLabel}`
+
+    const uniqueIncidents = dayIncidents.filter(i => !i.is_continuation)
+    const totalDelay = dayIncidents.reduce((s, i) => s + effectiveDelay(i), 0)
+    const reviewedCount = uniqueIncidents.filter(i => reviewByIncidentId.has(i.id)).length
+
+    const day: ReviewPeriodDay = {
+      date,
+      weekLabel: `W${pw.week}`,
+      incidentCount: uniqueIncidents.length,
+      totalDelay,
+      reviewedCount,
+      incidents: dayIncidents,
+    }
+
+    const g = groups.get(key) ?? {
+      key,
+      yearLabel: pw.yearLabel,
+      periodNumber: pw.period,
+      periodLabel,
+      days: [],
+      totalIncidents: 0,
+      totalDelay: 0,
+      totalReviewed: 0,
+    }
+    g.days.push(day)
+    g.totalIncidents += day.incidentCount
+    g.totalDelay     += day.totalDelay
+    g.totalReviewed  += day.reviewedCount
+    groups.set(key, g)
+  }
+
+  const out = Array.from(groups.values()).map(g => ({
+    ...g,
+    days: g.days.sort((a, b) => b.date.localeCompare(a.date)),
+  }))
+  return out.sort((a, b) => {
+    const aLatest = a.days[0]?.date ?? ''
+    const bLatest = b.days[0]?.date ?? ''
+    return bLatest.localeCompare(aLatest)
+  })
 }

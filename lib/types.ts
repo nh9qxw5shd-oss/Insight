@@ -67,6 +67,90 @@ export interface IncidentRow {
   day_of_week: number | null
 }
 
+// ─── SNDM incident review (side-table, optional) ─────────────────────────────
+// Layered on top of the CCIL-captured incident row. All fields are optional;
+// presence of a row means "this incident has been reviewed by an SNDM".
+
+export type IncidentClassification = 'GREEN' | 'AMBER' | 'RED' | 'BLACK'
+export type First50Outcome = 'YES' | 'NO' | 'NA'
+export type YesNoNa = 'YES' | 'NO' | 'NA'
+
+export type MomDepot =
+  | 'WEST_HAMPSTEAD' | 'ELSTREE' | 'BEDFORD' | 'KETTERING' | 'LEICESTER'
+  | 'DERBY' | 'NOTTINGHAM' | 'CHESTERFIELD' | 'LINCOLN'
+
+export const MOM_DEPOT_LABELS: Record<MomDepot, string> = {
+  WEST_HAMPSTEAD: 'West Hampstead',
+  ELSTREE:        'Elstree',
+  BEDFORD:        'Bedford',
+  KETTERING:      'Kettering',
+  LEICESTER:      'Leicester',
+  DERBY:          'Derby',
+  NOTTINGHAM:     'Nottingham',
+  CHESTERFIELD:   'Chesterfield',
+  LINCOLN:        'Lincoln',
+}
+
+export interface StrandedTrainEntry {
+  headcode: string | null
+  location: string | null
+  time_stranded: string | null
+  time_moved: string | null
+}
+
+export interface IncidentReview {
+  id: string
+  incident_id: string
+  report_date: string
+
+  reviewed_by: string | null
+  reviewed_at: string | null
+  updated_at: string | null
+
+  technical_conference_outcome: YesNoNa | null
+  commentary: string | null
+
+  stranded_trains_occurred: YesNoNa | null
+  stranded_trains: StrandedTrainEntry[] | null
+
+  itsr_required: YesNoNa | null
+  time_huddle_held: string | null
+
+  incident_classification: IncidentClassification | null
+
+  mom_responded: YesNoNa | null
+  mom_depot: MomDepot | null
+  mom_response_time: string | null
+  first_50_30min_target_met: First50Outcome | null
+
+  target_recovery_time: string | null
+  actual_recovery_time: string | null
+  time_to_recover_mins: number | null
+
+  title_override: string | null
+  location_override: string | null
+  area_override: string | null
+  minutes_delay_override: number | null
+  trains_delayed_override: number | null
+  cancelled_override: number | null
+  part_cancelled_override: number | null
+
+  notes: string | null
+}
+
+// Partial used for upserts — only fields the SNDM changed.
+export type IncidentReviewInput = Partial<Omit<IncidentReview, 'id' | 'incident_id' | 'report_date' | 'reviewed_at' | 'updated_at'>> & {
+  incident_id: string
+  report_date: string
+}
+
+export const CLASSIFICATION_CONFIG: Record<IncidentClassification, { label: string; color: string; textColor: string }> = {
+  GREEN: { label: 'Green', color: '#27AE60', textColor: '#FFFFFF' },
+  AMBER: { label: 'Amber', color: '#F39C12', textColor: '#1A1A1A' },
+  RED:   { label: 'Red',   color: '#E74C3C', textColor: '#FFFFFF' },
+  BLACK: { label: 'Black', color: '#1A1A1A', textColor: '#F2EDE0' },
+}
+
 export interface ReportRow {
   id: string
   report_date: string

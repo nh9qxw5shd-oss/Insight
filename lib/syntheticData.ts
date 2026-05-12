@@ -254,6 +254,15 @@ function synthTitle(cat: IncidentCategory, code: string): string {
   return v[Math.floor(Math.random() * v.length)]
 }
 
+import { railwayPeriodWeek } from './railwayCalendar'
+
+// Demo period label uses the same railway-calendar derivation the Review tab
+// applies in production so demo and live data look identical.
+function syntheticPeriodWeek(dt: Date): string {
+  const pw = railwayPeriodWeek(dt)
+  return `${pw.label} · ${pw.yearLabel}`
+}
+
 export function generateSyntheticData(
   windowDays: number,
   seed = 42,
@@ -290,7 +299,7 @@ export function generateSyntheticData(
     reports.push({
       id: `report-${dateStr}`,
       report_date: dateStr,
-      period: '06:00 to 06:00',
+      period: syntheticPeriodWeek(dt),
       control_centre: 'East Midlands Control Centre',
       created_by: 'Demo',
       total_delay: 0,
