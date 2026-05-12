@@ -24,7 +24,12 @@ export function decodeFilters(s: string): AnalyticsFilters | null {
       Array.isArray(parsed.categories) &&
       Array.isArray(parsed.severities)
     ) {
-      return { ...DEFAULT_FILTERS, ...parsed } as AnalyticsFilters
+      // Spread DEFAULT_FILTERS first so any fields added after a filter was
+      // saved (e.g. staffNames) always have a safe default value.
+      const merged = { ...DEFAULT_FILTERS, ...parsed }
+      // Ensure array fields added post-encoding are never null/undefined
+      if (!Array.isArray(merged.staffNames)) merged.staffNames = []
+      return merged as AnalyticsFilters
     }
     return null
   } catch {

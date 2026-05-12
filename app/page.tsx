@@ -102,7 +102,12 @@ function shiftWindow(f: AnalyticsFilters, dir: -1 | 1): AnalyticsFilters {
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function InsightDashboard() {
-  const [filters, setFilters] = useState<AnalyticsFilters>(() => getFiltersFromUrl() ?? DEFAULT_FILTERS)
+  // Always initialise from DEFAULT_FILTERS so server and client render identically.
+  // URL-stored filters are loaded in a useEffect after hydration completes —
+  // using them in the useState initializer caused React hydration error #418
+  // because Next.js calls the initializer on the server (window undefined → null)
+  // and again on the client (window present → different result).
+  const [filters, setFilters] = useState<AnalyticsFilters>(DEFAULT_FILTERS)
   const [tab, setTab] = useState<Tab>('overview')
   const [data, setData] = useState<RawData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -122,6 +127,15 @@ export default function InsightDashboard() {
   const [reviewTeamMembers, setReviewTeamMembers] = useState<IncidentTeamMember[]>([])
   const [reviewLoading, setReviewLoading]     = useState(false)
   const [reviewError, setReviewError]         = useState<string | null>(null)
+
+  // After hydration, restore any filters saved in the URL. This runs once and
+  // must come before the URL-sync effect so a stale DEFAULT_FILTERS write
+  // doesn't permanently overwrite saved state.
+  useEffect(() => {
+    const urlFilters = getFiltersFromUrl()
+    if (urlFilters) setFilters(urlFilters)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Keep URL in sync with filters
   useEffect(() => { setFiltersInUrl(filters) }, [filters])
