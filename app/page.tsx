@@ -46,6 +46,13 @@ import { generateSyntheticData } from '@/lib/syntheticData'
 import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
 import { getFiltersFromUrl, setFiltersInUrl, clearFiltersFromUrl } from '@/lib/filterUrl'
 import { exportCSV } from '@/lib/export'
+import {
+  ReportTemplate, ReportSectionId,
+  REPORT_TEMPLATES, TEMPLATE_DEFAULT_SECTIONS, SECTION_LABELS,
+} from '@/lib/reports/types'
+import { buildReportPlan } from '@/lib/reports/builder'
+import { renderReportDocument } from '@/lib/reports/html'
+import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/print'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
@@ -451,7 +458,7 @@ export default function InsightDashboard() {
                     />
                   </>
             )}
-            {tab === 'reports'     && <ReportsTab />}
+            {tab === 'reports'     && <ReportsTab data={effectiveData} filters={filters} demoMode={demoMode} />}
           </>
         )}
       </div>
@@ -4692,39 +4699,243 @@ function minsBetweenHHMM(start: string, end: string): number | null {
   return e >= s ? e - s : e + 1440 - s
 }
 
-// ─── Reports Tab (placeholder) ───────────────────────────────────────────────
-// Future home for the report-builder — take SNDM-reviewed data plus analytics
-// and emit set-format outputs (period reports, weekly briefings, etc.).
+// ─── Reports Tab ─────────────────────────────────────────────────────────────
+// Aesthetically-styled, insight-rich PDF reports generated client-side. The
+// user picks a template, optionally toggles sections, sees a live A4 preview,
+// then either downloads the HTML archive or prints to PDF via the browser
+// dialog. Everything runs against whatever filter window is currently active
+// on the dashboard, so the report inherits the route's chosen scope.
 
-function ReportsTab() {
+function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters: AnalyticsFilters; demoMode: boolean }) {
+  const [template, setTemplate]    = useState<ReportTemplate>('period')
+  const [sections, setSections]    = useState<ReportSectionId[]>(TEMPLATE_DEFAULT_SECTIONS['period'])
+  const [appendixLimit, setAppendixLimit] = useState<number>(40)
+  const [previewKey, setPreviewKey] = useState<number>(0)
+
+  // When the template changes, reset the section toggles to its default set.
+  useEffect(() => {
+    setSections(TEMPLATE_DEFAULT_SECTIONS[template])
+  }, [template])
+
+  const filtersDescriptor = useMemo(() => describeFilters(filters), [filters])
+
+  const plan = useMemo(() => {
+    if (!data) return null
+    return buildReportPlan(
+      {
+        filtersDescriptor,
+        windowFrom:    data.windowFrom,
+        windowTo:      data.windowTo,
+        windowDays:    data.windowDays,
+        demoMode,
+        incidents:     data.incidents,
+        prevIncidents: data.prevIncidents,
+      },
+      { template, sections, appendixLimit, clientLine: 'Network Rail · EMCC', preparedBy: 'EMCC Insight' },
+    )
+  }, [data, filtersDescriptor, demoMode, template, sections, appendixLimit])
+
+  const html = useMemo(() => plan ? renderReportDocument(plan) : '', [plan])
+
+  // Live preview via srcdoc — re-mount via key whenever the html changes so
+  // the iframe scroll resets and any internal layout settles cleanly.
+  useEffect(() => { setPreviewKey(k => k + 1) }, [html])
+
+  const handlePrint = () => {
+    if (!plan) return
+    openPrintWindow(html, `${plan.meta.templateName} · ${plan.meta.scopeLabel}`)
+  }
+  const handleDownload = () => {
+    if (!plan) return
+    downloadHtml(html, reportFilename(plan.meta.template, plan.meta.scopeLabel))
+  }
+
+  const toggleSection = (id: ReportSectionId) => {
+    setSections(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id])
+  }
+
+  // For Period template, offer a "snap to active period" affordance so the
+  // user doesn't have to wrangle the date picker manually. Doesn't apply
+  // here directly — the snap helper just hints the operator to adjust their
+  // window from the main filter bar; making it actionable would require
+  // lifting the filter setter, so we keep it advisory for now.
+
+  if (!data) {
+    return (
+      <Card title="Reports" subtitle="Generate aesthetically styled, data-driven PDF reports">
+        <div className="flex items-center justify-center py-12" style={{ color: 'var(--ink-400)' }}>
+          <RefreshCw size={14} className="animate-spin mr-2" /> Waiting for data…
+        </div>
+      </Card>
+    )
+  }
+
   return (
     <div className="space-y-6">
-      <Card title="Report Builder" subtitle="Generate set-format reports from reviewed incidents and analytics data" className="tick-corners">
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <FileText size={32} style={{ color: 'var(--ink-500)' }} className="mb-4" />
-          <h4 className="serif text-lg font-medium mb-2" style={{ color: 'var(--ink-100)' }}>Coming Next</h4>
-          <p className="text-xs max-w-md" style={{ color: 'var(--ink-400)' }}>
-            This section will combine analytics data points with SNDM-reviewed incident detail
-            to produce set-format outputs — period summaries, weekly briefings,
-            safety-critical roll-ups, and bespoke management reports.
-          </p>
-          <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-2xl">
-            {[
-              { title: 'Period Report',  desc: 'P/W summary across all reviewed incidents' },
-              { title: 'Weekly Brief',   desc: 'Top-line metrics + classification breakdown' },
-              { title: 'Safety Roll-up', desc: 'Reviewed safety-critical events with commentary' },
-            ].map(r => (
-              <div key={r.title} className="card !bg-[var(--bg-card-hi)] p-4 text-left">
-                <div className="label-micro mb-1" style={{ color: 'var(--nr-orange)' }}>Planned</div>
-                <div className="text-sm font-medium" style={{ color: 'var(--ink-100)' }}>{r.title}</div>
-                <div className="text-[11px] mt-1" style={{ color: 'var(--ink-400)' }}>{r.desc}</div>
-              </div>
-            ))}
+      <Card
+        title="Report Builder"
+        subtitle="Editorial PDFs generated from the current filter window — preview live, then print or archive"
+        className="tick-corners"
+        right={
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleDownload}
+              className="btn"
+              title="Download as standalone HTML (open and print to PDF later)"
+            >
+              <Download size={12} /> Save HTML
+            </button>
+            <button
+              onClick={handlePrint}
+              className="btn btn-active"
+              title="Open in a new tab and bring up the print dialog (choose Save as PDF)"
+            >
+              <FileText size={12} /> Print / Save PDF
+            </button>
           </div>
+        }
+      >
+        {/* Template picker */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          {REPORT_TEMPLATES.map(t => {
+            const active = template === t.id
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTemplate(t.id)}
+                className={`text-left p-4 rounded-sm transition-colors ${active ? 'border-2' : 'border'}`}
+                style={{
+                  background:   active ? 'var(--nr-orange-glow)' : 'var(--bg-card-hi)',
+                  borderColor:  active ? 'var(--nr-orange)' : 'var(--line)',
+                }}
+              >
+                <div className="label-micro mb-2" style={{ color: active ? 'var(--nr-orange)' : 'var(--ink-400)' }}>
+                  {t.subtitle}
+                </div>
+                <div className="serif text-base mb-1" style={{ color: 'var(--ink-100)' }}>{t.name}</div>
+                <div className="text-[11px] leading-snug" style={{ color: 'var(--ink-400)' }}>{t.tagline}</div>
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Section toggles */}
+        <div className="border-t border-[var(--line)] pt-4 mb-5">
+          <div className="flex items-baseline justify-between mb-3">
+            <div className="label-micro">Sections in this report</div>
+            <button
+              onClick={() => setSections(TEMPLATE_DEFAULT_SECTIONS[template])}
+              className="text-[10px] tracking-wider uppercase hover:text-[var(--ink-100)] transition-colors"
+              style={{ color: 'var(--ink-400)' }}
+            >
+              Reset to template default
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {(['cover', 'executive', 'kpis', 'trend', 'categoryMix', 'geography', 'patterns', 'safetyRadar', 'assets', 'attribution', 'signals', 'narrative', 'appendix'] as ReportSectionId[]).map(s => {
+              const on = sections.includes(s)
+              return (
+                <button
+                  key={s}
+                  onClick={() => toggleSection(s)}
+                  className={`text-[10.5px] tracking-wider uppercase px-2.5 py-1.5 rounded-sm transition-colors font-mono`}
+                  style={{
+                    background:   on ? 'var(--nr-orange-glow)' : 'var(--bg-card)',
+                    border:       `1px solid ${on ? 'var(--nr-orange)' : 'var(--line)'}`,
+                    color:        on ? 'var(--ink-100)' : 'var(--ink-400)',
+                  }}
+                >
+                  {on ? '✓ ' : ''}{SECTION_LABELS[s]}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Options row */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-2 text-xs">
+          <div>
+            <div className="label-micro mb-1.5">Window scope</div>
+            <div style={{ color: 'var(--ink-200)' }}>{plan?.meta.scopeLabel ?? '—'}</div>
+            <div className="text-[10.5px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+              Change scope via the main filter bar above.
+            </div>
+          </div>
+          <div>
+            <div className="label-micro mb-1.5">Active filters</div>
+            <div style={{ color: 'var(--ink-200)' }}>{filtersDescriptor}</div>
+          </div>
+          <div>
+            <div className="label-micro mb-1.5">Appendix limit</div>
+            <select
+              value={appendixLimit}
+              onChange={e => setAppendixLimit(Number(e.target.value))}
+              className="select w-full"
+            >
+              {[10, 20, 40, 60, 100].map(n => (
+                <option key={n} value={n}>Top {n} incidents</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </Card>
+
+      {/* Live preview */}
+      <Card
+        title="Live preview"
+        subtitle="Exact A4-portrait rendering of the report. What you see is what prints."
+        right={
+          <div className="label-micro" style={{ color: 'var(--ink-400)' }}>
+            {sections.filter(s => s !== 'cover').length + (sections.includes('cover') ? 1 : 0)} pages · {plan?.meta.windowDays ?? 0} day window
+          </div>
+        }
+      >
+        <div
+          className="w-full rounded-sm overflow-hidden"
+          style={{
+            height: 920,
+            background: '#E8E1CF',
+            border: '1px solid var(--line-hi)',
+          }}
+        >
+          <iframe
+            key={previewKey}
+            title="Report preview"
+            srcDoc={html}
+            sandbox="allow-same-origin"
+            style={{
+              width: '100%',
+              height: '100%',
+              border: 'none',
+              background: '#FBF7EE',
+            }}
+          />
+        </div>
+        <div className="flex items-center justify-between mt-4 text-[11px]" style={{ color: 'var(--ink-400)' }}>
+          <div>
+            <strong style={{ color: 'var(--ink-200)' }}>Print → Save as PDF</strong> gives a vector-quality file with selectable text. Use the dialog's "More settings" to disable headers/footers for the cleanest result.
+          </div>
+          <div className="mono">{plan?.meta.template === 'safety' ? 'Safety lens applied' : null}</div>
         </div>
       </Card>
     </div>
   )
+}
+
+// Human-readable summary of the active filter set — appears on the report
+// cover so the reader knows what scope they're looking at.
+function describeFilters(f: AnalyticsFilters): string {
+  const parts: string[] = []
+  if (f.areas.length)         parts.push(`Areas: ${f.areas.slice(0, 4).join(', ')}${f.areas.length > 4 ? ` +${f.areas.length - 4}` : ''}`)
+  if (f.categories.length)    parts.push(`Categories: ${f.categories.slice(0, 4).map(c => CATEGORY_CONFIG[c]?.short ?? c).join(', ')}${f.categories.length > 4 ? ` +${f.categories.length - 4}` : ''}`)
+  if (f.severities.length)    parts.push(`Severity: ${f.severities.join(', ')}`)
+  if (f.incidentTypes.length) parts.push(`Types: ${f.incidentTypes.length}`)
+  if (f.staffNames.length)    parts.push(`Staff: ${f.staffNames.length}`)
+  if (f.searches.length)      parts.push(`Search: "${f.searches.slice(0, 2).join('", "')}"`)
+  if (f.minDelay != null || f.maxDelay != null) {
+    parts.push(`Delay: ${f.minDelay ?? 0}–${f.maxDelay ?? '∞'} min`)
+  }
+  return parts.length ? parts.join(' · ') : 'No filters · full route, all categories'
 }
 
 // ─── Explore Tab ─────────────────────────────────────────────────────────────
