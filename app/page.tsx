@@ -103,7 +103,6 @@ export default function InsightDashboard() {
   const [distChart, setDistChart] = useState<DistributionKind>('donut')
   const [drillDown, setDrillDown] = useState<{ title: string; incidents: IncidentRow[] } | null>(null)
   const [savedViews, setSavedViews] = useState<SavedView[]>(() => getSavedViews())
-  const [signalsOpen, setSignalsOpen] = useState(false)
 
   // Keep URL in sync with filters
   useEffect(() => { setFiltersInUrl(filters) }, [filters])
@@ -168,12 +167,10 @@ export default function InsightDashboard() {
   const areas        = useMemo(() => data ? deriveAreaList(data) : [], [data])
   const incidentTypeList = useMemo(() => data ? deriveIncidentTypeList(data) : [], [data])
   const respDist     = useMemo(() => data ? deriveResponseDistribution(data) : null, [data])
-  const signals      = useMemo(() => data ? deriveSignals(data) : [], [data])
   const lines        = useMemo(() => data ? deriveLineBreakdown(data) : [], [data])
   const attribution  = useMemo(() => data ? deriveDelayAttribution(data) : [], [data])
   const chains       = useMemo(() => data ? deriveContinuationChains(data) : [], [data])
   const changePoints = useMemo(() => deriveChangePoints(trend), [trend])
-  const hypotheses   = useMemo(() => data ? deriveHypotheses(data, trend, changePoints) : [], [data, trend, changePoints])
 
   // Decomposition lookup for KPI cards — computed lazily per card via this
   // closure rather than precomputed for every metric.
@@ -209,7 +206,6 @@ export default function InsightDashboard() {
     clearFiltersFromUrl()
   }
 
-  const criticalSignals = signals.filter(s => s.severity === 'critical').length
 
   return (
     <main className="min-h-screen pb-24">
@@ -231,8 +227,6 @@ export default function InsightDashboard() {
           (filters.minDelay != null || filters.maxDelay != null ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
-        signalCount={signals.length}
-        criticalSignalCount={criticalSignals}
         onExport={data ? () => exportCSV(data.incidents, data.windowFrom, data.windowTo) : undefined}
       />
 
@@ -259,11 +253,6 @@ export default function InsightDashboard() {
             >
               <t.icon size={13} />
               {t.label}
-              {t.id === 'overview' && criticalSignals > 0 && (
-                <span className="ml-0.5 px-1 py-0.5 text-[9px] font-bold bg-[var(--nr-red,#E74C3C)] text-white rounded-sm leading-none">
-                  {criticalSignals}
-                </span>
-              )}
             </button>
           ))}
         </div>
@@ -274,7 +263,7 @@ export default function InsightDashboard() {
 
         {kpis && data && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} signals={signals} signalsOpen={signalsOpen} setSignalsOpen={setSignalsOpen} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} hypotheses={hypotheses} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={data} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
             {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={data.incidents} onDrillDown={setDrillDown} />}
@@ -323,8 +312,6 @@ function Header(props: {
   loading: boolean
   activeFilterCount: number
   isAtToday: boolean
-  signalCount: number
-  criticalSignalCount: number
   onWindowChange: (d: number) => void
   onPrevWindow: () => void
   onNextWindow: () => void
@@ -411,20 +398,6 @@ function Header(props: {
             <RefreshCw size={12} className={props.loading ? 'animate-spin' : ''} />
             Refresh
           </button>
-
-          {props.signalCount > 0 && (
-            <div
-              className="flex items-center gap-2 px-3 py-1.5 border rounded cursor-default"
-              style={{
-                borderColor: props.criticalSignalCount > 0 ? '#E74C3C' : 'var(--nr-amber)',
-                color: props.criticalSignalCount > 0 ? '#E74C3C' : 'var(--nr-amber)',
-              }}
-              title="Active signals — see Overview tab"
-            >
-              <Bell size={12} />
-              <span className="label-micro">{props.signalCount} signal{props.signalCount !== 1 ? 's' : ''}</span>
-            </div>
-          )}
 
           <div className="flex items-center gap-2 px-3 py-1.5 border border-[var(--line)] rounded">
             <span className={`live-dot ${props.demoMode ? '!bg-[var(--nr-amber)]' : 'animate-pulse-soft'}`} style={props.demoMode ? { boxShadow: '0 0 8px var(--nr-amber)' } : {}} />
@@ -649,16 +622,9 @@ function HypothesisRow({ h, maxLift, onClick }: {
   )
 }
 
-function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, signals, signalsOpen, setSignalsOpen, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, hypotheses }: any) {
+function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose }: any) {
   return (
     <div className="space-y-6">
-      <SignalsPanel signals={signals} open={signalsOpen} setOpen={setSignalsOpen} />
-      <HypothesisPanel
-        clusters={hypotheses}
-        onAddCategoryFilter={onAddCategoryFilter}
-        onAddAreaFilter={onAddAreaFilter}
-        onAddSeverityFilter={onAddSeverityFilter}
-      />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 stagger">
         <KPICard
