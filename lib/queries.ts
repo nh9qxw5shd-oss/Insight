@@ -107,9 +107,10 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       .gte('report_date', cur.from)
       .lte('report_date', cur.to)
       .order('report_date', { ascending: true })
-    if (f.areas.length)      q = q.in('area', f.areas)
-    if (f.categories.length) q = q.in('category', f.categories)
-    if (f.severities.length) q = q.in('severity', f.severities)
+    if (f.areas.length)          q = q.in('area', f.areas)
+    if (f.categories.length)     q = q.in('category', f.categories)
+    if (f.severities.length)     q = q.in('severity', f.severities)
+    if (f.incidentTypes.length)  q = q.in('incident_type_label', f.incidentTypes)
     return q
   })
 
@@ -119,9 +120,10 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       .gte('report_date', prev.from)
       .lte('report_date', prev.to)
       .order('report_date', { ascending: true })
-    if (f.areas.length)      q = q.in('area', f.areas)
-    if (f.categories.length) q = q.in('category', f.categories)
-    if (f.severities.length) q = q.in('severity', f.severities)
+    if (f.areas.length)          q = q.in('area', f.areas)
+    if (f.categories.length)     q = q.in('category', f.categories)
+    if (f.severities.length)     q = q.in('severity', f.severities)
+    if (f.incidentTypes.length)  q = q.in('incident_type_label', f.incidentTypes)
     return q
   })
 
@@ -1310,4 +1312,29 @@ export function deriveContinuationChains(data: RawData): Chain[] {
     })
     .sort((a, b) => b.totalDelay - a.totalDelay || b.days - a.days)
     .slice(0, 20)
+}
+
+// Derive available incident type labels from current data, sorted by frequency.
+// Used to populate the CCIL type filter in the FilterDrawer.
+export function deriveIncidentTypeList(
+  data: RawData,
+): { label: string; code: string; count: number; category: IncidentCategory }[] {
+  const byLabel = new Map<string, { code: string; count: number; category: IncidentCategory }>()
+  for (const i of nonContinuation(data.incidents)) {
+    const label = i.incident_type_label?.trim()
+    if (!label) continue
+    const existing = byLabel.get(label)
+    if (existing) {
+      existing.count += 1
+    } else {
+      byLabel.set(label, {
+        code: i.incident_type_code?.trim() || '',
+        count: 1,
+        category: i.category,
+      })
+    }
+  }
+  return Array.from(byLabel.entries())
+    .map(([label, v]) => ({ label, ...v }))
+    .sort((a, b) => b.count - a.count)
 }

@@ -25,14 +25,14 @@ import {
   deriveInfraFailureMix, deriveDelayDensity, deriveResponderLoad,
   deriveOperatorImpact, deriveHeatmap, deriveAreaList, deriveResponseDistribution,
   deriveSignals, deriveLineBreakdown, deriveDelayAttribution, deriveContinuationChains,
-  deriveChangePoints, deriveDelta, deriveHypotheses,
+  deriveChangePoints, deriveDelta, deriveHypotheses, deriveIncidentTypeList,
   effectiveDelay, effectiveMinsToArrival, effectiveDuration, SLA_THRESHOLD_MINS,
   searchMatch,
   RawData,
 } from '@/lib/queries'
 import {
   toggleCategoryFilter, toggleAreaFilter, toggleSeverityFilter,
-  removeSearchToken, clearCustomDate, clearDelayFilter,
+  removeSearchToken, clearCustomDate, clearDelayFilter, toggleIncidentTypeFilter,
 } from '@/lib/filterActions'
 import { generateSyntheticData } from '@/lib/syntheticData'
 import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
@@ -126,8 +126,14 @@ export default function InsightDashboard() {
         }
         const result = await fetchAnalytics(filters)
         if (cancelled) return
-        if (!result || result.incidents.length === 0) {
-          // Empty → fall back to demo so the dashboard isn't a void
+        const hasActiveFilters =
+          filters.categories.length > 0 || filters.areas.length > 0 ||
+          filters.severities.length > 0 || filters.searches.length > 0 ||
+          filters.incidentTypes.length > 0 ||
+          filters.minDelay != null || filters.maxDelay != null ||
+          filters.startDate != null || filters.endDate != null
+        if (!result || (result.incidents.length === 0 && !hasActiveFilters)) {
+          // No data and no filters → fall back to demo so the dashboard isn't a void
           setData(generateSyntheticData(filters.windowDays, 42, filters.startDate, filters.endDate))
           setDemoMode(true)
         } else {
@@ -160,6 +166,7 @@ export default function InsightDashboard() {
   const ops          = useMemo(() => data ? deriveOperatorImpact(data) : [], [data])
   const heat         = useMemo(() => data ? deriveHeatmap(data) : [], [data])
   const areas        = useMemo(() => data ? deriveAreaList(data) : [], [data])
+  const incidentTypeList = useMemo(() => data ? deriveIncidentTypeList(data) : [], [data])
   const respDist     = useMemo(() => data ? deriveResponseDistribution(data) : null, [data])
   const signals      = useMemo(() => data ? deriveSignals(data) : [], [data])
   const lines        = useMemo(() => data ? deriveLineBreakdown(data) : [], [data])
@@ -182,9 +189,10 @@ export default function InsightDashboard() {
   // Cross-filter drill-down: chart elements push their underlying value into
   // the corresponding filter list. Each helper toggles, so re-clicking a
   // pinned slice removes it from the filter — same affordance both ways.
-  const handleAddCategoryFilter = (c: IncidentCategory) => setFilters(f => toggleCategoryFilter(f, c))
-  const handleAddAreaFilter     = (a: string)            => setFilters(f => toggleAreaFilter(f, a))
-  const handleAddSeverityFilter = (s: Severity)          => setFilters(f => toggleSeverityFilter(f, s))
+  const handleAddCategoryFilter      = (c: IncidentCategory) => setFilters(f => toggleCategoryFilter(f, c))
+  const handleAddAreaFilter          = (a: string)            => setFilters(f => toggleAreaFilter(f, a))
+  const handleAddSeverityFilter      = (s: Severity)          => setFilters(f => toggleSeverityFilter(f, s))
+  const handleToggleIncidentType     = (label: string)        => setFilters(f => toggleIncidentTypeFilter(f, label))
 
   const handleSaveView = (name: string) => {
     const view = saveView(name, filters)
@@ -219,6 +227,7 @@ export default function InsightDashboard() {
         activeFilterCount={
           filters.areas.length + filters.categories.length +
           filters.severities.length + filters.searches.length +
+          filters.incidentTypes.length +
           (filters.minDelay != null || filters.maxDelay != null ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
@@ -233,6 +242,7 @@ export default function InsightDashboard() {
         onRemoveArea={handleAddAreaFilter}
         onRemoveSeverity={handleAddSeverityFilter}
         onRemoveSearch={(t) => setFilters(f => removeSearchToken(f, t))}
+        onRemoveIncidentType={handleToggleIncidentType}
         onClearDate={() => setFilters(f => clearCustomDate(f))}
         onClearDelay={() => setFilters(f => clearDelayFilter(f))}
         onClearAll={handleResetFilters}
@@ -293,6 +303,7 @@ export default function InsightDashboard() {
         onApply={(f: AnalyticsFilters) => { setFilters(f); setFiltersOpen(false) }}
         onReset={handleResetFilters}
         availableAreas={areas.map(a => a.area)}
+        availableIncidentTypes={incidentTypeList}
         savedViews={savedViews}
         onSaveView={handleSaveView}
         onDeleteView={handleDeleteView}
@@ -1979,12 +1990,13 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
 // dimension below the header. Drives the cross-filter drill-down loop —
 // click anything in a chart, see it land here, click the X to remove.
 
-function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onClearDate, onClearDelay, onClearAll }: {
+function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onRemoveIncidentType, onClearDate, onClearDelay, onClearAll }: {
   filters: AnalyticsFilters
   onRemoveCategory: (c: IncidentCategory) => void
   onRemoveArea: (a: string) => void
   onRemoveSeverity: (s: Severity) => void
   onRemoveSearch: (s: string) => void
+  onRemoveIncidentType: (label: string) => void
   onClearDate: () => void
   onClearDelay: () => void
   onClearAll: () => void
@@ -1993,7 +2005,8 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
   const hasDelay = filters.minDelay != null || filters.maxDelay != null
   const total =
     filters.categories.length + filters.areas.length + filters.severities.length +
-    filters.searches.length + (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0)
+    filters.searches.length + filters.incidentTypes.length +
+    (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0)
   if (total === 0) return null
 
   const chip = (key: string, label: string, onRemove: () => void, color?: string, title?: string) => (
@@ -2047,6 +2060,7 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
           ))}
           {filters.areas.map(a => chip(`area-${a}`, a, () => onRemoveArea(a), 'var(--nr-steel)'))}
           {filters.severities.map(s => chip(`sev-${s}`, s, () => onRemoveSeverity(s), SEVERITY_CONFIG[s]?.color))}
+          {filters.incidentTypes.map(t => chip(`itype-${t}`, t, () => onRemoveIncidentType(t), 'var(--nr-orange)'))}
           {filters.searches.map(t => chip(`q-${t}`, `"${t}"`, () => onRemoveSearch(t), 'var(--ink-300)'))}
         </div>
         <button onClick={onClearAll} className="ml-auto btn !py-1 !px-2 !text-[10px] shrink-0">Clear all</button>
@@ -2868,11 +2882,13 @@ function DualBarChart({ data }: any) {
   )
 }
 
-function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
-  const [draft, setDraft]         = useState<AnalyticsFilters>(filters)
-  const [saveName, setSaveName]   = useState('')
+function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, availableIncidentTypes, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
+  const [draft, setDraft]               = useState<AnalyticsFilters>(filters)
+  const [saveName, setSaveName]         = useState('')
   const [showSaveInput, setShowSaveInput] = useState(false)
-  useEffect(() => { setDraft(filters); setShowSaveInput(false); setSaveName('') }, [filters, open])
+  const [typeSearch, setTypeSearch]     = useState('')
+  const [typesExpanded, setTypesExpanded] = useState(false)
+  useEffect(() => { setDraft(filters); setShowSaveInput(false); setSaveName(''); setTypeSearch('') }, [filters, open])
 
   if (!open) return null
   return (
@@ -2960,6 +2976,73 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
               ))}
             </div>
           </FilterGroup>
+
+          {/* CCIL incident type filter — derived from live data in the current window */}
+          {availableIncidentTypes && availableIncidentTypes.length > 0 && (
+            <FilterGroup label="CCIL Incident Type">
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  className="input w-full text-xs"
+                  placeholder="Search types…"
+                  value={typeSearch}
+                  onChange={(e) => { setTypeSearch(e.target.value); setTypesExpanded(true) }}
+                />
+                {draft.incidentTypes.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {draft.incidentTypes.map((t: string) => (
+                      <button
+                        key={t}
+                        onClick={() => setDraft({ ...draft, incidentTypes: draft.incidentTypes.filter((x: string) => x !== t) })}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px]"
+                        style={{ background: 'var(--nr-orange)20', border: '1px solid var(--nr-orange)', color: 'var(--nr-orange)', fontFamily: 'JetBrains Mono, monospace' }}
+                      >
+                        {t}<X size={9} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className={typesExpanded ? '' : 'max-h-48 overflow-y-auto'}>
+                  {(typeSearch
+                    ? availableIncidentTypes.filter((t: any) => t.label.toLowerCase().includes(typeSearch.toLowerCase()))
+                    : typesExpanded
+                      ? availableIncidentTypes
+                      : availableIncidentTypes.slice(0, 8)
+                  ).map((t: any) => (
+                    <button
+                      key={t.label}
+                      onClick={() => setDraft({
+                        ...draft,
+                        incidentTypes: draft.incidentTypes.includes(t.label)
+                          ? draft.incidentTypes.filter((x: string) => x !== t.label)
+                          : [...draft.incidentTypes, t.label],
+                      })}
+                      className="w-full flex items-center justify-between px-2 py-1.5 rounded-sm text-xs transition-colors hover:bg-[var(--bg-card-hi)] text-left"
+                      style={{
+                        background: draft.incidentTypes.includes(t.label) ? 'var(--nr-orange)15' : undefined,
+                        border: `1px solid ${draft.incidentTypes.includes(t.label) ? 'var(--nr-orange)' : 'var(--line)'}`,
+                        color: draft.incidentTypes.includes(t.label) ? 'var(--nr-orange)' : 'var(--ink-200)',
+                        marginBottom: '4px',
+                        fontFamily: 'JetBrains Mono, monospace',
+                      }}
+                    >
+                      <span className="truncate">{t.label}</span>
+                      <span className="shrink-0 ml-2 text-[10px]" style={{ color: 'var(--ink-400)' }}>{t.count}</span>
+                    </button>
+                  ))}
+                </div>
+                {!typeSearch && availableIncidentTypes.length > 8 && (
+                  <button
+                    onClick={() => setTypesExpanded(e => !e)}
+                    className="text-xs w-full text-center pt-1"
+                    style={{ color: 'var(--ink-400)' }}
+                  >
+                    {typesExpanded ? 'Show less' : `Show all ${availableIncidentTypes.length} types`}
+                  </button>
+                )}
+              </div>
+            </FilterGroup>
+          )}
 
           <FilterGroup label="Severity">
             <div className="flex gap-2 flex-wrap">
