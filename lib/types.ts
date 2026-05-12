@@ -73,6 +73,30 @@ export interface IncidentRow {
 
 export type IncidentClassification = 'GREEN' | 'AMBER' | 'RED' | 'BLACK'
 export type First50Outcome = 'YES' | 'NO' | 'NA'
+export type YesNoNa = 'YES' | 'NO' | 'NA'
+
+export type MomDepot =
+  | 'WEST_HAMPSTEAD' | 'ELSTREE' | 'BEDFORD' | 'KETTERING' | 'LEICESTER'
+  | 'DERBY' | 'NOTTINGHAM' | 'CHESTERFIELD' | 'LINCOLN'
+
+export const MOM_DEPOT_LABELS: Record<MomDepot, string> = {
+  WEST_HAMPSTEAD: 'West Hampstead',
+  ELSTREE:        'Elstree',
+  BEDFORD:        'Bedford',
+  KETTERING:      'Kettering',
+  LEICESTER:      'Leicester',
+  DERBY:          'Derby',
+  NOTTINGHAM:     'Nottingham',
+  CHESTERFIELD:   'Chesterfield',
+  LINCOLN:        'Lincoln',
+}
+
+export interface StrandedTrainEntry {
+  headcode: string | null
+  location: string | null
+  time_stranded: string | null
+  time_moved: string | null
+}
 
 export interface IncidentReview {
   id: string
@@ -83,24 +107,19 @@ export interface IncidentReview {
   reviewed_at: string | null
   updated_at: string | null
 
-  period: string | null
-  week: string | null
-
-  technical_conference: string | null
+  technical_conference_outcome: YesNoNa | null
   commentary: string | null
 
-  stranded_headcode: string | null
-  stranded_location: string | null
-  stranded_time_stranded: string | null
-  stranded_time_moved: string | null
+  stranded_trains_occurred: YesNoNa | null
+  stranded_trains: StrandedTrainEntry[] | null
 
-  itsr: string | null
+  itsr_required: YesNoNa | null
   time_huddle_held: string | null
 
   incident_classification: IncidentClassification | null
 
-  mom_response: string | null
-  mom_depot: string | null
+  mom_responded: YesNoNa | null
+  mom_depot: MomDepot | null
   mom_response_time: string | null
   first_50_30min_target_met: First50Outcome | null
 

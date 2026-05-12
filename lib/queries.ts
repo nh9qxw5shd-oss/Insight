@@ -12,6 +12,7 @@ import {
   Hypothesis, HypothesisCluster, HypothesisDimension,
   IncidentReview, IncidentReviewInput,
 } from './types'
+import { railwayPeriodWeek } from './railwayCalendar'
 
 export const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
 
@@ -1344,10 +1345,10 @@ export function deriveIncidentTypeList(
 
 const REVIEW_COLS =
   'id, incident_id, report_date, reviewed_by, reviewed_at, updated_at, ' +
-  'period, week, technical_conference, commentary, ' +
-  'stranded_headcode, stranded_location, stranded_time_stranded, stranded_time_moved, ' +
-  'itsr, time_huddle_held, incident_classification, ' +
-  'mom_response, mom_depot, mom_response_time, first_50_30min_target_met, ' +
+  'technical_conference_outcome, commentary, ' +
+  'stranded_trains_occurred, stranded_trains, ' +
+  'itsr_required, time_huddle_held, incident_classification, ' +
+  'mom_responded, mom_depot, mom_response_time, first_50_30min_target_met, ' +
   'target_recovery_time, actual_recovery_time, time_to_recover_mins, ' +
   'title_override, location_override, area_override, ' +
   'minutes_delay_override, trains_delayed_override, cancelled_override, part_cancelled_override, ' +
@@ -1447,24 +1448,24 @@ export function applyReviewOverrides(i: IncidentRow, r: IncidentReview | undefin
 }
 
 // ─── Period / week grouping ──────────────────────────────────────────────────
-// Top level on the Review tab is Period · Week (rail-industry 13×4 calendar).
-// Each group expands into individual report-date rows; each report-date
-// expands into its incidents. Period/week strings come from the `reports`
-// table (DLog2 captures them when an upload is made); when missing, we fall
-// back to "Unscheduled" so the day still appears.
+// Top level on the Review tab is Period · Week, computed directly from each
+// incident's report_date via the railway calendar (13 periods × 4 weeks).
+// Each group expands into the individual days that fall inside that period.
 
 export interface ReviewPeriodDay {
   date: string
+  weekLabel: string         // "W3"
   incidentCount: number
   totalDelay: number
-  reviewedCount: number     // incidents that have a saved review row
+  reviewedCount: number
   incidents: IncidentRow[]
 }
 
 export interface ReviewPeriodGroup {
-  key: string               // "P02 · W3" or "Unscheduled"
-  period: string | null
-  week: string | null
+  key: string               // "2025/26 · P02"
+  yearLabel: string         // "2025/26"
+  periodNumber: number      // 1..13
+  periodLabel: string       // "P02"
   days: ReviewPeriodDay[]
   totalIncidents: number
   totalDelay: number
@@ -1473,30 +1474,8 @@ export interface ReviewPeriodGroup {
 
 export function deriveReviewPeriods(
   incidents: IncidentRow[],
-  reports: ReportRow[],
   reviewByIncidentId: Map<string, IncidentReview>,
 ): ReviewPeriodGroup[] {
-  // Map report_date → period/week label captured by DLog2
-  const periodByDate = new Map<string, { period: string | null; week: string | null }>()
-  for (const r of reports) {
-    // DLog2 stores period as a string like "P02 W3" or "Period 2 Week 3" — keep raw.
-    // Split on whitespace and look for tokens beginning with P / W.
-    const raw = r.period?.trim() || null
-    let period: string | null = null
-    let week: string | null = null
-    if (raw) {
-      const tokens = raw.split(/\s+/)
-      for (const t of tokens) {
-        if (/^P\d+$/i.test(t) || /^Period$/i.test(t)) period = t.toUpperCase()
-        if (/^W\d+$/i.test(t) || /^Week$/i.test(t))   week = t.toUpperCase()
-      }
-      // Fallback: if we couldn't split it, use the whole string as the period label
-      if (!period && !week) period = raw
-    }
-    periodByDate.set(r.report_date, { period, week })
-  }
-
-  // Group incidents by report_date
   const byDate = new Map<string, IncidentRow[]>()
   for (const i of incidents) {
     const arr = byDate.get(i.report_date) ?? []
@@ -1504,13 +1483,11 @@ export function deriveReviewPeriods(
     byDate.set(i.report_date, arr)
   }
 
-  // Build per-day summary, then aggregate by period · week label
   const groups = new Map<string, ReviewPeriodGroup>()
   for (const [date, dayIncidents] of byDate.entries()) {
-    const pw = periodByDate.get(date) ?? { period: null, week: null }
-    const key = pw.period || pw.week
-      ? `${pw.period ?? '—'} · ${pw.week ?? '—'}`
-      : 'Unscheduled'
+    const pw = railwayPeriodWeek(date)
+    const periodLabel = `P${String(pw.period).padStart(2, '0')}`
+    const key = `${pw.yearLabel} · ${periodLabel}`
 
     const uniqueIncidents = dayIncidents.filter(i => !i.is_continuation)
     const totalDelay = dayIncidents.reduce((s, i) => s + effectiveDelay(i), 0)
@@ -1518,6 +1495,7 @@ export function deriveReviewPeriods(
 
     const day: ReviewPeriodDay = {
       date,
+      weekLabel: `W${pw.week}`,
       incidentCount: uniqueIncidents.length,
       totalDelay,
       reviewedCount,
@@ -1526,8 +1504,9 @@ export function deriveReviewPeriods(
 
     const g = groups.get(key) ?? {
       key,
-      period: pw.period,
-      week: pw.week,
+      yearLabel: pw.yearLabel,
+      periodNumber: pw.period,
+      periodLabel,
       days: [],
       totalIncidents: 0,
       totalDelay: 0,
@@ -1540,7 +1519,6 @@ export function deriveReviewPeriods(
     groups.set(key, g)
   }
 
-  // Sort days within each group (newest first) and groups by latest day
   const out = Array.from(groups.values()).map(g => ({
     ...g,
     days: g.days.sort((a, b) => b.date.localeCompare(a.date)),

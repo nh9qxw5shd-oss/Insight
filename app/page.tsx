@@ -19,8 +19,9 @@ import {
   TIME_WINDOWS, ChartKind, DistributionKind, Signal, ChangePoint,
   DeltaMetric, DeltaDecomposition, HypothesisCluster, Hypothesis,
   IncidentReview, IncidentReviewInput, IncidentClassification, First50Outcome,
-  CLASSIFICATION_CONFIG,
+  CLASSIFICATION_CONFIG, YesNoNa, MomDepot, MOM_DEPOT_LABELS, StrandedTrainEntry,
 } from '@/lib/types'
+import { railwayPeriodWeek } from '@/lib/railwayCalendar'
 import {
   fetchAnalytics, deriveKPIs, deriveTrend, deriveCategorySplit,
   deriveLocationHotspots, deriveRepeatFaults, deriveRepeatAssets,
@@ -287,9 +288,9 @@ export default function InsightDashboard() {
   }, [reviewRows])
 
   const reviewPeriods = useMemo(() => {
-    if (!reviewIncidents || !reviewReports) return []
-    return deriveReviewPeriods(reviewIncidents, reviewReports as any, reviewByIncidentId)
-  }, [reviewIncidents, reviewReports, reviewByIncidentId])
+    if (!reviewIncidents) return []
+    return deriveReviewPeriods(reviewIncidents, reviewByIncidentId)
+  }, [reviewIncidents, reviewByIncidentId])
 
   const handleReviewSave = async (input: IncidentReviewInput, incidentStart: string | null) => {
     const saved = await upsertIncidentReview(input, incidentStart)
@@ -3730,7 +3731,8 @@ function PeriodGroupRow({
         <ChevronDown size={14} style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="serif text-base font-medium" style={{ color: 'var(--ink-100)' }}>{group.key}</span>
+            <span className="serif text-base font-medium" style={{ color: 'var(--ink-100)' }}>{group.periodLabel}</span>
+            <span className="label-micro" style={{ color: 'var(--ink-400)' }}>{group.yearLabel}</span>
             <span className="label-micro">{group.days.length} day{group.days.length !== 1 ? 's' : ''}</span>
             <span className="label-micro" style={{ color: 'var(--ink-500)' }}>
               {group.days[group.days.length - 1]?.date} → {group.days[0]?.date}
@@ -3766,8 +3768,6 @@ function PeriodGroupRow({
             <ReviewDayRow
               key={d.date}
               day={d}
-              periodLabel={group.period}
-              weekLabel={group.week}
               reviewByIncidentId={reviewByIncidentId}
               onSave={onSave}
               onDelete={onDelete}
@@ -3781,11 +3781,9 @@ function PeriodGroupRow({
 }
 
 function ReviewDayRow({
-  day, periodLabel, weekLabel, reviewByIncidentId, onSave, onDelete, canSave,
+  day, reviewByIncidentId, onSave, onDelete, canSave,
 }: {
   day: ReviewPeriodDay
-  periodLabel: string | null
-  weekLabel: string | null
   reviewByIncidentId: Map<string, IncidentReview>
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
@@ -3794,7 +3792,6 @@ function ReviewDayRow({
   const [open, setOpen] = useState(false)
   const complete = day.incidentCount > 0 && day.reviewedCount >= day.incidentCount
 
-  // Sort: non-continuations first by start time; continuations grouped after their primary
   const uniques = day.incidents.filter(i => !i.is_continuation)
                                 .sort((a, b) => (a.incident_start || '').localeCompare(b.incident_start || ''))
 
@@ -3807,6 +3804,7 @@ function ReviewDayRow({
       >
         <ChevronDown size={12} style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
         <span className="numeric-mono shrink-0" style={{ color: 'var(--ink-100)' }}>{formatDayLabel(day.date)}</span>
+        <span className="label-micro" style={{ color: 'var(--nr-orange)' }}>{day.weekLabel}</span>
         <span className="label-micro" style={{ color: 'var(--ink-500)' }}>{day.incidentCount} incident{day.incidentCount !== 1 ? 's' : ''}</span>
         <span className="label-micro" style={{ color: 'var(--ink-500)' }}>{fmtMins(day.totalDelay)} delay</span>
         <span className="ml-auto numeric-mono text-[10px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-400)' }}>
@@ -3824,8 +3822,6 @@ function ReviewDayRow({
                 key={inc.id}
                 incident={inc}
                 review={reviewByIncidentId.get(inc.id)}
-                defaultPeriod={periodLabel}
-                defaultWeek={weekLabel}
                 onSave={onSave}
                 onDelete={onDelete}
                 canSave={canSave}
@@ -3839,12 +3835,10 @@ function ReviewDayRow({
 }
 
 function ReviewIncidentRow({
-  incident, review, defaultPeriod, defaultWeek, onSave, onDelete, canSave,
+  incident, review, onSave, onDelete, canSave,
 }: {
   incident: IncidentRow
   review: IncidentReview | undefined
-  defaultPeriod: string | null
-  defaultWeek: string | null
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
   canSave: boolean
@@ -3899,8 +3893,6 @@ function ReviewIncidentRow({
         <ReviewForm
           incident={incident}
           review={review}
-          defaultPeriod={defaultPeriod}
-          defaultWeek={defaultWeek}
           onSave={onSave}
           onDelete={onDelete}
           canSave={canSave}
@@ -3923,12 +3915,10 @@ function ClassificationPill({ value }: { value: IncidentClassification }) {
 // detail; below is the editable SNDM review form (all optional) and a
 // "Refine CCIL" disclosure for overriding captured values.
 function ReviewForm({
-  incident, review, defaultPeriod, defaultWeek, onSave, onDelete, canSave,
+  incident, review, onSave, onDelete, canSave,
 }: {
   incident: IncidentRow
   review: IncidentReview | undefined
-  defaultPeriod: string | null
-  defaultWeek: string | null
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
   canSave: boolean
@@ -3936,18 +3926,14 @@ function ReviewForm({
   type FormState = Omit<IncidentReviewInput, 'incident_id' | 'report_date'>
 
   const initial: FormState = useMemo(() => ({
-    period: review?.period ?? defaultPeriod ?? null,
-    week: review?.week ?? defaultWeek ?? null,
-    technical_conference: review?.technical_conference ?? null,
+    technical_conference_outcome: review?.technical_conference_outcome ?? null,
     commentary: review?.commentary ?? null,
-    stranded_headcode: review?.stranded_headcode ?? null,
-    stranded_location: review?.stranded_location ?? null,
-    stranded_time_stranded: review?.stranded_time_stranded ?? null,
-    stranded_time_moved: review?.stranded_time_moved ?? null,
-    itsr: review?.itsr ?? null,
+    stranded_trains_occurred: review?.stranded_trains_occurred ?? null,
+    stranded_trains: review?.stranded_trains ?? null,
+    itsr_required: review?.itsr_required ?? null,
     time_huddle_held: review?.time_huddle_held ?? null,
     incident_classification: review?.incident_classification ?? null,
-    mom_response: review?.mom_response ?? null,
+    mom_responded: review?.mom_responded ?? null,
     mom_depot: review?.mom_depot ?? null,
     mom_response_time: review?.mom_response_time ?? null,
     first_50_30min_target_met: review?.first_50_30min_target_met ?? null,
@@ -3962,7 +3948,7 @@ function ReviewForm({
     part_cancelled_override: review?.part_cancelled_override ?? null,
     notes: review?.notes ?? null,
     reviewed_by: review?.reviewed_by ?? null,
-  }), [review, defaultPeriod, defaultWeek])
+  }), [review])
 
   const [form, setForm] = useState<FormState>(initial)
   const [saving, setSaving] = useState(false)
@@ -3973,19 +3959,54 @@ function ReviewForm({
 
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm(prev => ({ ...prev, [k]: v }))
 
+  // Period / week derived from incident.report_date (read-only)
+  const railPeriod = useMemo(() => railwayPeriodWeek(incident.report_date), [incident.report_date])
+
   const liveTimeToRecover = useMemo(() => {
     if (!incident.incident_start || !form.actual_recovery_time) return null
     return minsBetweenHHMM(incident.incident_start, form.actual_recovery_time)
   }, [incident.incident_start, form.actual_recovery_time])
 
+  // Stranded-trains array editing
+  const strandedList: StrandedTrainEntry[] = (form.stranded_trains as StrandedTrainEntry[] | null | undefined) ?? []
+  const updateStrandedTrain = (idx: number, patch: Partial<StrandedTrainEntry>) => {
+    const next = strandedList.map((entry, i) => i === idx ? { ...entry, ...patch } : entry)
+    set('stranded_trains', next)
+  }
+  const addStrandedTrain = () => {
+    const next = [...strandedList, { headcode: null, location: null, time_stranded: null, time_moved: null }]
+    set('stranded_trains', next)
+  }
+  const removeStrandedTrain = (idx: number) => {
+    const next = strandedList.filter((_, i) => i !== idx)
+    set('stranded_trains', next.length ? next : null)
+  }
+  // Seed one row automatically when SNDM selects YES with no entries yet
+  useEffect(() => {
+    if (form.stranded_trains_occurred === 'YES' && strandedList.length === 0) {
+      set('stranded_trains', [{ headcode: null, location: null, time_stranded: null, time_moved: null }])
+    }
+    if (form.stranded_trains_occurred && form.stranded_trains_occurred !== 'YES') {
+      if (strandedList.length > 0) set('stranded_trains', null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.stranded_trains_occurred])
+
   const handleSave = async () => {
     if (!canSave) return
     setSaving(true); setError(null)
     try {
-      // Strip empty strings → null so we don't write blanks
       const cleaned: Record<string, unknown> = {}
       for (const [k, v] of Object.entries(form)) {
         cleaned[k] = v === '' ? null : v
+      }
+      // Drop any stranded entries that are completely blank so we don't
+      // persist empty objects
+      if (Array.isArray(cleaned.stranded_trains)) {
+        const arr = (cleaned.stranded_trains as StrandedTrainEntry[]).filter(
+          e => e && (e.headcode || e.location || e.time_stranded || e.time_moved),
+        )
+        cleaned.stranded_trains = arr.length ? arr : null
       }
       await onSave(
         { incident_id: incident.id, report_date: incident.report_date, ...cleaned },
@@ -4017,7 +4038,7 @@ function ReviewForm({
       <CcilDetailBlock incident={incident} />
 
       <div className="border-t border-[var(--line)] pt-4 space-y-4">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <h4 className="label-micro" style={{ color: 'var(--nr-orange)' }}>SNDM Review · all fields optional</h4>
           {review?.reviewed_at && (
             <span className="numeric-mono text-[9px]" style={{ color: 'var(--ink-500)' }}>
@@ -4027,50 +4048,80 @@ function ReviewForm({
           )}
         </div>
 
-        {/* Row 1 — Period / Week */}
+        {/* Row 1 — Period / Week (derived from railway calendar, read-only) */}
         <FieldGroup>
           <Field label="Period">
-            <input className="input" value={form.period ?? ''} onChange={e => set('period', e.target.value)} placeholder="e.g. P02" />
+            <ReadOnlyValue value={`${railPeriod.label.split(' · ')[0]} (${railPeriod.yearLabel})`} hint="Railway calendar · from report date" />
           </Field>
           <Field label="Week">
-            <input className="input" value={form.week ?? ''} onChange={e => set('week', e.target.value)} placeholder="e.g. W3" />
+            <ReadOnlyValue value={`W${railPeriod.week}`} hint="13 periods × 4 weeks" />
           </Field>
         </FieldGroup>
 
-        {/* Row 2 — Technical conference / Commentary */}
-        <FieldGroup>
-          <Field label="Technical Conference">
-            <textarea className="input" rows={2} value={form.technical_conference ?? ''} onChange={e => set('technical_conference', e.target.value)} placeholder="Conference call notes, attendees, decisions…" />
+        {/* Row 2 — Technical conference */}
+        <FieldGroup label="Technical Conference">
+          <Field label="Conference Held?">
+            <YesNoNaSelect value={form.technical_conference_outcome} onChange={v => set('technical_conference_outcome', v)} />
           </Field>
-          <Field label="Commentary">
-            <textarea className="input" rows={2} value={form.commentary ?? ''} onChange={e => set('commentary', e.target.value)} placeholder="Additional context, narrative, follow-up actions…" />
-          </Field>
+          {(form.technical_conference_outcome === 'YES' || form.technical_conference_outcome === 'NO') && (
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Field label={form.technical_conference_outcome === 'YES' ? 'Commentary (statement supporting the YES decision)' : 'Commentary (statement supporting the NO decision)'}>
+                <textarea
+                  className="input"
+                  rows={2}
+                  value={form.commentary ?? ''}
+                  onChange={e => set('commentary', e.target.value)}
+                  placeholder="Record the statement against the decision…"
+                />
+              </Field>
+            </div>
+          )}
         </FieldGroup>
 
-        {/* Row 3 — Stranded train */}
-        <FieldGroup label="Stranded Train">
-          <Field label="Headcode">
-            <input className="input" value={form.stranded_headcode ?? ''} onChange={e => set('stranded_headcode', e.target.value.toUpperCase())} placeholder="e.g. 1B23" />
+        {/* Row 3 — Stranded trains */}
+        <FieldGroup label="Stranded Trains">
+          <Field label="Trains Stranded?">
+            <YesNoNaSelect value={form.stranded_trains_occurred} onChange={v => set('stranded_trains_occurred', v)} />
           </Field>
-          <Field label="Location">
-            <input className="input" value={form.stranded_location ?? ''} onChange={e => set('stranded_location', e.target.value)} placeholder="Where stranded" />
-          </Field>
-          <Field label="Time Stranded">
-            <input className="input" type="time" value={form.stranded_time_stranded ?? ''} onChange={e => set('stranded_time_stranded', e.target.value)} />
-          </Field>
-          <Field label="Time Moved">
-            <input className="input" type="time" value={form.stranded_time_moved ?? ''} onChange={e => set('stranded_time_moved', e.target.value)} />
-          </Field>
+          {form.stranded_trains_occurred === 'YES' && (
+            <div className="sm:col-span-2 lg:col-span-3 space-y-2">
+              {strandedList.map((entry, idx) => (
+                <div key={idx} className="border border-[var(--line)] rounded-sm p-3" style={{ background: 'var(--bg-card)' }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="label-micro text-[9px]" style={{ color: 'var(--ink-400)' }}>Train #{idx + 1}</span>
+                    <button type="button" onClick={() => removeStrandedTrain(idx)} className="btn !py-1 !px-2"><X size={10} /> Remove</button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <Field label="Headcode">
+                      <input className="input" value={entry.headcode ?? ''} onChange={e => updateStrandedTrain(idx, { headcode: e.target.value.toUpperCase() || null })} placeholder="e.g. 1B23" />
+                    </Field>
+                    <Field label="Location">
+                      <input className="input" value={entry.location ?? ''} onChange={e => updateStrandedTrain(idx, { location: e.target.value || null })} placeholder="Where stranded" />
+                    </Field>
+                    <Field label="Time Stranded">
+                      <input className="input" type="time" value={entry.time_stranded ?? ''} onChange={e => updateStrandedTrain(idx, { time_stranded: e.target.value || null })} />
+                    </Field>
+                    <Field label="Time Moved">
+                      <input className="input" type="time" value={entry.time_moved ?? ''} onChange={e => updateStrandedTrain(idx, { time_moved: e.target.value || null })} />
+                    </Field>
+                  </div>
+                </div>
+              ))}
+              <button type="button" onClick={addStrandedTrain} className="btn">+ Add Train</button>
+            </div>
+          )}
         </FieldGroup>
 
-        {/* Row 4 — ITSR / huddle */}
-        <FieldGroup>
-          <Field label="ITSR">
-            <input className="input" value={form.itsr ?? ''} onChange={e => set('itsr', e.target.value)} placeholder="ITSR reference / notes" />
+        {/* Row 4 — ITSR */}
+        <FieldGroup label="ITSR">
+          <Field label="ITSR Required?">
+            <YesNoNaSelect value={form.itsr_required} onChange={v => set('itsr_required', v)} />
           </Field>
-          <Field label="Time Huddle Held">
-            <input className="input" type="time" value={form.time_huddle_held ?? ''} onChange={e => set('time_huddle_held', e.target.value)} />
-          </Field>
+          {form.itsr_required === 'YES' && (
+            <Field label="Time Huddle Held">
+              <input className="input" type="time" value={form.time_huddle_held ?? ''} onChange={e => set('time_huddle_held', e.target.value || null)} />
+            </Field>
+          )}
         </FieldGroup>
 
         {/* Row 5 — Incident classification */}
@@ -4102,38 +4153,51 @@ function ReviewForm({
 
         {/* Row 6 — MOM response */}
         <FieldGroup label="MOM Response">
-          <Field label="Responder">
-            <input className="input" value={form.mom_response ?? ''} onChange={e => set('mom_response', e.target.value)} placeholder="Initials / name" />
+          <Field label="MOM Responded?">
+            <YesNoNaSelect value={form.mom_responded} onChange={v => set('mom_responded', v)} />
           </Field>
-          <Field label="Depot">
-            <input className="input" value={form.mom_depot ?? ''} onChange={e => set('mom_depot', e.target.value)} placeholder="MOM depot" />
-          </Field>
-          <Field label="Response Time">
-            <input className="input" type="time" value={form.mom_response_time ?? ''} onChange={e => set('mom_response_time', e.target.value)} />
-          </Field>
-          <Field label="First 50 — 30min target">
-            <select className="select" value={form.first_50_30min_target_met ?? ''} onChange={e => set('first_50_30min_target_met', (e.target.value || null) as First50Outcome | null)}>
-              <option value="">—</option>
-              <option value="YES">Yes</option>
-              <option value="NO">No</option>
-              <option value="NA">N/A</option>
-            </select>
-          </Field>
+          {form.mom_responded === 'YES' && (
+            <>
+              <Field label="Depot">
+                <select
+                  className="select"
+                  value={form.mom_depot ?? ''}
+                  onChange={e => set('mom_depot', (e.target.value || null) as MomDepot | null)}
+                >
+                  <option value="">—</option>
+                  {(Object.keys(MOM_DEPOT_LABELS) as MomDepot[]).map(code => (
+                    <option key={code} value={code}>{MOM_DEPOT_LABELS[code]}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Response Time">
+                <input className="input" type="time" value={form.mom_response_time ?? ''} onChange={e => set('mom_response_time', e.target.value || null)} />
+              </Field>
+              <Field label="First 50 — 30min target">
+                <select className="select" value={form.first_50_30min_target_met ?? ''} onChange={e => set('first_50_30min_target_met', (e.target.value || null) as First50Outcome | null)}>
+                  <option value="">—</option>
+                  <option value="YES">Yes</option>
+                  <option value="NO">No</option>
+                  <option value="NA">N/A</option>
+                </select>
+              </Field>
+            </>
+          )}
         </FieldGroup>
 
         {/* Row 7 — Recovery */}
         <FieldGroup label="Recovery">
           <Field label="Target Recovery Time">
-            <input className="input" type="time" value={form.target_recovery_time ?? ''} onChange={e => set('target_recovery_time', e.target.value)} />
+            <input className="input" type="time" value={form.target_recovery_time ?? ''} onChange={e => set('target_recovery_time', e.target.value || null)} />
           </Field>
           <Field label="Actual Recovery Time">
-            <input className="input" type="time" value={form.actual_recovery_time ?? ''} onChange={e => set('actual_recovery_time', e.target.value)} />
+            <input className="input" type="time" value={form.actual_recovery_time ?? ''} onChange={e => set('actual_recovery_time', e.target.value || null)} />
           </Field>
           <Field label="Time to Recover">
-            <div className="input flex items-center justify-between" style={{ background: 'var(--bg-card)', color: 'var(--ink-300)' }}>
-              <span className="numeric-mono">{liveTimeToRecover != null ? fmtMins(liveTimeToRecover) : '—'}</span>
-              <span className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Auto from start → actual</span>
-            </div>
+            <ReadOnlyValue
+              value={liveTimeToRecover != null ? fmtMins(liveTimeToRecover) : '—'}
+              hint="Auto from incident start → actual recovery"
+            />
           </Field>
         </FieldGroup>
 
@@ -4285,6 +4349,33 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="label-micro text-[9px]">{label}</span>
       {children}
     </label>
+  )
+}
+
+function YesNoNaSelect({ value, onChange }: { value: YesNoNa | null | undefined; onChange: (v: YesNoNa | null) => void }) {
+  return (
+    <select
+      className="select"
+      value={value ?? ''}
+      onChange={e => onChange((e.target.value || null) as YesNoNa | null)}
+    >
+      <option value="">—</option>
+      <option value="YES">Yes</option>
+      <option value="NO">No</option>
+      <option value="NA">N/A</option>
+    </select>
+  )
+}
+
+function ReadOnlyValue({ value, hint }: { value: string; hint?: string }) {
+  return (
+    <div
+      className="input flex items-center justify-between"
+      style={{ background: 'var(--bg-card)', color: 'var(--ink-200)', cursor: 'default' }}
+    >
+      <span className="numeric-mono">{value}</span>
+      {hint && <span className="label-micro text-[9px] ml-3 truncate" style={{ color: 'var(--ink-500)' }}>{hint}</span>}
+    </div>
   )
 }
 
