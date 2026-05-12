@@ -151,6 +151,27 @@ export const CLASSIFICATION_CONFIG: Record<IncidentClassification, { label: stri
   BLACK: { label: 'Black', color: '#1A1A1A', textColor: '#F2EDE0' },
 }
 
+// ─── Incident team members (captured by Dlog2, read-only in Insight) ─────────
+
+export interface IncidentTeamMember {
+  id: string
+  incident_id: string
+  report_date: string
+  name: string
+  role: string
+  shift: 'day' | 'night'
+  created_at: string
+}
+
+export interface TeamMemberWorkload {
+  name: string
+  role: string
+  incidentCount: number
+  totalDelay: number
+  dayShifts: number
+  nightShifts: number
+}
+
 export interface ReportRow {
   id: string
   report_date: string

@@ -11,6 +11,7 @@ import {
   ChangePoint, DeltaMetric, DeltaContribution, DeltaDecomposition, Severity,
   Hypothesis, HypothesisCluster, HypothesisDimension,
   IncidentReview, IncidentReviewInput,
+  IncidentTeamMember, TeamMemberWorkload,
 } from './types'
 import { railwayPeriodWeek } from './railwayCalendar'
 
@@ -1391,6 +1392,38 @@ export async function fetchReviewsForRange(from: string, to: string): Promise<In
       .gte('report_date', from)
       .lte('report_date', to),
   )
+}
+
+const TEAM_MEMBER_COLS = 'id, incident_id, report_date, name, role, shift, created_at'
+
+export async function fetchTeamMembersForRange(from: string, to: string): Promise<IncidentTeamMember[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<IncidentTeamMember>(() =>
+    sb!.from('incident_team_members').select(TEAM_MEMBER_COLS)
+      .gte('report_date', from)
+      .lte('report_date', to)
+      .order('report_date', { ascending: true }),
+  )
+}
+
+// Aggregate team member rows into per-person workload summaries.
+// incidentDelayById maps incident id → effective delay minutes for summing.
+export function deriveTeamWorkload(
+  members: IncidentTeamMember[],
+  incidentDelayById: Map<string, number>,
+): TeamMemberWorkload[] {
+  const map = new Map<string, TeamMemberWorkload>()
+  for (const m of members) {
+    const key = `${m.name}::${m.role}`
+    const w = map.get(key) ?? { name: m.name, role: m.role, incidentCount: 0, totalDelay: 0, dayShifts: 0, nightShifts: 0 }
+    w.incidentCount++
+    w.totalDelay += incidentDelayById.get(m.incident_id) ?? 0
+    if (m.shift === 'day') w.dayShifts++
+    else w.nightShifts++
+    map.set(key, w)
+  }
+  return Array.from(map.values()).sort((a, b) => b.incidentCount - a.incidentCount)
 }
 
 // Compute time_to_recover from incident_start → actual_recovery_time.

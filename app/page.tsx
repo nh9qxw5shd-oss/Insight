@@ -20,6 +20,7 @@ import {
   DeltaMetric, DeltaDecomposition, HypothesisCluster, Hypothesis,
   IncidentReview, IncidentReviewInput, IncidentClassification, First50Outcome,
   CLASSIFICATION_CONFIG, YesNoNa, MomDepot, MOM_DEPOT_LABELS, StrandedTrainEntry,
+  IncidentTeamMember, TeamMemberWorkload,
 } from '@/lib/types'
 import { railwayPeriodWeek } from '@/lib/railwayCalendar'
 import {
@@ -32,6 +33,7 @@ import {
   effectiveDelay, effectiveMinsToArrival, effectiveDuration, SLA_THRESHOLD_MINS,
   searchMatch,
   fetchIncidentsForRange, fetchReportsForRange, fetchReviewsForRange,
+  fetchTeamMembersForRange, deriveTeamWorkload,
   upsertIncidentReview, deleteIncidentReview, deriveReviewPeriods,
   RawData, ReviewPeriodGroup, ReviewPeriodDay,
 } from '@/lib/queries'
@@ -116,6 +118,7 @@ export default function InsightDashboard() {
   const [reviewIncidents, setReviewIncidents] = useState<IncidentRow[] | null>(null)
   const [reviewReports, setReviewReports]     = useState<{ id: string; report_date: string; period: string | null; control_centre: string | null; created_by: string | null; total_delay: number; total_cancelled: number; total_part_cancelled: number; incident_count: number }[] | null>(null)
   const [reviewRows, setReviewRows]           = useState<IncidentReview[]>([])
+  const [reviewTeamMembers, setReviewTeamMembers] = useState<IncidentTeamMember[]>([])
   const [reviewLoading, setReviewLoading]     = useState(false)
   const [reviewError, setReviewError]         = useState<string | null>(null)
 
@@ -261,15 +264,17 @@ export default function InsightDashboard() {
           }
           return
         }
-        const [incs, reps, revs] = await Promise.all([
+        const [incs, reps, revs, members] = await Promise.all([
           fetchIncidentsForRange(from, to),
           fetchReportsForRange(from, to),
           fetchReviewsForRange(from, to),
+          fetchTeamMembersForRange(from, to),
         ])
         if (cancelled) return
         setReviewIncidents(incs)
         setReviewReports(reps)
         setReviewRows(revs)
+        setReviewTeamMembers(members)
       } catch (e: any) {
         if (cancelled) return
         setReviewError(e?.message || 'Failed to load review data')
@@ -291,6 +296,22 @@ export default function InsightDashboard() {
     if (!reviewIncidents) return []
     return deriveReviewPeriods(reviewIncidents, reviewByIncidentId)
   }, [reviewIncidents, reviewByIncidentId])
+
+  const teamMembersByIncidentId = useMemo(() => {
+    const m = new Map<string, IncidentTeamMember[]>()
+    for (const tm of reviewTeamMembers) {
+      const arr = m.get(tm.incident_id) ?? []
+      arr.push(tm)
+      m.set(tm.incident_id, arr)
+    }
+    return m
+  }, [reviewTeamMembers])
+
+  const teamWorkload = useMemo(() => {
+    const delayMap = new Map<string, number>()
+    for (const i of reviewIncidents ?? []) delayMap.set(i.id, effectiveDelay(i))
+    return deriveTeamWorkload(reviewTeamMembers, delayMap)
+  }, [reviewTeamMembers, reviewIncidents])
 
   const handleReviewSave = async (input: IncidentReviewInput, incidentStart: string | null) => {
     const saved = await upsertIncidentReview(input, incidentStart)
@@ -382,6 +403,8 @@ export default function InsightDashboard() {
                     <ReviewTab
                       periods={reviewPeriods}
                       reviewByIncidentId={reviewByIncidentId}
+                      teamMembersByIncidentId={teamMembersByIncidentId}
+                      teamWorkload={teamWorkload}
                       onSave={handleReviewSave}
                       onDelete={handleReviewDelete}
                       demoMode={demoMode}
@@ -3635,10 +3658,12 @@ function fmtMins(m: number): string {
 // are optional — a saved row just means an SNDM has touched the incident.
 
 function ReviewTab({
-  periods, reviewByIncidentId, onSave, onDelete, demoMode, supabaseConfigured,
+  periods, reviewByIncidentId, teamMembersByIncidentId, teamWorkload, onSave, onDelete, demoMode, supabaseConfigured,
 }: {
   periods: ReviewPeriodGroup[]
   reviewByIncidentId: Map<string, IncidentReview>
+  teamMembersByIncidentId: Map<string, IncidentTeamMember[]>
+  teamWorkload: TeamMemberWorkload[]
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
   demoMode: boolean
@@ -3685,6 +3710,48 @@ function ReviewTab({
         />
       </div>
 
+      {teamWorkload.length > 0 && (
+        <Card title="Team on Duty" subtitle="Who was recorded on shift across incidents in this window">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-[var(--line)]">
+                  <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Name</th>
+                  <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Role</th>
+                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Incidents</th>
+                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Total Delay</th>
+                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Shifts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {teamWorkload.map((w, i) => (
+                  <tr key={`${w.name}-${w.role}`} className="border-b border-[var(--line)] last:border-0">
+                    <td className="py-2 font-medium" style={{ color: 'var(--ink-100)' }}>{w.name}</td>
+                    <td className="py-2" style={{ color: 'var(--ink-300)' }}>{w.role}</td>
+                    <td className="py-2 text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>{w.incidentCount}</td>
+                    <td className="py-2 text-right numeric-mono" style={{ color: 'var(--nr-orange)' }}>{fmtMins(w.totalDelay)}</td>
+                    <td className="py-2 text-right">
+                      <span className="inline-flex items-center gap-1.5">
+                        {w.dayShifts > 0 && (
+                          <span className="pill text-[9px]" style={{ background: 'rgba(243,156,18,0.12)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.3)' }}>
+                            Day ×{w.dayShifts}
+                          </span>
+                        )}
+                        {w.nightShifts > 0 && (
+                          <span className="pill text-[9px]" style={{ background: 'rgba(74,111,165,0.12)', color: 'var(--nr-blue)', borderColor: 'rgba(74,111,165,0.3)' }}>
+                            Night ×{w.nightShifts}
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
       <Card title="Log Periods" subtitle="Expand a period to drill into its days and incidents" className="tick-corners">
         {periods.length === 0 ? (
           <Empty msg="No incidents in the current date range" />
@@ -3695,6 +3762,7 @@ function ReviewTab({
                 key={g.key}
                 group={g}
                 reviewByIncidentId={reviewByIncidentId}
+                teamMembersByIncidentId={teamMembersByIncidentId}
                 onSave={onSave}
                 onDelete={onDelete}
                 canSave={supabaseConfigured && !demoMode}
@@ -3708,10 +3776,11 @@ function ReviewTab({
 }
 
 function PeriodGroupRow({
-  group, reviewByIncidentId, onSave, onDelete, canSave,
+  group, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete, canSave,
 }: {
   group: ReviewPeriodGroup
   reviewByIncidentId: Map<string, IncidentReview>
+  teamMembersByIncidentId: Map<string, IncidentTeamMember[]>
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
   canSave: boolean
@@ -3769,6 +3838,7 @@ function PeriodGroupRow({
               key={d.date}
               day={d}
               reviewByIncidentId={reviewByIncidentId}
+              teamMembersByIncidentId={teamMembersByIncidentId}
               onSave={onSave}
               onDelete={onDelete}
               canSave={canSave}
@@ -3781,10 +3851,11 @@ function PeriodGroupRow({
 }
 
 function ReviewDayRow({
-  day, reviewByIncidentId, onSave, onDelete, canSave,
+  day, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete, canSave,
 }: {
   day: ReviewPeriodDay
   reviewByIncidentId: Map<string, IncidentReview>
+  teamMembersByIncidentId: Map<string, IncidentTeamMember[]>
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
   canSave: boolean
@@ -3822,6 +3893,7 @@ function ReviewDayRow({
                 key={inc.id}
                 incident={inc}
                 review={reviewByIncidentId.get(inc.id)}
+                teamMembers={teamMembersByIncidentId.get(inc.id) ?? []}
                 onSave={onSave}
                 onDelete={onDelete}
                 canSave={canSave}
@@ -3835,10 +3907,11 @@ function ReviewDayRow({
 }
 
 function ReviewIncidentRow({
-  incident, review, onSave, onDelete, canSave,
+  incident, review, teamMembers, onSave, onDelete, canSave,
 }: {
   incident: IncidentRow
   review: IncidentReview | undefined
+  teamMembers: IncidentTeamMember[]
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
   canSave: boolean
@@ -3893,6 +3966,7 @@ function ReviewIncidentRow({
         <ReviewForm
           incident={incident}
           review={review}
+          teamMembers={teamMembers}
           onSave={onSave}
           onDelete={onDelete}
           canSave={canSave}
@@ -3915,10 +3989,11 @@ function ClassificationPill({ value }: { value: IncidentClassification }) {
 // detail; below is the editable SNDM review form (all optional) and a
 // "Refine CCIL" disclosure for overriding captured values.
 function ReviewForm({
-  incident, review, onSave, onDelete, canSave,
+  incident, review, teamMembers, onSave, onDelete, canSave,
 }: {
   incident: IncidentRow
   review: IncidentReview | undefined
+  teamMembers: IncidentTeamMember[]
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
   canSave: boolean
@@ -4036,6 +4111,29 @@ function ReviewForm({
   return (
     <div className="border-t border-[var(--line)] p-4 text-xs space-y-5" style={{ background: 'var(--bg-card-hi)' }}>
       <CcilDetailBlock incident={incident} />
+
+      {teamMembers.length > 0 && (
+        <div className="border-t border-[var(--line)] pt-4">
+          <div className="label-micro mb-2" style={{ color: 'var(--ink-400)' }}>Team on Duty</div>
+          <div className="flex flex-wrap gap-2">
+            {teamMembers.map(m => (
+              <div key={m.id} className="flex items-center gap-1.5 rounded border border-[var(--line)] px-2 py-1" style={{ background: 'var(--bg-card)' }}>
+                <span className="font-medium" style={{ color: 'var(--ink-100)' }}>{m.name}</span>
+                <span style={{ color: 'var(--ink-400)' }}>·</span>
+                <span style={{ color: 'var(--ink-300)' }}>{m.role}</span>
+                <span
+                  className="pill text-[9px] ml-1"
+                  style={m.shift === 'day'
+                    ? { background: 'rgba(243,156,18,0.12)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.3)' }
+                    : { background: 'rgba(74,111,165,0.12)', color: 'var(--nr-blue)', borderColor: 'rgba(74,111,165,0.3)' }}
+                >
+                  {m.shift}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="border-t border-[var(--line)] pt-4 space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
