@@ -2923,8 +2923,9 @@ function DualBarChart({ data }: any) {
 }
 
 // ─── CalendarPicker ───────────────────────────────────────────────────────────
-// A self-contained calendar popup that works consistently across all platforms.
-// value / onChange use ISO 'YYYY-MM-DD' strings. placeholder shown when empty.
+// Inline calendar that expands in-flow inside the filter drawer so it never
+// overlaps the sticky Apply bar or clips against the panel edge.
+// value / onChange use ISO 'YYYY-MM-DD' strings.
 
 function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
   value: string | undefined
@@ -2932,14 +2933,11 @@ function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
   placeholder?: string
 }) {
   const [open, setOpen] = useState(false)
-  const ref = typeof document !== 'undefined' ? { current: null as HTMLDivElement | null } : { current: null }
 
-  // Seed the viewed month from the current value or today
   const seed = value ? new Date(value + 'T00:00:00') : new Date()
   const [viewYear,  setViewYear]  = useState(seed.getFullYear())
-  const [viewMonth, setViewMonth] = useState(seed.getMonth())   // 0-based
+  const [viewMonth, setViewMonth] = useState(seed.getMonth())
 
-  // Re-sync view when value changes externally
   useEffect(() => {
     if (value) {
       const d = new Date(value + 'T00:00:00')
@@ -2947,16 +2945,6 @@ function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
       setViewMonth(d.getMonth())
     }
   }, [value])
-
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [open])
 
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
   const DAYS   = ['Su','Mo','Tu','We','Th','Fr','Sa']
@@ -2970,14 +2958,12 @@ function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
     else setViewMonth(m => m + 1)
   }
 
-  // Build calendar grid — cells before month start are null
-  const firstDow = new Date(viewYear, viewMonth, 1).getDay()
+  const firstDow   = new Date(viewYear, viewMonth, 1).getDay()
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
   const cells: (number | null)[] = [
     ...Array(firstDow).fill(null),
     ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
   ]
-  // Pad to full rows
   while (cells.length % 7 !== 0) cells.push(null)
 
   function select(day: number) {
@@ -2995,20 +2981,23 @@ function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
     : placeholder
 
   return (
-    <div style={{ position: 'relative' }} ref={(el) => { ref.current = el }}>
+    <div>
+      {/* Trigger button */}
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
         className="input w-full text-left flex items-center gap-2"
         style={{ color: value ? 'var(--ink-100)' : 'var(--ink-500)', fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' }}
       >
-        <span style={{ fontSize: 12 }}>📅</span>
+        <ChevronDown size={11} style={{ opacity: 0.5, transform: open ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }} />
         {displayLabel}
       </button>
+
+      {/* Inline calendar — expands in document flow, no overlap */}
       {open && (
         <div
-          className="absolute z-50 rounded border border-[var(--line-hi)] p-3 shadow-xl"
-          style={{ top: 'calc(100% + 4px)', left: 0, minWidth: 220, background: 'var(--bg-panel)', right: 0 }}
+          className="rounded border border-[var(--line-hi)] p-3 mt-1"
+          style={{ background: 'var(--bg-card)' }}
         >
           {/* Month / Year navigation */}
           <div className="flex items-center justify-between mb-2">
@@ -3019,13 +3008,13 @@ function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
             <button type="button" onClick={nextMonth} className="btn !p-1"><ChevronRight size={12} /></button>
           </div>
           {/* Day-of-week headers */}
-          <div className="grid grid-cols-7 gap-px mb-1">
+          <div className="grid grid-cols-7 mb-1">
             {DAYS.map(d => (
               <div key={d} className="text-center text-[10px]" style={{ color: 'var(--ink-500)', fontFamily: 'JetBrains Mono, monospace' }}>{d}</div>
             ))}
           </div>
           {/* Date cells */}
-          <div className="grid grid-cols-7 gap-px">
+          <div className="grid grid-cols-7">
             {cells.map((day, i) => {
               if (!day) return <div key={`e-${i}`} />
               const iso = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
@@ -3036,7 +3025,7 @@ function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
                   key={iso}
                   type="button"
                   onClick={() => select(day)}
-                  className="rounded text-[11px] py-1 transition-colors"
+                  className="rounded text-[11px] py-1.5 transition-colors hover:bg-[var(--bg-card-hi)]"
                   style={{
                     fontFamily: 'JetBrains Mono, monospace',
                     background: isSelected ? 'var(--nr-orange)' : isToday ? 'var(--bg-card-hi)' : undefined,
@@ -3049,7 +3038,7 @@ function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
               )
             })}
           </div>
-          {/* Clear button */}
+          {/* Clear */}
           {value && (
             <button
               type="button"
