@@ -2602,7 +2602,30 @@ function DelayDensityTable({ data, incidents, onDrillDown }: any) {
 }
 
 function DrillDownModal({ title, incidents, onClose }: { title: string; incidents: IncidentRow[]; onClose: () => void }) {
-  const sorted = [...incidents]
+  // Group by CCIL so multi-day continuations appear under their primary
+  const groups: { primary: IncidentRow; continuations: IncidentRow[] }[] = []
+  const seen = new Map<string, number>()     // ccil → group index
+  const noKey: IncidentRow[] = []            // rows with no CCIL
+
+  const byDate = [...incidents].sort((a, b) => a.report_date.localeCompare(b.report_date))
+  for (const inc of byDate) {
+    const key = inc.ccil?.trim()
+    if (!key) { noKey.push(inc); continue }
+    if (seen.has(key)) {
+      groups[seen.get(key)!].continuations.push(inc)
+    } else {
+      seen.set(key, groups.length)
+      groups.push({ primary: inc, continuations: [] })
+    }
+  }
+  // Uncategorised rows (no CCIL) each get their own group
+  for (const inc of noKey) groups.push({ primary: inc, continuations: [] })
+
+  // Sort groups newest-primary-first for display
+  groups.sort((a, b) => b.primary.report_date.localeCompare(a.primary.report_date))
+
+  const uniqueCount = groups.length
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
@@ -2610,41 +2633,58 @@ function DrillDownModal({ title, incidents, onClose }: { title: string; incident
         <div className="flex items-start justify-between p-4 border-b border-[var(--line)] shrink-0">
           <div>
             <h3 className="serif text-xl font-medium" style={{ color: 'var(--ink-100)' }}>{title}</h3>
-            <p className="label-micro mt-0.5">{sorted.length} incident{sorted.length !== 1 ? 's' : ''} in window</p>
+            <p className="label-micro mt-0.5">
+              {uniqueCount} incident{uniqueCount !== 1 ? 's' : ''} in window
+              {incidents.length > uniqueCount && ` · ${incidents.length - uniqueCount} carried over`}
+            </p>
           </div>
           <button onClick={onClose} className="btn !p-2 shrink-0"><X size={14} /></button>
         </div>
-        <div className="overflow-y-auto p-4 space-y-2 flex-1">
-          {sorted.length === 0 && <Empty msg="No matching incidents in window" />}
-          {sorted.map((inc) => (
-            <div key={inc.id} className="card !bg-[var(--bg-card-hi)] !border-[var(--line)] p-3 text-xs">
-              <div className="flex items-start gap-3">
-                <span className={`pill pill-${inc.severity.toLowerCase()} shrink-0`}>{inc.severity}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap mb-1">
-                    {inc.ccil && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL {inc.ccil}</span>}
-                    <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{inc.report_date}{inc.incident_start ? ` · ${inc.incident_start}` : ''}</span>
-                    {inc.area && <span className="text-[10px]" style={{ color: 'var(--ink-400)' }}>{inc.area}</span>}
-                    {inc.incident_type_label && (
-                      <span className="pill" style={{ background: `${CATEGORY_CONFIG[inc.category].color}20`, color: CATEGORY_CONFIG[inc.category].color, borderColor: `${CATEGORY_CONFIG[inc.category].color}50` }}>
-                        {inc.incident_type_label}
-                      </span>
+        <div className="overflow-y-auto p-4 space-y-3 flex-1">
+          {groups.length === 0 && <Empty msg="No matching incidents in window" />}
+          {groups.map(({ primary: inc, continuations }) => (
+            <div key={inc.id} className="rounded border border-[var(--line)] overflow-hidden">
+              {/* Primary row */}
+              <div className="card !rounded-none !border-0 !bg-[var(--bg-card-hi)] p-3 text-xs">
+                <div className="flex items-start gap-3">
+                  <span className={`pill pill-${inc.severity.toLowerCase()} shrink-0`}>{inc.severity}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      {inc.ccil && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL {inc.ccil}</span>}
+                      <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{inc.report_date}{inc.incident_start ? ` · ${inc.incident_start}` : ''}</span>
+                      {inc.area && <span className="text-[10px]" style={{ color: 'var(--ink-400)' }}>{inc.area}</span>}
+                      {inc.incident_type_label && (
+                        <span className="pill" style={{ background: `${CATEGORY_CONFIG[inc.category].color}20`, color: CATEGORY_CONFIG[inc.category].color, borderColor: `${CATEGORY_CONFIG[inc.category].color}50` }}>
+                          {inc.incident_type_label}
+                        </span>
+                      )}
+                    </div>
+                    <div className="font-medium truncate" style={{ color: 'var(--ink-200)' }}>{inc.title || '—'}</div>
+                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>{inc.location}</div>
+                    {inc.incident_duration != null && (
+                      <div className="text-[10px] mt-1 numeric-mono" style={{ color: 'var(--ink-500)' }}>
+                        Duration: {inc.incident_duration}m
+                        {inc.incident_duration > 0 && ` · Density: ${(inc.minutes_delay / inc.incident_duration).toFixed(1)} delay/min`}
+                      </div>
                     )}
                   </div>
-                  <div className="font-medium truncate" style={{ color: 'var(--ink-200)' }}>{inc.title || '—'}</div>
-                  <div className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>{inc.location}</div>
-                  {inc.incident_duration != null && (
-                    <div className="text-[10px] mt-1 numeric-mono" style={{ color: 'var(--ink-500)' }}>
-                      Duration: {inc.incident_duration}m
-                      {inc.incident_duration > 0 && ` · Density: ${(inc.minutes_delay / inc.incident_duration).toFixed(1)} delay/min`}
-                    </div>
-                  )}
-                </div>
-                <div className="text-right shrink-0">
-                  <div className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>DELAY</div>
-                  <div className="numeric-mono" style={{ color: 'var(--nr-orange)' }}>{inc.minutes_delay}m</div>
+                  <div className="text-right shrink-0">
+                    <div className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>DELAY</div>
+                    <div className="numeric-mono" style={{ color: 'var(--nr-orange)' }}>{inc.minutes_delay}m</div>
+                  </div>
                 </div>
               </div>
+              {/* Continuation rows */}
+              {continuations.map((c) => (
+                <div key={c.id} className="border-t border-[var(--line)] px-3 py-2 text-xs flex items-center gap-3" style={{ background: 'var(--bg-card)' }}>
+                  <span className="label-micro shrink-0" style={{ color: 'var(--ink-500)' }}>↪ carried over</span>
+                  <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{c.report_date}</span>
+                  <span className="truncate flex-1 text-[11px]" style={{ color: 'var(--ink-400)' }}>{c.title || c.location || '—'}</span>
+                  {c.delay_delta != null && c.delay_delta > 0 && (
+                    <span className="numeric-mono text-[10px] shrink-0" style={{ color: 'var(--nr-orange)' }}>+{c.delay_delta}m</span>
+                  )}
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -2882,6 +2922,150 @@ function DualBarChart({ data }: any) {
   )
 }
 
+// ─── CalendarPicker ───────────────────────────────────────────────────────────
+// A self-contained calendar popup that works consistently across all platforms.
+// value / onChange use ISO 'YYYY-MM-DD' strings. placeholder shown when empty.
+
+function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
+  value: string | undefined
+  onChange: (v: string | undefined) => void
+  placeholder?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = typeof document !== 'undefined' ? { current: null as HTMLDivElement | null } : { current: null }
+
+  // Seed the viewed month from the current value or today
+  const seed = value ? new Date(value + 'T00:00:00') : new Date()
+  const [viewYear,  setViewYear]  = useState(seed.getFullYear())
+  const [viewMonth, setViewMonth] = useState(seed.getMonth())   // 0-based
+
+  // Re-sync view when value changes externally
+  useEffect(() => {
+    if (value) {
+      const d = new Date(value + 'T00:00:00')
+      setViewYear(d.getFullYear())
+      setViewMonth(d.getMonth())
+    }
+  }, [value])
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const DAYS   = ['Su','Mo','Tu','We','Th','Fr','Sa']
+
+  function prevMonth() {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) }
+    else setViewMonth(m => m - 1)
+  }
+  function nextMonth() {
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) }
+    else setViewMonth(m => m + 1)
+  }
+
+  // Build calendar grid — cells before month start are null
+  const firstDow = new Date(viewYear, viewMonth, 1).getDay()
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
+  const cells: (number | null)[] = [
+    ...Array(firstDow).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ]
+  // Pad to full rows
+  while (cells.length % 7 !== 0) cells.push(null)
+
+  function select(day: number) {
+    const iso = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    onChange(iso)
+    setOpen(false)
+  }
+
+  const today = new Date().toISOString().slice(0, 10)
+  const displayLabel = value
+    ? (() => {
+        const [y, m, d] = value.split('-')
+        return `${parseInt(d, 10)} ${MONTHS[parseInt(m, 10) - 1]} ${y}`
+      })()
+    : placeholder
+
+  return (
+    <div style={{ position: 'relative' }} ref={(el) => { ref.current = el }}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="input w-full text-left flex items-center gap-2"
+        style={{ color: value ? 'var(--ink-100)' : 'var(--ink-500)', fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' }}
+      >
+        <span style={{ fontSize: 12 }}>📅</span>
+        {displayLabel}
+      </button>
+      {open && (
+        <div
+          className="absolute z-50 rounded border border-[var(--line-hi)] p-3 shadow-xl"
+          style={{ top: 'calc(100% + 4px)', left: 0, minWidth: 220, background: 'var(--bg-panel)', right: 0 }}
+        >
+          {/* Month / Year navigation */}
+          <div className="flex items-center justify-between mb-2">
+            <button type="button" onClick={prevMonth} className="btn !p-1"><ChevronLeft size={12} /></button>
+            <span className="text-xs font-medium" style={{ color: 'var(--ink-100)', fontFamily: 'JetBrains Mono, monospace' }}>
+              {MONTHS[viewMonth]} {viewYear}
+            </span>
+            <button type="button" onClick={nextMonth} className="btn !p-1"><ChevronRight size={12} /></button>
+          </div>
+          {/* Day-of-week headers */}
+          <div className="grid grid-cols-7 gap-px mb-1">
+            {DAYS.map(d => (
+              <div key={d} className="text-center text-[10px]" style={{ color: 'var(--ink-500)', fontFamily: 'JetBrains Mono, monospace' }}>{d}</div>
+            ))}
+          </div>
+          {/* Date cells */}
+          <div className="grid grid-cols-7 gap-px">
+            {cells.map((day, i) => {
+              if (!day) return <div key={`e-${i}`} />
+              const iso = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+              const isSelected = iso === value
+              const isToday    = iso === today
+              return (
+                <button
+                  key={iso}
+                  type="button"
+                  onClick={() => select(day)}
+                  className="rounded text-[11px] py-1 transition-colors"
+                  style={{
+                    fontFamily: 'JetBrains Mono, monospace',
+                    background: isSelected ? 'var(--nr-orange)' : isToday ? 'var(--bg-card-hi)' : undefined,
+                    color: isSelected ? '#fff' : isToday ? 'var(--nr-orange)' : 'var(--ink-200)',
+                    fontWeight: isSelected || isToday ? 600 : undefined,
+                  }}
+                >
+                  {day}
+                </button>
+              )
+            })}
+          </div>
+          {/* Clear button */}
+          {value && (
+            <button
+              type="button"
+              onClick={() => { onChange(undefined); setOpen(false) }}
+              className="mt-2 text-[10px] w-full text-center"
+              style={{ color: 'var(--ink-400)' }}
+            >
+              Clear date
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, availableIncidentTypes, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
   const [draft, setDraft]               = useState<AnalyticsFilters>(filters)
   const [saveName, setSaveName]         = useState('')
@@ -3100,9 +3284,23 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
           </FilterGroup>
 
           <FilterGroup label="Custom Date Range">
-            <div className="flex gap-2">
-              <input type="date" className="input flex-1" value={draft.startDate || ''} onChange={(e) => setDraft({ ...draft, startDate: e.target.value })} />
-              <input type="date" className="input flex-1" value={draft.endDate || ''} onChange={(e) => setDraft({ ...draft, endDate: e.target.value })} />
+            <div className="space-y-2">
+              <div>
+                <label className="label-micro mb-1 block">From</label>
+                <CalendarPicker
+                  value={draft.startDate}
+                  onChange={(v) => setDraft({ ...draft, startDate: v })}
+                  placeholder="Start date"
+                />
+              </div>
+              <div>
+                <label className="label-micro mb-1 block">To</label>
+                <CalendarPicker
+                  value={draft.endDate}
+                  onChange={(v) => setDraft({ ...draft, endDate: v })}
+                  placeholder="End date"
+                />
+              </div>
             </div>
             <button
               onClick={() => setDraft({ ...draft, startDate: undefined, endDate: undefined })}
