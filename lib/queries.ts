@@ -11,7 +11,7 @@ import {
   ChangePoint, DeltaMetric, DeltaContribution, DeltaDecomposition, Severity,
   Hypothesis, HypothesisCluster, HypothesisDimension,
   IncidentReview, IncidentReviewInput,
-  IncidentTeamMember, TeamMemberWorkload,
+  IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
 } from './types'
 import { railwayPeriodWeek } from './railwayCalendar'
 
@@ -80,6 +80,7 @@ export interface RawData {
   incidents: IncidentRow[]
   prevIncidents: IncidentRow[]
   reports: ReportRow[]
+  teamMembers: IncidentTeamMember[]
   windowFrom: string
   windowTo: string
   windowDays: number
@@ -130,12 +131,19 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
     return q
   })
 
-  // Reports row count (for "reports covered" KPI)
-  const reportRows = await fetchAllRows<ReportRow>(() =>
-    sb!.from('reports').select('*')
-      .gte('report_date', cur.from)
-      .lte('report_date', cur.to)
-  )
+  // Reports row count (for "reports covered" KPI) and team members — fetched in parallel
+  const [reportRows, memberRows] = await Promise.all([
+    fetchAllRows<ReportRow>(() =>
+      sb!.from('reports').select('*')
+        .gte('report_date', cur.from)
+        .lte('report_date', cur.to)
+    ),
+    fetchAllRows<IncidentTeamMember>(() =>
+      sb!.from('incident_team_members').select(TEAM_MEMBER_COLS)
+        .gte('report_date', cur.from)
+        .lte('report_date', cur.to)
+    ),
+  ])
 
   // Apply free-text filter client-side
   const activeSearches = f.searches.map(s => s.trim()).filter(Boolean)
@@ -158,6 +166,7 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
     incidents: filtered,
     prevIncidents: prevRows,
     reports: reportRows,
+    teamMembers: memberRows,
     windowFrom: cur.from,
     windowTo: cur.to,
     windowDays: cur.days,
@@ -1424,6 +1433,48 @@ export function deriveTeamWorkload(
     map.set(key, w)
   }
   return Array.from(map.values()).sort((a, b) => b.incidentCount - a.incidentCount)
+}
+
+// Aggregate team members from the current window into pattern data for the
+// Patterns tab. Joins against incidents to surface category and delay context.
+export function deriveStaffPatterns(data: RawData): StaffPatternDatum[] {
+  if (data.teamMembers.length === 0) return []
+  const incidentMap = new Map(data.incidents.map(i => [i.id, i]))
+  const catCounts = new Map<string, Map<string, number>>()  // key → category → count
+  const map = new Map<string, StaffPatternDatum>()
+
+  for (const m of data.teamMembers) {
+    const key = `${m.name}::${m.role}`
+    const incident = incidentMap.get(m.incident_id)
+    const w = map.get(key) ?? {
+      name: m.name, role: m.role, incidentCount: 0, totalDelay: 0,
+      dayShifts: 0, nightShifts: 0, topCategory: null,
+    }
+    w.incidentCount++
+    w.totalDelay += incident ? effectiveDelay(incident) : 0
+    if (m.shift === 'day') w.dayShifts++
+    else w.nightShifts++
+    map.set(key, w)
+
+    if (incident) {
+      const cc = catCounts.get(key) ?? new Map<string, number>()
+      cc.set(incident.category, (cc.get(incident.category) ?? 0) + 1)
+      catCounts.set(key, cc)
+    }
+  }
+
+  return Array.from(map.entries()).map(([key, w]) => {
+    const cc = catCounts.get(key)
+    if (cc) {
+      let topCat: IncidentCategory | null = null
+      let topCount = 0
+      for (const [cat, count] of cc.entries()) {
+        if (count > topCount) { topCount = count; topCat = cat as IncidentCategory }
+      }
+      w.topCategory = topCat
+    }
+    return w
+  }).sort((a, b) => b.incidentCount - a.incidentCount)
 }
 
 // Compute time_to_recover from incident_start → actual_recovery_time.

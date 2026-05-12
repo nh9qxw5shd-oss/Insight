@@ -20,7 +20,7 @@ import {
   DeltaMetric, DeltaDecomposition, HypothesisCluster, Hypothesis,
   IncidentReview, IncidentReviewInput, IncidentClassification, First50Outcome,
   CLASSIFICATION_CONFIG, YesNoNa, MomDepot, MOM_DEPOT_LABELS, StrandedTrainEntry,
-  IncidentTeamMember, TeamMemberWorkload,
+  IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
 } from '@/lib/types'
 import { railwayPeriodWeek } from '@/lib/railwayCalendar'
 import {
@@ -33,13 +33,14 @@ import {
   effectiveDelay, effectiveMinsToArrival, effectiveDuration, SLA_THRESHOLD_MINS,
   searchMatch,
   fetchIncidentsForRange, fetchReportsForRange, fetchReviewsForRange,
-  fetchTeamMembersForRange, deriveTeamWorkload,
+  fetchTeamMembersForRange, deriveTeamWorkload, deriveStaffPatterns,
   upsertIncidentReview, deleteIncidentReview, deriveReviewPeriods,
   RawData, ReviewPeriodGroup, ReviewPeriodDay,
 } from '@/lib/queries'
 import {
   toggleCategoryFilter, toggleAreaFilter, toggleSeverityFilter,
   removeSearchToken, clearCustomDate, clearDelayFilter, toggleIncidentTypeFilter,
+  toggleStaffFilter, clearStaffFilter,
 } from '@/lib/filterActions'
 import { generateSyntheticData } from '@/lib/syntheticData'
 import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
@@ -146,7 +147,7 @@ export default function InsightDashboard() {
         const hasActiveFilters =
           filters.categories.length > 0 || filters.areas.length > 0 ||
           filters.severities.length > 0 || filters.searches.length > 0 ||
-          filters.incidentTypes.length > 0 ||
+          filters.incidentTypes.length > 0 || filters.staffNames.length > 0 ||
           filters.minDelay != null || filters.maxDelay != null ||
           filters.startDate != null || filters.endDate != null
         if (!result || (result.incidents.length === 0 && !hasActiveFilters)) {
@@ -170,31 +171,52 @@ export default function InsightDashboard() {
     return () => { cancelled = true }
   }, [filters])
 
-  // Derived
-  const kpis         = useMemo(() => data ? deriveKPIs(data) : null, [data])
-  const trend        = useMemo(() => data ? deriveTrend(data) : [], [data])
-  const cats         = useMemo(() => data ? deriveCategorySplit(data) : [], [data])
-  const hots         = useMemo(() => data ? deriveLocationHotspots(data) : [], [data])
-  const faults       = useMemo(() => data ? deriveRepeatFaults(data) : [], [data])
-  const repeatAssets = useMemo(() => data ? deriveRepeatAssets(data) : [], [data])
-  const infraMix     = useMemo(() => data ? deriveInfraFailureMix(data) : [], [data])
-  const delayDensity = useMemo(() => data ? deriveDelayDensity(data) : [], [data])
-  const resp         = useMemo(() => data ? deriveResponderLoad(data) : [], [data])
-  const ops          = useMemo(() => data ? deriveOperatorImpact(data) : [], [data])
-  const heat         = useMemo(() => data ? deriveHeatmap(data) : [], [data])
+  // Staff filter — applied client-side on top of server-filtered incidents.
+  // teamMembers are fetched for the full window (no staff filter applied server-side)
+  // so we have all members available for the filter UI and patterns charts.
+  const effectiveData = useMemo((): RawData | null => {
+    if (!data) return null
+    if (filters.staffNames.length === 0) return data
+    const staffIncidentIds = new Set(
+      data.teamMembers
+        .filter(tm => filters.staffNames.includes(tm.name))
+        .map(tm => tm.incident_id),
+    )
+    return { ...data, incidents: data.incidents.filter(i => staffIncidentIds.has(i.id)) }
+  }, [data, filters.staffNames])
+
+  const availableStaff = useMemo(() => {
+    if (!data) return []
+    return Array.from(new Set(data.teamMembers.map(tm => tm.name))).sort()
+  }, [data])
+
+  // Derived — use effectiveData so all analytics respect the staff filter
+  const kpis         = useMemo(() => effectiveData ? deriveKPIs(effectiveData) : null, [effectiveData])
+  const trend        = useMemo(() => effectiveData ? deriveTrend(effectiveData) : [], [effectiveData])
+  const cats         = useMemo(() => effectiveData ? deriveCategorySplit(effectiveData) : [], [effectiveData])
+  const hots         = useMemo(() => effectiveData ? deriveLocationHotspots(effectiveData) : [], [effectiveData])
+  const faults       = useMemo(() => effectiveData ? deriveRepeatFaults(effectiveData) : [], [effectiveData])
+  const repeatAssets = useMemo(() => effectiveData ? deriveRepeatAssets(effectiveData) : [], [effectiveData])
+  const infraMix     = useMemo(() => effectiveData ? deriveInfraFailureMix(effectiveData) : [], [effectiveData])
+  const delayDensity = useMemo(() => effectiveData ? deriveDelayDensity(effectiveData) : [], [effectiveData])
+  const resp         = useMemo(() => effectiveData ? deriveResponderLoad(effectiveData) : [], [effectiveData])
+  const ops          = useMemo(() => effectiveData ? deriveOperatorImpact(effectiveData) : [], [effectiveData])
+  const heat         = useMemo(() => effectiveData ? deriveHeatmap(effectiveData) : [], [effectiveData])
   const areas        = useMemo(() => data ? deriveAreaList(data) : [], [data])
   const incidentTypeList = useMemo(() => data ? deriveIncidentTypeList(data) : [], [data])
-  const respDist     = useMemo(() => data ? deriveResponseDistribution(data) : null, [data])
-  const lines        = useMemo(() => data ? deriveLineBreakdown(data) : [], [data])
-  const attribution  = useMemo(() => data ? deriveDelayAttribution(data) : [], [data])
-  const chains       = useMemo(() => data ? deriveContinuationChains(data) : [], [data])
+  const respDist     = useMemo(() => effectiveData ? deriveResponseDistribution(effectiveData) : null, [effectiveData])
+  const lines        = useMemo(() => effectiveData ? deriveLineBreakdown(effectiveData) : [], [effectiveData])
+  const attribution  = useMemo(() => effectiveData ? deriveDelayAttribution(effectiveData) : [], [effectiveData])
+  const chains       = useMemo(() => effectiveData ? deriveContinuationChains(effectiveData) : [], [effectiveData])
   const changePoints = useMemo(() => deriveChangePoints(trend), [trend])
+  // Staff patterns — always from full data so the Patterns tab shows everyone,
+  // regardless of which staff members are currently pinned in the filter.
+  const staffPatterns = useMemo(() => data ? deriveStaffPatterns(data) : [], [data])
 
-  // Decomposition lookup for KPI cards — computed lazily per card via this
-  // closure rather than precomputed for every metric.
+  // Decomposition lookup for KPI cards — uses effectiveData so deltas respect staff filter.
   const decompose = useMemo(
-    () => (metric: DeltaMetric) => data ? deriveDelta(data, metric) : null,
-    [data],
+    () => (metric: DeltaMetric) => effectiveData ? deriveDelta(effectiveData, metric) : null,
+    [effectiveData],
   )
 
   const handleDateClick = (date: string) => {
@@ -208,6 +230,8 @@ export default function InsightDashboard() {
   const handleAddAreaFilter          = (a: string)            => setFilters(f => toggleAreaFilter(f, a))
   const handleAddSeverityFilter      = (s: Severity)          => setFilters(f => toggleSeverityFilter(f, s))
   const handleToggleIncidentType     = (label: string)        => setFilters(f => toggleIncidentTypeFilter(f, label))
+  const handleToggleStaffFilter      = (name: string)         => setFilters(f => toggleStaffFilter(f, name))
+  const handleClearStaffFilter       = ()                     => setFilters(f => clearStaffFilter(f))
 
   const handleSaveView = (name: string) => {
     const view = saveView(name, filters)
@@ -345,11 +369,11 @@ export default function InsightDashboard() {
         activeFilterCount={
           filters.areas.length + filters.categories.length +
           filters.severities.length + filters.searches.length +
-          filters.incidentTypes.length +
+          filters.incidentTypes.length + filters.staffNames.length +
           (filters.minDelay != null || filters.maxDelay != null ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
-        onExport={data ? () => exportCSV(data.incidents, data.windowFrom, data.windowTo) : undefined}
+        onExport={effectiveData ? () => exportCSV(effectiveData.incidents, effectiveData.windowFrom, effectiveData.windowTo) : undefined}
       />
 
       <ActiveFilterChips
@@ -359,6 +383,7 @@ export default function InsightDashboard() {
         onRemoveSeverity={handleAddSeverityFilter}
         onRemoveSearch={(t) => setFilters(f => removeSearchToken(f, t))}
         onRemoveIncidentType={handleToggleIncidentType}
+        onRemoveStaff={handleToggleStaffFilter}
         onClearDate={() => setFilters(f => clearCustomDate(f))}
         onClearDelay={() => setFilters(f => clearDelayFilter(f))}
         onClearAll={handleResetFilters}
@@ -383,18 +408,18 @@ export default function InsightDashboard() {
       <div className="max-w-[1480px] mx-auto px-6 py-8">
         {error && <ErrorBanner message={error} />}
 
-        {kpis && data && (
+        {kpis && effectiveData && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} />}
-            {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={data} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
-            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} />}
-            {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={data.incidents} onDrillDown={setDrillDown} />}
-            {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} />}
-            {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={data.incidents} onDrillDown={setDrillDown} chains={chains} />}
-            {tab === 'routes'      && <RoutesTab lines={lines} incidents={data.incidents} onDrillDown={setDrillDown} />}
-            {tab === 'trends'      && <TrendsTab incidents={data.incidents} windowFrom={data.windowFrom} windowDays={data.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
-            {tab === 'explore'     && <ExploreTab incidents={data.incidents} areaOptions={areas.map((a: any) => a.area)} />}
-            {tab === 'analytics'   && <AnalyticsTab incidents={data.incidents} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} />}
+            {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={effectiveData} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
+            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} />}
+            {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
+            {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} staffPatterns={staffPatterns} />}
+            {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={effectiveData.incidents} onDrillDown={setDrillDown} chains={chains} />}
+            {tab === 'routes'      && <RoutesTab lines={lines} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
+            {tab === 'trends'      && <TrendsTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowDays={effectiveData.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
+            {tab === 'explore'     && <ExploreTab incidents={effectiveData.incidents} areaOptions={areas.map((a: any) => a.area)} />}
+            {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} />}
             {tab === 'review'      && (
               reviewLoading && !reviewIncidents
                 ? <div className="flex items-center justify-center py-24"><RefreshCw size={16} className="animate-spin" style={{ color: 'var(--ink-400)' }} /></div>
@@ -433,6 +458,7 @@ export default function InsightDashboard() {
         onReset={handleResetFilters}
         availableAreas={areas.map(a => a.area)}
         availableIncidentTypes={incidentTypeList}
+        availableStaff={availableStaff}
         savedViews={savedViews}
         onSaveView={handleSaveView}
         onDeleteView={handleDeleteView}
@@ -1053,7 +1079,11 @@ function GeographyTab({ hots, delayDensity, incidents, onDrillDown }: any) {
 
 // ─── Patterns tab ────────────────────────────────────────────────────────────
 
-function PatternsTab({ heat, cats }: any) {
+function PatternsTab({ heat, cats, staffPatterns }: { heat: any[]; cats: any[]; staffPatterns: StaffPatternDatum[] }) {
+  const totalDay   = staffPatterns.reduce((s, p) => s + p.dayShifts, 0)
+  const totalNight = staffPatterns.reduce((s, p) => s + p.nightShifts, 0)
+  const totalShifts = totalDay + totalNight
+
   return (
     <div className="space-y-6">
       <Card title="Day × Hour Heatmap" subtitle="When incidents happen" className="tick-corners">
@@ -1072,6 +1102,118 @@ function PatternsTab({ heat, cats }: any) {
       <Card title="Category by Hour" subtitle="Top 6 categories, hourly density">
         <CategoryByHour cats={cats.slice(0, 6)} />
       </Card>
+
+      {staffPatterns.length > 0 && (
+        <>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Card title="Staff Incident Workload" subtitle="Incidents and delay per team member in this window">
+              <ResponsiveContainer width="100%" height={Math.max(180, staffPatterns.length * 36)}>
+                <BarChart
+                  data={staffPatterns.map(p => ({ name: p.name, role: p.role, incidents: p.incidentCount, delay: p.totalDelay }))}
+                  layout="vertical"
+                  margin={{ left: 8, right: 16, top: 4, bottom: 4 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 10, fill: 'var(--ink-400)' }} />
+                  <YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 10, fill: 'var(--ink-200)' }} />
+                  <Tooltip
+                    contentStyle={{ background: 'var(--bg-panel)', border: '1px solid var(--line-hi)', borderRadius: 4, fontSize: 11 }}
+                    formatter={(v: any, name: string) => [
+                      name === 'incidents' ? `${v} incidents` : `${v} min delay`,
+                      name === 'incidents' ? 'Incidents' : 'Total delay',
+                    ]}
+                  />
+                  <Bar dataKey="incidents" name="incidents" fill="var(--nr-orange)" radius={[0, 2, 2, 0]} maxBarSize={20} />
+                </BarChart>
+              </ResponsiveContainer>
+            </Card>
+
+            <Card title="Day vs Night Shift Split" subtitle="Shift distribution across team members">
+              {totalShifts > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs" style={{ color: 'var(--nr-amber)' }}>Day</span>
+                        <span className="numeric-mono text-xs" style={{ color: 'var(--nr-amber)' }}>{totalDay} ({((totalDay / totalShifts) * 100).toFixed(0)}%)</span>
+                      </div>
+                      <div className="h-2 rounded-sm overflow-hidden" style={{ background: 'var(--bg-card-hi)' }}>
+                        <div className="h-full rounded-sm" style={{ width: `${(totalDay / totalShifts) * 100}%`, background: 'var(--nr-amber)' }} />
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs" style={{ color: 'var(--nr-blue)' }}>Night</span>
+                        <span className="numeric-mono text-xs" style={{ color: 'var(--nr-blue)' }}>{totalNight} ({((totalNight / totalShifts) * 100).toFixed(0)}%)</span>
+                      </div>
+                      <div className="h-2 rounded-sm overflow-hidden" style={{ background: 'var(--bg-card-hi)' }}>
+                        <div className="h-full rounded-sm" style={{ width: `${(totalNight / totalShifts) * 100}%`, background: 'var(--nr-blue)' }} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <ResponsiveContainer width="100%" height={Math.max(160, staffPatterns.length * 32)}>
+                    <BarChart
+                      data={staffPatterns.map(p => ({ name: p.name, Day: p.dayShifts, Night: p.nightShifts }))}
+                      layout="vertical"
+                      margin={{ left: 8, right: 16, top: 4, bottom: 4 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" horizontal={false} />
+                      <XAxis type="number" tick={{ fontSize: 10, fill: 'var(--ink-400)' }} allowDecimals={false} />
+                      <YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 10, fill: 'var(--ink-200)' }} />
+                      <Tooltip
+                        contentStyle={{ background: 'var(--bg-panel)', border: '1px solid var(--line-hi)', borderRadius: 4, fontSize: 11 }}
+                      />
+                      <Bar dataKey="Day" stackId="a" fill="var(--nr-amber)" radius={[0, 0, 0, 0]} maxBarSize={16} />
+                      <Bar dataKey="Night" stackId="a" fill="var(--nr-blue)" radius={[0, 2, 2, 0]} maxBarSize={16} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </Card>
+          </div>
+
+          <Card title="Staff Breakdown" subtitle="Roles, incident counts and delay by team member">
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-[var(--line)]">
+                    <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Name</th>
+                    <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Role</th>
+                    <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Incidents</th>
+                    <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Total Delay</th>
+                    <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Day</th>
+                    <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Night</th>
+                    <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Top Category</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {staffPatterns.map(p => {
+                    const cfg = p.topCategory ? CATEGORY_CONFIG[p.topCategory] : null
+                    return (
+                      <tr key={`${p.name}-${p.role}`} className="border-b border-[var(--line)] last:border-0">
+                        <td className="py-2 font-medium" style={{ color: 'var(--ink-100)' }}>{p.name}</td>
+                        <td className="py-2" style={{ color: 'var(--ink-300)' }}>{p.role}</td>
+                        <td className="py-2 text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>{p.incidentCount}</td>
+                        <td className="py-2 text-right numeric-mono" style={{ color: 'var(--nr-orange)' }}>{fmtMins(p.totalDelay)}</td>
+                        <td className="py-2 text-right numeric-mono" style={{ color: 'var(--nr-amber)' }}>{p.dayShifts}</td>
+                        <td className="py-2 text-right numeric-mono" style={{ color: 'var(--nr-blue)' }}>{p.nightShifts}</td>
+                        <td className="py-2">
+                          {cfg && (
+                            <span className="pill text-[9px]" style={{ background: `${cfg.color}20`, color: cfg.color, borderColor: `${cfg.color}50` }}>
+                              {cfg.short}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </>
+      )}
     </div>
   )
 }
@@ -2096,13 +2238,14 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
 // dimension below the header. Drives the cross-filter drill-down loop —
 // click anything in a chart, see it land here, click the X to remove.
 
-function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onRemoveIncidentType, onClearDate, onClearDelay, onClearAll }: {
+function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onRemoveIncidentType, onRemoveStaff, onClearDate, onClearDelay, onClearAll }: {
   filters: AnalyticsFilters
   onRemoveCategory: (c: IncidentCategory) => void
   onRemoveArea: (a: string) => void
   onRemoveSeverity: (s: Severity) => void
   onRemoveSearch: (s: string) => void
   onRemoveIncidentType: (label: string) => void
+  onRemoveStaff: (name: string) => void
   onClearDate: () => void
   onClearDelay: () => void
   onClearAll: () => void
@@ -2111,7 +2254,7 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
   const hasDelay = filters.minDelay != null || filters.maxDelay != null
   const total =
     filters.categories.length + filters.areas.length + filters.severities.length +
-    filters.searches.length + filters.incidentTypes.length +
+    filters.searches.length + filters.incidentTypes.length + filters.staffNames.length +
     (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0)
   if (total === 0) return null
 
@@ -2167,6 +2310,7 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
           {filters.areas.map(a => chip(`area-${a}`, a, () => onRemoveArea(a), 'var(--nr-steel)'))}
           {filters.severities.map(s => chip(`sev-${s}`, s, () => onRemoveSeverity(s), SEVERITY_CONFIG[s]?.color))}
           {filters.incidentTypes.map(t => chip(`itype-${t}`, t, () => onRemoveIncidentType(t), 'var(--nr-orange)'))}
+          {filters.staffNames.map(n => chip(`staff-${n}`, n, () => onRemoveStaff(n), 'var(--nr-blue)'))}
           {filters.searches.map(t => chip(`q-${t}`, `"${t}"`, () => onRemoveSearch(t), 'var(--ink-300)'))}
         </div>
         <button onClick={onClearAll} className="ml-auto btn !py-1 !px-2 !text-[10px] shrink-0">Clear all</button>
@@ -3161,7 +3305,7 @@ function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
   )
 }
 
-function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, availableIncidentTypes, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
+function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, availableIncidentTypes, availableStaff, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
   const [draft, setDraft]               = useState<AnalyticsFilters>(filters)
   const [saveName, setSaveName]         = useState('')
   const [showSaveInput, setShowSaveInput] = useState(false)
@@ -3235,6 +3379,35 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
               ))}
             </div>
           </FilterGroup>
+
+          {availableStaff && availableStaff.length > 0 && (
+            <FilterGroup label="Staff on Duty">
+              <div className="space-y-1.5">
+                {availableStaff.map((name: string) => (
+                  <Chip
+                    key={name}
+                    label={name}
+                    active={draft.staffNames.includes(name)}
+                    onToggle={() => setDraft({
+                      ...draft,
+                      staffNames: draft.staffNames.includes(name)
+                        ? draft.staffNames.filter(x => x !== name)
+                        : [...draft.staffNames, name],
+                    })}
+                  />
+                ))}
+              </div>
+              {draft.staffNames.length > 0 && (
+                <button
+                  onClick={() => setDraft({ ...draft, staffNames: [] })}
+                  className="text-xs mt-2"
+                  style={{ color: 'var(--ink-400)' }}
+                >
+                  Clear staff filter
+                </button>
+              )}
+            </FilterGroup>
+          )}
 
           <FilterGroup label="Categories">
             <div className="grid grid-cols-2 gap-2">

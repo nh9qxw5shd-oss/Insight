@@ -194,6 +194,7 @@ export interface AnalyticsFilters {
   categories: IncidentCategory[]  // empty = all
   severities: Severity[]          // empty = all
   incidentTypes: string[]         // incident_type_label values; empty = all
+  staffNames: string[]            // team member names; empty = all
   searches: string[]              // free-text tokens matched across title / location / fault
   searchMode: 'and' | 'or'       // 'or' = any token matches; 'and' = all tokens must match
   minDelay?: number               // inclusive lower bound on per-incident delay minutes
@@ -206,6 +207,7 @@ export const DEFAULT_FILTERS: AnalyticsFilters = {
   categories: [],
   severities: [],
   incidentTypes: [],
+  staffNames: [],
   searches: [],
   searchMode: 'or',
 }
@@ -520,4 +522,14 @@ export interface HeatmapCell {
   dow: number   // 0..6 (Sun..Sat)
   hour: number  // 0..23
   count: number
+}
+
+export interface StaffPatternDatum {
+  name: string
+  role: string
+  incidentCount: number
+  totalDelay: number
+  dayShifts: number
+  nightShifts: number
+  topCategory: IncidentCategory | null
 }
