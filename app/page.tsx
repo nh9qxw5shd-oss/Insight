@@ -3425,7 +3425,7 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
 
           <FilterGroup label="Categories">
             <div className="grid grid-cols-2 gap-2">
-              {(Object.keys(CATEGORY_CONFIG) as IncidentCategory[]).map(c => (
+              {(Object.keys(CATEGORY_CONFIG) as IncidentCategory[]).filter(c => c !== 'FATALITY').map(c => (
                 <Chip
                   key={c}
                   label={CATEGORY_CONFIG[c].short}

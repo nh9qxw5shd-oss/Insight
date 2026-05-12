@@ -17,6 +17,24 @@ import { railwayPeriodWeek } from './railwayCalendar'
 
 export const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
 
+// ─── Category normalisation ──────────────────────────────────────────────────
+// FATALITY and PERSON_STRUCK are used interchangeably in DLog2. Normalise all
+// FATALITY incidents to PERSON_STRUCK so the two always appear as a single PST
+// bucket across every chart, table, and filter in Insight.
+
+function normaliseCats(rows: IncidentRow[]): IncidentRow[] {
+  return rows.map(i =>
+    i.category === 'FATALITY' ? { ...i, category: 'PERSON_STRUCK' as IncidentCategory } : i,
+  )
+}
+
+// When the user has selected PERSON_STRUCK in the category filter, we also need
+// to ask the DB for FATALITY rows so nothing is missed before normalisation.
+function expandCategoryFilter(cats: IncidentCategory[]): IncidentCategory[] {
+  if (!cats.includes('PERSON_STRUCK')) return cats
+  return cats.includes('FATALITY') ? cats : [...cats, 'FATALITY']
+}
+
 // ─── Date helpers ────────────────────────────────────────────────────────────
 
 function isoDay(d: Date): string {
@@ -105,6 +123,8 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
   const cur = resolveWindow(f)
   const prev = previousWindow(f)
 
+  const serverCats = expandCategoryFilter(f.categories)
+
   // Current window — paginate to bypass the PostgREST server-side max-rows cap
   const curRows = await fetchAllRows<IncidentRow>(() => {
     let q = sb!.from('incidents').select(INCIDENT_COLS)
@@ -112,7 +132,7 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       .lte('report_date', cur.to)
       .order('report_date', { ascending: true })
     if (f.areas.length)          q = q.in('area', f.areas)
-    if (f.categories.length)     q = q.in('category', f.categories)
+    if (serverCats.length)       q = q.in('category', serverCats)
     if (f.severities.length)     q = q.in('severity', f.severities)
     if (f.incidentTypes.length)  q = q.in('incident_type_label', f.incidentTypes)
     return q
@@ -125,7 +145,7 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       .lte('report_date', prev.to)
       .order('report_date', { ascending: true })
     if (f.areas.length)          q = q.in('area', f.areas)
-    if (f.categories.length)     q = q.in('category', f.categories)
+    if (serverCats.length)       q = q.in('category', serverCats)
     if (f.severities.length)     q = q.in('severity', f.severities)
     if (f.incidentTypes.length)  q = q.in('incident_type_label', f.incidentTypes)
     return q
@@ -163,8 +183,8 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
     : searched
 
   return {
-    incidents: filtered,
-    prevIncidents: prevRows,
+    incidents: normaliseCats(filtered),
+    prevIncidents: normaliseCats(prevRows),
     reports: reportRows,
     teamMembers: memberRows,
     windowFrom: cur.from,
@@ -1373,13 +1393,14 @@ const REPORT_COLS =
 export async function fetchIncidentsForRange(from: string, to: string): Promise<IncidentRow[]> {
   const sb = getSupabase()
   if (!sb) return []
-  return fetchAllRows<IncidentRow>(() =>
+  const rows = await fetchAllRows<IncidentRow>(() =>
     sb!.from('incidents').select(INCIDENT_COLS)
       .gte('report_date', from)
       .lte('report_date', to)
       .order('report_date', { ascending: true })
       .order('incident_start', { ascending: true, nullsFirst: false }),
   )
+  return normaliseCats(rows)
 }
 
 export async function fetchReportsForRange(from: string, to: string): Promise<ReportRow[]> {

@@ -220,8 +220,8 @@ export const CATEGORY_CONFIG: Record<IncidentCategory, {
   color: string
   group: 'safety' | 'performance' | 'asset' | 'other'
 }> = {
-  FATALITY:          { label: 'Fatality / Person Struck',  short: 'FATAL',   color: '#E74C3C', group: 'safety' },
-  PERSON_STRUCK:     { label: 'Person Struck by Train',    short: 'PST',     color: '#E74C3C', group: 'safety' },
+  FATALITY:          { label: 'Person Struck / Fatality',   short: 'PST',     color: '#E74C3C', group: 'safety' },
+  PERSON_STRUCK:     { label: 'Person Struck / Fatality',   short: 'PST',     color: '#E74C3C', group: 'safety' },
   SPAD:              { label: 'Signal Passed at Danger',   short: 'SPAD',    color: '#E05206', group: 'safety' },
   TPWS:              { label: 'TPWS Activation',           short: 'TPWS',    color: '#F47A3D', group: 'safety' },
   IRREGULAR_WORKING: { label: 'Irregular Working',         short: 'IRR',     color: '#F39C12', group: 'safety' },
