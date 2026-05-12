@@ -56,3 +56,16 @@ export function toggleIncidentTypeFilter(f: AnalyticsFilters, label: string): An
       : [...f.incidentTypes, label],
   }
 }
+
+export function toggleStaffFilter(f: AnalyticsFilters, name: string): AnalyticsFilters {
+  return {
+    ...f,
+    staffNames: f.staffNames.includes(name)
+      ? f.staffNames.filter(x => x !== name)
+      : [...f.staffNames, name],
+  }
+}
+
+export function clearStaffFilter(f: AnalyticsFilters): AnalyticsFilters {
+  return { ...f, staffNames: [] }
+}

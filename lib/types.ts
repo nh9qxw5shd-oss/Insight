@@ -151,6 +151,27 @@ export const CLASSIFICATION_CONFIG: Record<IncidentClassification, { label: stri
   BLACK: { label: 'Black', color: '#1A1A1A', textColor: '#F2EDE0' },
 }
 
+// ─── Incident team members (captured by Dlog2, read-only in Insight) ─────────
+
+export interface IncidentTeamMember {
+  id: string
+  incident_id: string
+  report_date: string
+  name: string
+  role: string
+  shift: 'day' | 'night'
+  created_at: string
+}
+
+export interface TeamMemberWorkload {
+  name: string
+  role: string
+  incidentCount: number
+  totalDelay: number
+  dayShifts: number
+  nightShifts: number
+}
+
 export interface ReportRow {
   id: string
   report_date: string
@@ -173,6 +194,7 @@ export interface AnalyticsFilters {
   categories: IncidentCategory[]  // empty = all
   severities: Severity[]          // empty = all
   incidentTypes: string[]         // incident_type_label values; empty = all
+  staffNames: string[]            // team member names; empty = all
   searches: string[]              // free-text tokens matched across title / location / fault
   searchMode: 'and' | 'or'       // 'or' = any token matches; 'and' = all tokens must match
   minDelay?: number               // inclusive lower bound on per-incident delay minutes
@@ -185,6 +207,7 @@ export const DEFAULT_FILTERS: AnalyticsFilters = {
   categories: [],
   severities: [],
   incidentTypes: [],
+  staffNames: [],
   searches: [],
   searchMode: 'or',
 }
@@ -197,8 +220,8 @@ export const CATEGORY_CONFIG: Record<IncidentCategory, {
   color: string
   group: 'safety' | 'performance' | 'asset' | 'other'
 }> = {
-  FATALITY:          { label: 'Fatality / Person Struck',  short: 'FATAL',   color: '#E74C3C', group: 'safety' },
-  PERSON_STRUCK:     { label: 'Person Struck by Train',    short: 'PST',     color: '#E74C3C', group: 'safety' },
+  FATALITY:          { label: 'Person Struck / Fatality',   short: 'PST',     color: '#E74C3C', group: 'safety' },
+  PERSON_STRUCK:     { label: 'Person Struck / Fatality',   short: 'PST',     color: '#E74C3C', group: 'safety' },
   SPAD:              { label: 'Signal Passed at Danger',   short: 'SPAD',    color: '#E05206', group: 'safety' },
   TPWS:              { label: 'TPWS Activation',           short: 'TPWS',    color: '#F47A3D', group: 'safety' },
   IRREGULAR_WORKING: { label: 'Irregular Working',         short: 'IRR',     color: '#F39C12', group: 'safety' },
@@ -499,4 +522,14 @@ export interface HeatmapCell {
   dow: number   // 0..6 (Sun..Sat)
   hour: number  // 0..23
   count: number
+}
+
+export interface StaffPatternDatum {
+  name: string
+  role: string
+  incidentCount: number
+  totalDelay: number
+  dayShifts: number
+  nightShifts: number
+  topCategory: IncidentCategory | null
 }

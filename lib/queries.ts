@@ -11,10 +11,29 @@ import {
   ChangePoint, DeltaMetric, DeltaContribution, DeltaDecomposition, Severity,
   Hypothesis, HypothesisCluster, HypothesisDimension,
   IncidentReview, IncidentReviewInput,
+  IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
 } from './types'
 import { railwayPeriodWeek } from './railwayCalendar'
 
 export const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
+
+// ─── Category normalisation ──────────────────────────────────────────────────
+// FATALITY and PERSON_STRUCK are used interchangeably in DLog2. Normalise all
+// FATALITY incidents to PERSON_STRUCK so the two always appear as a single PST
+// bucket across every chart, table, and filter in Insight.
+
+function normaliseCats(rows: IncidentRow[]): IncidentRow[] {
+  return rows.map(i =>
+    i.category === 'FATALITY' ? { ...i, category: 'PERSON_STRUCK' as IncidentCategory } : i,
+  )
+}
+
+// When the user has selected PERSON_STRUCK in the category filter, we also need
+// to ask the DB for FATALITY rows so nothing is missed before normalisation.
+function expandCategoryFilter(cats: IncidentCategory[]): IncidentCategory[] {
+  if (!cats.includes('PERSON_STRUCK')) return cats
+  return cats.includes('FATALITY') ? cats : [...cats, 'FATALITY']
+}
 
 // ─── Date helpers ────────────────────────────────────────────────────────────
 
@@ -79,6 +98,7 @@ export interface RawData {
   incidents: IncidentRow[]
   prevIncidents: IncidentRow[]
   reports: ReportRow[]
+  teamMembers: IncidentTeamMember[]
   windowFrom: string
   windowTo: string
   windowDays: number
@@ -103,6 +123,8 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
   const cur = resolveWindow(f)
   const prev = previousWindow(f)
 
+  const serverCats = expandCategoryFilter(f.categories)
+
   // Current window — paginate to bypass the PostgREST server-side max-rows cap
   const curRows = await fetchAllRows<IncidentRow>(() => {
     let q = sb!.from('incidents').select(INCIDENT_COLS)
@@ -110,7 +132,7 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       .lte('report_date', cur.to)
       .order('report_date', { ascending: true })
     if (f.areas.length)          q = q.in('area', f.areas)
-    if (f.categories.length)     q = q.in('category', f.categories)
+    if (serverCats.length)       q = q.in('category', serverCats)
     if (f.severities.length)     q = q.in('severity', f.severities)
     if (f.incidentTypes.length)  q = q.in('incident_type_label', f.incidentTypes)
     return q
@@ -123,18 +145,25 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       .lte('report_date', prev.to)
       .order('report_date', { ascending: true })
     if (f.areas.length)          q = q.in('area', f.areas)
-    if (f.categories.length)     q = q.in('category', f.categories)
+    if (serverCats.length)       q = q.in('category', serverCats)
     if (f.severities.length)     q = q.in('severity', f.severities)
     if (f.incidentTypes.length)  q = q.in('incident_type_label', f.incidentTypes)
     return q
   })
 
-  // Reports row count (for "reports covered" KPI)
-  const reportRows = await fetchAllRows<ReportRow>(() =>
-    sb!.from('reports').select('*')
-      .gte('report_date', cur.from)
-      .lte('report_date', cur.to)
-  )
+  // Reports row count (for "reports covered" KPI) and team members — fetched in parallel
+  const [reportRows, memberRows] = await Promise.all([
+    fetchAllRows<ReportRow>(() =>
+      sb!.from('reports').select('*')
+        .gte('report_date', cur.from)
+        .lte('report_date', cur.to)
+    ),
+    fetchAllRows<IncidentTeamMember>(() =>
+      sb!.from('incident_team_members').select(TEAM_MEMBER_COLS)
+        .gte('report_date', cur.from)
+        .lte('report_date', cur.to)
+    ),
+  ])
 
   // Apply free-text filter client-side
   const activeSearches = f.searches.map(s => s.trim()).filter(Boolean)
@@ -154,9 +183,10 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
     : searched
 
   return {
-    incidents: filtered,
-    prevIncidents: prevRows,
+    incidents: normaliseCats(filtered),
+    prevIncidents: normaliseCats(prevRows),
     reports: reportRows,
+    teamMembers: memberRows,
     windowFrom: cur.from,
     windowTo: cur.to,
     windowDays: cur.days,
@@ -1363,13 +1393,14 @@ const REPORT_COLS =
 export async function fetchIncidentsForRange(from: string, to: string): Promise<IncidentRow[]> {
   const sb = getSupabase()
   if (!sb) return []
-  return fetchAllRows<IncidentRow>(() =>
+  const rows = await fetchAllRows<IncidentRow>(() =>
     sb!.from('incidents').select(INCIDENT_COLS)
       .gte('report_date', from)
       .lte('report_date', to)
       .order('report_date', { ascending: true })
       .order('incident_start', { ascending: true, nullsFirst: false }),
   )
+  return normaliseCats(rows)
 }
 
 export async function fetchReportsForRange(from: string, to: string): Promise<ReportRow[]> {
@@ -1391,6 +1422,80 @@ export async function fetchReviewsForRange(from: string, to: string): Promise<In
       .gte('report_date', from)
       .lte('report_date', to),
   )
+}
+
+const TEAM_MEMBER_COLS = 'id, incident_id, report_date, name, role, shift, created_at'
+
+export async function fetchTeamMembersForRange(from: string, to: string): Promise<IncidentTeamMember[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<IncidentTeamMember>(() =>
+    sb!.from('incident_team_members').select(TEAM_MEMBER_COLS)
+      .gte('report_date', from)
+      .lte('report_date', to)
+      .order('report_date', { ascending: true }),
+  )
+}
+
+// Aggregate team member rows into per-person workload summaries.
+// incidentDelayById maps incident id → effective delay minutes for summing.
+export function deriveTeamWorkload(
+  members: IncidentTeamMember[],
+  incidentDelayById: Map<string, number>,
+): TeamMemberWorkload[] {
+  const map = new Map<string, TeamMemberWorkload>()
+  for (const m of members) {
+    const key = `${m.name}::${m.role}`
+    const w = map.get(key) ?? { name: m.name, role: m.role, incidentCount: 0, totalDelay: 0, dayShifts: 0, nightShifts: 0 }
+    w.incidentCount++
+    w.totalDelay += incidentDelayById.get(m.incident_id) ?? 0
+    if (m.shift === 'day') w.dayShifts++
+    else w.nightShifts++
+    map.set(key, w)
+  }
+  return Array.from(map.values()).sort((a, b) => b.incidentCount - a.incidentCount)
+}
+
+// Aggregate team members from the current window into pattern data for the
+// Patterns tab. Joins against incidents to surface category and delay context.
+export function deriveStaffPatterns(data: RawData): StaffPatternDatum[] {
+  if (data.teamMembers.length === 0) return []
+  const incidentMap = new Map(data.incidents.map(i => [i.id, i]))
+  const catCounts = new Map<string, Map<string, number>>()  // key → category → count
+  const map = new Map<string, StaffPatternDatum>()
+
+  for (const m of data.teamMembers) {
+    const key = `${m.name}::${m.role}`
+    const incident = incidentMap.get(m.incident_id)
+    const w = map.get(key) ?? {
+      name: m.name, role: m.role, incidentCount: 0, totalDelay: 0,
+      dayShifts: 0, nightShifts: 0, topCategory: null,
+    }
+    w.incidentCount++
+    w.totalDelay += incident ? effectiveDelay(incident) : 0
+    if (m.shift === 'day') w.dayShifts++
+    else w.nightShifts++
+    map.set(key, w)
+
+    if (incident) {
+      const cc = catCounts.get(key) ?? new Map<string, number>()
+      cc.set(incident.category, (cc.get(incident.category) ?? 0) + 1)
+      catCounts.set(key, cc)
+    }
+  }
+
+  return Array.from(map.entries()).map(([key, w]) => {
+    const cc = catCounts.get(key)
+    if (cc) {
+      let topCat: IncidentCategory | null = null
+      let topCount = 0
+      for (const [cat, count] of cc.entries()) {
+        if (count > topCount) { topCount = count; topCat = cat as IncidentCategory }
+      }
+      w.topCategory = topCat
+    }
+    return w
+  }).sort((a, b) => b.incidentCount - a.incidentCount)
 }
 
 // Compute time_to_recover from incident_start → actual_recovery_time.

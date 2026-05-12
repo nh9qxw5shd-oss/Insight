@@ -321,6 +321,7 @@ export function generateSyntheticData(
     incidents: cur,
     prevIncidents: prev,
     reports: reports.filter(r => r.report_date >= cutoffStr && r.report_date <= winEndStr),
+    teamMembers: [],
     windowFrom: cutoffStr,
     windowTo:   winEndStr,
     windowDays,
