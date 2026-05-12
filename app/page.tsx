@@ -674,7 +674,7 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           deltaInverted
         />
         <KPICard
-          label="SLA Compliance"
+          label="Arrival SLA (≤45 min)"
           value={kpis.slaCompliancePct != null ? `${kpis.slaCompliancePct.toFixed(1)}%` : '—'}
           delta={kpis.slaBreachDeltaPct != null ? -kpis.slaBreachDeltaPct : null}
           icon={Clock}
@@ -789,7 +789,7 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
           icon={Clock}
         />
         <KPICard
-          label="SLA Compliance (≤45m)"
+          label="Arrival SLA (≤45 min)"
           value={kpis.slaCompliancePct != null ? `${kpis.slaCompliancePct.toFixed(1)}%` : '—'}
           delta={kpis.slaBreachDeltaPct != null ? -kpis.slaBreachDeltaPct : null}
           icon={Clock}
@@ -1143,7 +1143,7 @@ const METRIC_OPTS: { key: SeriesMetric; label: string; unit: string; ratio: bool
   { key: 'delayPerIncident',  label: 'Delay / Incident',  unit: 'm',    ratio: true,  risingIsBad: true  },
   { key: 'avgArrival',        label: 'Avg Arrival',       unit: 'm',    ratio: true,  risingIsBad: true  },
   { key: 'avgDuration',       label: 'Avg Duration',      unit: 'm',    ratio: true,  risingIsBad: true  },
-  { key: 'pctSlaBreach',      label: '% SLA Breach',      unit: '%',    ratio: true,  risingIsBad: true  },
+  { key: 'pctSlaBreach',      label: '% Arrival SLA breach',      unit: '%',    ratio: true,  risingIsBad: true  },
 ]
 
 function isRatioMetric(m: SeriesMetric): boolean {
@@ -3535,7 +3535,7 @@ const COHORT_METRIC_OPTS: { key: CohortMetric; label: string; unit: string; risi
   { key: 'p50Delay',     label: 'Median delay',         unit: 'm', risingIsBad: true  },
   { key: 'avgArrival',   label: 'Avg arrival',          unit: 'm', risingIsBad: true  },
   { key: 'avgDuration',  label: 'Avg duration',         unit: 'm', risingIsBad: true  },
-  { key: 'pctSlaBreach', label: '% SLA breach',         unit: '%', risingIsBad: true  },
+  { key: 'pctSlaBreach', label: '% Arrival SLA breach',  unit: '%', risingIsBad: true  },
   { key: 'count',        label: 'Incident count',       unit: '',  risingIsBad: true  },
   { key: 'totalDelay',   label: 'Total delay',          unit: 'm', risingIsBad: true  },
 ]
@@ -4224,7 +4224,7 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
                   <th className="text-right pr-3">Median delay</th>
                   <th className="text-right pr-3">Avg arrival</th>
                   <th className="text-right pr-3">Avg duration</th>
-                  <th className="text-right pr-3">% SLA breach</th>
+                  <th className="text-right pr-3">% Arrival SLA breach</th>
                   <th className="text-right">Total delay</th>
                 </tr>
               </thead>
@@ -4337,7 +4337,7 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
               <CompareTile label="Avg delay"     a={selectedCohort.avgDelay}    b={restStats.avgDelay}     unit="m" goodWhenLower />
               <CompareTile label="Avg arrival"   a={selectedCohort.avgArrival}  b={restStats.avgArrival}   unit="m" goodWhenLower />
               <CompareTile label="Avg duration"  a={selectedCohort.avgDuration} b={restStats.avgDuration}  unit="m" goodWhenLower />
-              <CompareTile label="% SLA breach"  a={selectedCohort.pctSlaBreach} b={restStats.pctSlaBreach} unit="%" goodWhenLower />
+              <CompareTile label="% Arrival SLA breach"  a={selectedCohort.pctSlaBreach} b={restStats.pctSlaBreach} unit="%" goodWhenLower />
             </div>
           )}
 

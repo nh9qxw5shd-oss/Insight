@@ -283,7 +283,7 @@ export function deriveKPIs(data: RawData): KPISummary {
 
   const totalTrainsDelayed = curUnique.reduce((s, i) => s + (i.trains_delayed || 0), 0)
 
-  // SLA compliance: % of incidents where responder arrived within threshold
+  // Arrival SLA compliance: % of incidents where responder arrived within the 45-min target
   const slaEligible    = arrivalTimes.length
   const slaBreachCount = arrivalTimes.filter(m => m > SLA_THRESHOLD_MINS).length
   const slaCompliancePct = slaEligible > 0
