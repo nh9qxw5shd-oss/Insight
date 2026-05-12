@@ -254,6 +254,29 @@ function synthTitle(cat: IncidentCategory, code: string): string {
   return v[Math.floor(Math.random() * v.length)]
 }
 
+// Rail-industry calendar approximation for demo data — period 1 starts the
+// first Sunday of April; 13 four-week periods per year. Good enough to make
+// the Review tab's Period · Week grouping look believable.
+function syntheticPeriodWeek(dt: Date): string {
+  const year = dt.getUTCFullYear()
+  // Find first Sunday on or after 1 April
+  let p1Start = new Date(Date.UTC(year, 3, 1))
+  while (p1Start.getUTCDay() !== 0) p1Start = new Date(p1Start.getTime() + 86_400_000)
+  let daysSince = Math.floor((dt.getTime() - p1Start.getTime()) / 86_400_000)
+  let periodN = 1
+  if (daysSince < 0) {
+    // Before April → in previous year's late periods (P13/P12)
+    const prevP1 = new Date(Date.UTC(year - 1, 3, 1))
+    let prevStart = prevP1
+    while (prevStart.getUTCDay() !== 0) prevStart = new Date(prevStart.getTime() + 86_400_000)
+    daysSince = Math.floor((dt.getTime() - prevStart.getTime()) / 86_400_000)
+  }
+  periodN = Math.floor(daysSince / 28) + 1
+  if (periodN > 13) periodN = ((periodN - 1) % 13) + 1
+  const weekN = Math.floor((daysSince % 28) / 7) + 1
+  return `P${String(periodN).padStart(2, '0')} W${weekN}`
+}
+
 export function generateSyntheticData(
   windowDays: number,
   seed = 42,
@@ -290,7 +313,7 @@ export function generateSyntheticData(
     reports.push({
       id: `report-${dateStr}`,
       report_date: dateStr,
-      period: '06:00 to 06:00',
+      period: syntheticPeriodWeek(dt),
       control_centre: 'East Midlands Control Centre',
       created_by: 'Demo',
       total_delay: 0,

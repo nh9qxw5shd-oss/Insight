@@ -67,6 +67,71 @@ export interface IncidentRow {
   day_of_week: number | null
 }
 
+// ─── SNDM incident review (side-table, optional) ─────────────────────────────
+// Layered on top of the CCIL-captured incident row. All fields are optional;
+// presence of a row means "this incident has been reviewed by an SNDM".
+
+export type IncidentClassification = 'GREEN' | 'AMBER' | 'RED' | 'BLACK'
+export type First50Outcome = 'YES' | 'NO' | 'NA'
+
+export interface IncidentReview {
+  id: string
+  incident_id: string
+  report_date: string
+
+  reviewed_by: string | null
+  reviewed_at: string | null
+  updated_at: string | null
+
+  period: string | null
+  week: string | null
+
+  technical_conference: string | null
+  commentary: string | null
+
+  stranded_headcode: string | null
+  stranded_location: string | null
+  stranded_time_stranded: string | null
+  stranded_time_moved: string | null
+
+  itsr: string | null
+  time_huddle_held: string | null
+
+  incident_classification: IncidentClassification | null
+
+  mom_response: string | null
+  mom_depot: string | null
+  mom_response_time: string | null
+  first_50_30min_target_met: First50Outcome | null
+
+  target_recovery_time: string | null
+  actual_recovery_time: string | null
+  time_to_recover_mins: number | null
+
+  title_override: string | null
+  location_override: string | null
+  area_override: string | null
+  minutes_delay_override: number | null
+  trains_delayed_override: number | null
+  cancelled_override: number | null
+  part_cancelled_override: number | null
+
+  notes: string | null
+}
+
+// Partial used for upserts — only fields the SNDM changed.
+export type IncidentReviewInput = Partial<Omit<IncidentReview, 'id' | 'incident_id' | 'report_date' | 'reviewed_at' | 'updated_at'>> & {
+  incident_id: string
+  report_date: string
+}
+
+export const CLASSIFICATION_CONFIG: Record<IncidentClassification, { label: string; color: string; textColor: string }> = {
+  GREEN: { label: 'Green', color: '#27AE60', textColor: '#FFFFFF' },
+  AMBER: { label: 'Amber', color: '#F39C12', textColor: '#1A1A1A' },
+  RED:   { label: 'Red',   color: '#E74C3C', textColor: '#FFFFFF' },
+  BLACK: { label: 'Black', color: '#1A1A1A', textColor: '#F2EDE0' },
+}
+
 export interface ReportRow {
   id: string
   report_date: string

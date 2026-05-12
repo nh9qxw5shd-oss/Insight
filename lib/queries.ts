@@ -10,6 +10,7 @@ import {
   Signal, SignalType, LineDatum, AttributionDatum, Chain,
   ChangePoint, DeltaMetric, DeltaContribution, DeltaDecomposition, Severity,
   Hypothesis, HypothesisCluster, HypothesisDimension,
+  IncidentReview, IncidentReviewInput,
 } from './types'
 
 export const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
@@ -1337,4 +1338,216 @@ export function deriveIncidentTypeList(
   return Array.from(byLabel.entries())
     .map(([label, v]) => ({ label, ...v }))
     .sort((a, b) => b.count - a.count)
+}
+
+// ─── SNDM review tab — fetch + upsert + period grouping ──────────────────────
+
+const REVIEW_COLS =
+  'id, incident_id, report_date, reviewed_by, reviewed_at, updated_at, ' +
+  'period, week, technical_conference, commentary, ' +
+  'stranded_headcode, stranded_location, stranded_time_stranded, stranded_time_moved, ' +
+  'itsr, time_huddle_held, incident_classification, ' +
+  'mom_response, mom_depot, mom_response_time, first_50_30min_target_met, ' +
+  'target_recovery_time, actual_recovery_time, time_to_recover_mins, ' +
+  'title_override, location_override, area_override, ' +
+  'minutes_delay_override, trains_delayed_override, cancelled_override, part_cancelled_override, ' +
+  'notes'
+
+const REPORT_COLS =
+  'id, report_date, period, control_centre, created_by, ' +
+  'total_delay, total_cancelled, total_part_cancelled, incident_count'
+
+// All incidents in [from, to], regardless of analytics filters — the Review
+// tab works off raw dates so SNDMs always see the full day's incidents.
+export async function fetchIncidentsForRange(from: string, to: string): Promise<IncidentRow[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<IncidentRow>(() =>
+    sb!.from('incidents').select(INCIDENT_COLS)
+      .gte('report_date', from)
+      .lte('report_date', to)
+      .order('report_date', { ascending: true })
+      .order('incident_start', { ascending: true, nullsFirst: false }),
+  )
+}
+
+export async function fetchReportsForRange(from: string, to: string): Promise<ReportRow[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<ReportRow>(() =>
+    sb!.from('reports').select(REPORT_COLS)
+      .gte('report_date', from)
+      .lte('report_date', to)
+      .order('report_date', { ascending: true }),
+  )
+}
+
+export async function fetchReviewsForRange(from: string, to: string): Promise<IncidentReview[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<IncidentReview>(() =>
+    sb!.from('incident_reviews').select(REVIEW_COLS)
+      .gte('report_date', from)
+      .lte('report_date', to),
+  )
+}
+
+// Compute time_to_recover from incident_start → actual_recovery_time.
+function deriveTimeToRecover(incidentStart: string | null | undefined, actualRecovery: string | null | undefined): number | null {
+  if (!incidentStart || !actualRecovery) return null
+  return minsFromTimes(incidentStart, actualRecovery)
+}
+
+// Upsert a review row. Returns the saved row (with server-side timestamps).
+export async function upsertIncidentReview(
+  input: IncidentReviewInput,
+  incidentStart: string | null,
+): Promise<IncidentReview | null> {
+  const sb = getSupabase()
+  if (!sb) return null
+
+  const ttr = deriveTimeToRecover(incidentStart, input.actual_recovery_time)
+
+  const payload: Record<string, unknown> = { ...input, time_to_recover_mins: ttr }
+  // Strip undefined keys so a partial input doesn't blank out other columns
+  for (const k of Object.keys(payload)) {
+    if (payload[k] === undefined) delete payload[k]
+  }
+
+  const { data, error } = await sb
+    .from('incident_reviews')
+    .upsert(payload, { onConflict: 'incident_id' })
+    .select(REVIEW_COLS)
+    .single()
+  if (error) throw new Error(error.message)
+  return data as unknown as IncidentReview
+}
+
+export async function deleteIncidentReview(incidentId: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('incident_reviews').delete().eq('incident_id', incidentId)
+  if (error) throw new Error(error.message)
+}
+
+// Apply review overrides to an incident row so downstream UI displays the
+// SNDM-refined values transparently. Original row is left untouched.
+export function applyReviewOverrides(i: IncidentRow, r: IncidentReview | undefined): IncidentRow {
+  if (!r) return i
+  return {
+    ...i,
+    title:          r.title_override          ?? i.title,
+    location:       r.location_override       ?? i.location,
+    area:           r.area_override           ?? i.area,
+    minutes_delay:  r.minutes_delay_override  ?? i.minutes_delay,
+    trains_delayed: r.trains_delayed_override ?? i.trains_delayed,
+    cancelled:      r.cancelled_override      ?? i.cancelled,
+    part_cancelled: r.part_cancelled_override ?? i.part_cancelled,
+  }
+}
+
+// ─── Period / week grouping ──────────────────────────────────────────────────
+// Top level on the Review tab is Period · Week (rail-industry 13×4 calendar).
+// Each group expands into individual report-date rows; each report-date
+// expands into its incidents. Period/week strings come from the `reports`
+// table (DLog2 captures them when an upload is made); when missing, we fall
+// back to "Unscheduled" so the day still appears.
+
+export interface ReviewPeriodDay {
+  date: string
+  incidentCount: number
+  totalDelay: number
+  reviewedCount: number     // incidents that have a saved review row
+  incidents: IncidentRow[]
+}
+
+export interface ReviewPeriodGroup {
+  key: string               // "P02 · W3" or "Unscheduled"
+  period: string | null
+  week: string | null
+  days: ReviewPeriodDay[]
+  totalIncidents: number
+  totalDelay: number
+  totalReviewed: number
+}
+
+export function deriveReviewPeriods(
+  incidents: IncidentRow[],
+  reports: ReportRow[],
+  reviewByIncidentId: Map<string, IncidentReview>,
+): ReviewPeriodGroup[] {
+  // Map report_date → period/week label captured by DLog2
+  const periodByDate = new Map<string, { period: string | null; week: string | null }>()
+  for (const r of reports) {
+    // DLog2 stores period as a string like "P02 W3" or "Period 2 Week 3" — keep raw.
+    // Split on whitespace and look for tokens beginning with P / W.
+    const raw = r.period?.trim() || null
+    let period: string | null = null
+    let week: string | null = null
+    if (raw) {
+      const tokens = raw.split(/\s+/)
+      for (const t of tokens) {
+        if (/^P\d+$/i.test(t) || /^Period$/i.test(t)) period = t.toUpperCase()
+        if (/^W\d+$/i.test(t) || /^Week$/i.test(t))   week = t.toUpperCase()
+      }
+      // Fallback: if we couldn't split it, use the whole string as the period label
+      if (!period && !week) period = raw
+    }
+    periodByDate.set(r.report_date, { period, week })
+  }
+
+  // Group incidents by report_date
+  const byDate = new Map<string, IncidentRow[]>()
+  for (const i of incidents) {
+    const arr = byDate.get(i.report_date) ?? []
+    arr.push(i)
+    byDate.set(i.report_date, arr)
+  }
+
+  // Build per-day summary, then aggregate by period · week label
+  const groups = new Map<string, ReviewPeriodGroup>()
+  for (const [date, dayIncidents] of byDate.entries()) {
+    const pw = periodByDate.get(date) ?? { period: null, week: null }
+    const key = pw.period || pw.week
+      ? `${pw.period ?? '—'} · ${pw.week ?? '—'}`
+      : 'Unscheduled'
+
+    const uniqueIncidents = dayIncidents.filter(i => !i.is_continuation)
+    const totalDelay = dayIncidents.reduce((s, i) => s + effectiveDelay(i), 0)
+    const reviewedCount = uniqueIncidents.filter(i => reviewByIncidentId.has(i.id)).length
+
+    const day: ReviewPeriodDay = {
+      date,
+      incidentCount: uniqueIncidents.length,
+      totalDelay,
+      reviewedCount,
+      incidents: dayIncidents,
+    }
+
+    const g = groups.get(key) ?? {
+      key,
+      period: pw.period,
+      week: pw.week,
+      days: [],
+      totalIncidents: 0,
+      totalDelay: 0,
+      totalReviewed: 0,
+    }
+    g.days.push(day)
+    g.totalIncidents += day.incidentCount
+    g.totalDelay     += day.totalDelay
+    g.totalReviewed  += day.reviewedCount
+    groups.set(key, g)
+  }
+
+  // Sort days within each group (newest first) and groups by latest day
+  const out = Array.from(groups.values()).map(g => ({
+    ...g,
+    days: g.days.sort((a, b) => b.date.localeCompare(a.date)),
+  }))
+  return out.sort((a, b) => {
+    const aLatest = a.days[0]?.date ?? ''
+    const bLatest = b.days[0]?.date ?? ''
+    return bLatest.localeCompare(aLatest)
+  })
 }

@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
-  Clock, Compass, Download, Filter, GitBranch, Layers, List, MapPin, Minus, RefreshCw, Route, Search,
-  TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
+  ClipboardCheck, ClipboardList, Clock, Compass, Download, FileText, Filter, GitBranch, Layers, List, MapPin,
+  Minus, RefreshCw, Route, Search, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
@@ -18,6 +18,8 @@ import {
   CATEGORY_CONFIG, SEVERITY_CONFIG, SAFETY_CATEGORIES,
   TIME_WINDOWS, ChartKind, DistributionKind, Signal, ChangePoint,
   DeltaMetric, DeltaDecomposition, HypothesisCluster, Hypothesis,
+  IncidentReview, IncidentReviewInput, IncidentClassification, First50Outcome,
+  CLASSIFICATION_CONFIG,
 } from '@/lib/types'
 import {
   fetchAnalytics, deriveKPIs, deriveTrend, deriveCategorySplit,
@@ -28,7 +30,9 @@ import {
   deriveChangePoints, deriveDelta, deriveHypotheses, deriveIncidentTypeList,
   effectiveDelay, effectiveMinsToArrival, effectiveDuration, SLA_THRESHOLD_MINS,
   searchMatch,
-  RawData,
+  fetchIncidentsForRange, fetchReportsForRange, fetchReviewsForRange,
+  upsertIncidentReview, deleteIncidentReview, deriveReviewPeriods,
+  RawData, ReviewPeriodGroup, ReviewPeriodDay,
 } from '@/lib/queries'
 import {
   toggleCategoryFilter, toggleAreaFilter, toggleSeverityFilter,
@@ -41,7 +45,7 @@ import { exportCSV } from '@/lib/export'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'explore' | 'analytics'
+type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'explore' | 'analytics' | 'review' | 'reports'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -53,6 +57,8 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'trends',      label: 'Trends',      icon: GitBranch },
   { id: 'explore',     label: 'Explore',     icon: Compass },
   { id: 'analytics',   label: 'Analytics',   icon: BarChart2 },
+  { id: 'review',      label: 'Review',      icon: ClipboardCheck },
+  { id: 'reports',     label: 'Reports',     icon: FileText },
 ]
 
 // ─── Window navigation helper ────────────────────────────────────────────────
@@ -103,6 +109,14 @@ export default function InsightDashboard() {
   const [distChart, setDistChart] = useState<DistributionKind>('donut')
   const [drillDown, setDrillDown] = useState<{ title: string; incidents: IncidentRow[] } | null>(null)
   const [savedViews, setSavedViews] = useState<SavedView[]>(() => getSavedViews())
+
+  // Review-tab data — fetched separately so the SNDM sees every incident in
+  // the window regardless of the analytics filter selection.
+  const [reviewIncidents, setReviewIncidents] = useState<IncidentRow[] | null>(null)
+  const [reviewReports, setReviewReports]     = useState<{ id: string; report_date: string; period: string | null; control_centre: string | null; created_by: string | null; total_delay: number; total_cancelled: number; total_part_cancelled: number; incident_count: number }[] | null>(null)
+  const [reviewRows, setReviewRows]           = useState<IncidentReview[]>([])
+  const [reviewLoading, setReviewLoading]     = useState(false)
+  const [reviewError, setReviewError]         = useState<string | null>(null)
 
   // Keep URL in sync with filters
   useEffect(() => { setFiltersInUrl(filters) }, [filters])
@@ -206,6 +220,92 @@ export default function InsightDashboard() {
     clearFiltersFromUrl()
   }
 
+  // ─── Review-tab data fetch ─────────────────────────────────────────────────
+  // Resolves the same window the analytics tabs use, but bypasses category /
+  // severity / search filters so the SNDM sees every incident in the period.
+  useEffect(() => {
+    if (tab !== 'review') return
+    let cancelled = false
+    setReviewLoading(true); setReviewError(null)
+
+    const resolveBounds = (): { from: string; to: string } => {
+      if (filters.startDate && filters.endDate) return { from: filters.startDate, to: filters.endDate }
+      const toMs = Date.now() - 86_400_000
+      const fromMs = toMs - (filters.windowDays - 1) * 86_400_000
+      return {
+        from: new Date(fromMs).toISOString().slice(0, 10),
+        to:   new Date(toMs).toISOString().slice(0, 10),
+      }
+    }
+
+    async function run() {
+      try {
+        const { from, to } = resolveBounds()
+        if (!isSupabaseConfigured()) {
+          // Reuse demo data already loaded — it spans the same window
+          if (data) {
+            const fakeReports = Array.from(new Set(data.incidents.map(i => i.report_date)))
+              .map(d => ({
+                id: `demo-${d}`,
+                report_date: d,
+                period: data.reports.find(r => r.report_date === d)?.period ?? null,
+                control_centre: 'Demo', created_by: 'Demo',
+                total_delay: 0, total_cancelled: 0, total_part_cancelled: 0, incident_count: 0,
+              }))
+            if (!cancelled) {
+              setReviewIncidents(data.incidents)
+              setReviewReports(fakeReports)
+              setReviewRows([])
+            }
+          }
+          return
+        }
+        const [incs, reps, revs] = await Promise.all([
+          fetchIncidentsForRange(from, to),
+          fetchReportsForRange(from, to),
+          fetchReviewsForRange(from, to),
+        ])
+        if (cancelled) return
+        setReviewIncidents(incs)
+        setReviewReports(reps)
+        setReviewRows(revs)
+      } catch (e: any) {
+        if (cancelled) return
+        setReviewError(e?.message || 'Failed to load review data')
+      } finally {
+        if (!cancelled) setReviewLoading(false)
+      }
+    }
+    run()
+    return () => { cancelled = true }
+  }, [tab, filters.windowDays, filters.startDate, filters.endDate, data])
+
+  const reviewByIncidentId = useMemo(() => {
+    const m = new Map<string, IncidentReview>()
+    for (const r of reviewRows) m.set(r.incident_id, r)
+    return m
+  }, [reviewRows])
+
+  const reviewPeriods = useMemo(() => {
+    if (!reviewIncidents || !reviewReports) return []
+    return deriveReviewPeriods(reviewIncidents, reviewReports as any, reviewByIncidentId)
+  }, [reviewIncidents, reviewReports, reviewByIncidentId])
+
+  const handleReviewSave = async (input: IncidentReviewInput, incidentStart: string | null) => {
+    const saved = await upsertIncidentReview(input, incidentStart)
+    if (saved) {
+      setReviewRows(prev => {
+        const others = prev.filter(r => r.incident_id !== saved.incident_id)
+        return [...others, saved]
+      })
+    }
+  }
+
+  const handleReviewDelete = async (incidentId: string) => {
+    await deleteIncidentReview(incidentId)
+    setReviewRows(prev => prev.filter(r => r.incident_id !== incidentId))
+  }
+
 
   return (
     <main className="min-h-screen pb-24">
@@ -273,6 +373,22 @@ export default function InsightDashboard() {
             {tab === 'trends'      && <TrendsTab incidents={data.incidents} windowFrom={data.windowFrom} windowDays={data.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'explore'     && <ExploreTab incidents={data.incidents} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'analytics'   && <AnalyticsTab incidents={data.incidents} />}
+            {tab === 'review'      && (
+              reviewLoading && !reviewIncidents
+                ? <div className="flex items-center justify-center py-24"><RefreshCw size={16} className="animate-spin" style={{ color: 'var(--ink-400)' }} /></div>
+                : <>
+                    {reviewError && <ErrorBanner message={reviewError} />}
+                    <ReviewTab
+                      periods={reviewPeriods}
+                      reviewByIncidentId={reviewByIncidentId}
+                      onSave={handleReviewSave}
+                      onDelete={handleReviewDelete}
+                      demoMode={demoMode}
+                      supabaseConfigured={isSupabaseConfigured()}
+                    />
+                  </>
+            )}
+            {tab === 'reports'     && <ReportsTab />}
           </>
         )}
       </div>
@@ -3508,6 +3624,731 @@ function Empty({ msg = 'No data in window' }: { msg?: string }) {
 function fmtMins(m: number): string {
   if (!m && m !== 0) return '—'
   return `${Math.round(m).toLocaleString()} min`
+}
+
+// ─── Review Tab ──────────────────────────────────────────────────────────────
+// SNDM workflow: open a log period, drill into individual days, expand each
+// incident to see what CCIL captured, then add the optional review details
+// (classification, MOM response, recovery times, stranded-train detail, etc.)
+// and refine any CCIL-captured values that need correcting. All review fields
+// are optional — a saved row just means an SNDM has touched the incident.
+
+function ReviewTab({
+  periods, reviewByIncidentId, onSave, onDelete, demoMode, supabaseConfigured,
+}: {
+  periods: ReviewPeriodGroup[]
+  reviewByIncidentId: Map<string, IncidentReview>
+  onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
+  onDelete: (incidentId: string) => Promise<void>
+  demoMode: boolean
+  supabaseConfigured: boolean
+}) {
+  const totalIncidents = periods.reduce((s, g) => s + g.totalIncidents, 0)
+  const totalReviewed  = periods.reduce((s, g) => s + g.totalReviewed, 0)
+  const reviewPct = totalIncidents > 0 ? (totalReviewed / totalIncidents) * 100 : 0
+
+  return (
+    <div className="space-y-6">
+      {!supabaseConfigured && (
+        <div className="card p-4 text-xs flex items-start gap-3" style={{ borderColor: 'var(--nr-amber)' }}>
+          <AlertTriangle size={14} style={{ color: 'var(--nr-amber)' }} className="mt-0.5 shrink-0" />
+          <div>
+            <div className="font-medium" style={{ color: 'var(--ink-100)' }}>Demo mode — review edits will not be saved</div>
+            <div className="mt-1" style={{ color: 'var(--ink-400)' }}>
+              The Supabase environment variables are not configured. You can explore the form, but saving requires a live connection.
+            </div>
+          </div>
+        </div>
+      )}
+      {supabaseConfigured && demoMode && (
+        <div className="card p-4 text-xs flex items-start gap-3" style={{ borderColor: 'var(--nr-amber)' }}>
+          <AlertTriangle size={14} style={{ color: 'var(--nr-amber)' }} className="mt-0.5 shrink-0" />
+          <div>
+            <div className="font-medium" style={{ color: 'var(--ink-100)' }}>No incidents in the current window — showing demo data</div>
+            <div className="mt-1" style={{ color: 'var(--ink-400)' }}>
+              Saves are disabled for demo rows. Adjust the date window above to view real data.
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 stagger">
+        <KPICard label="Open Log Periods" value={periods.length.toLocaleString()} icon={ClipboardList} />
+        <KPICard label="Incidents in Window" value={totalIncidents.toLocaleString()} icon={Activity} />
+        <KPICard
+          label="Reviewed"
+          value={`${totalReviewed.toLocaleString()} / ${totalIncidents.toLocaleString()}`}
+          subValue={`${reviewPct.toFixed(0)}% complete`}
+          icon={ClipboardCheck}
+          accent
+        />
+      </div>
+
+      <Card title="Log Periods" subtitle="Expand a period to drill into its days and incidents" className="tick-corners">
+        {periods.length === 0 ? (
+          <Empty msg="No incidents in the current date range" />
+        ) : (
+          <div className="space-y-2">
+            {periods.map(g => (
+              <PeriodGroupRow
+                key={g.key}
+                group={g}
+                reviewByIncidentId={reviewByIncidentId}
+                onSave={onSave}
+                onDelete={onDelete}
+                canSave={supabaseConfigured && !demoMode}
+              />
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  )
+}
+
+function PeriodGroupRow({
+  group, reviewByIncidentId, onSave, onDelete, canSave,
+}: {
+  group: ReviewPeriodGroup
+  reviewByIncidentId: Map<string, IncidentReview>
+  onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
+  onDelete: (incidentId: string) => Promise<void>
+  canSave: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const complete = group.totalIncidents > 0 && group.totalReviewed >= group.totalIncidents
+  const pct = group.totalIncidents > 0 ? (group.totalReviewed / group.totalIncidents) * 100 : 0
+
+  return (
+    <div className="rounded border border-[var(--line)] overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-[var(--bg-card-hi)] transition-colors"
+        style={{ background: open ? 'var(--bg-card-hi)' : 'transparent' }}
+      >
+        <ChevronDown size={14} style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="serif text-base font-medium" style={{ color: 'var(--ink-100)' }}>{group.key}</span>
+            <span className="label-micro">{group.days.length} day{group.days.length !== 1 ? 's' : ''}</span>
+            <span className="label-micro" style={{ color: 'var(--ink-500)' }}>
+              {group.days[group.days.length - 1]?.date} → {group.days[0]?.date}
+            </span>
+          </div>
+        </div>
+        <div className="hidden sm:flex items-center gap-4 shrink-0">
+          <div className="text-right">
+            <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Incidents</div>
+            <div className="numeric-mono text-xs" style={{ color: 'var(--ink-100)' }}>{group.totalIncidents}</div>
+          </div>
+          <div className="text-right">
+            <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Delay</div>
+            <div className="numeric-mono text-xs" style={{ color: 'var(--nr-orange)' }}>{fmtMins(group.totalDelay)}</div>
+          </div>
+          <div className="text-right w-28">
+            <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Reviewed</div>
+            <div className="flex items-center gap-2">
+              <div className="h-1 flex-1 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden">
+                <div className="h-full" style={{ width: `${pct}%`, background: complete ? 'var(--nr-green)' : 'var(--nr-orange)' }} />
+              </div>
+              <span className="numeric-mono text-[10px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-300)' }}>
+                {group.totalReviewed}/{group.totalIncidents}
+              </span>
+            </div>
+          </div>
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-[var(--line)]" style={{ background: 'var(--bg-card)' }}>
+          {group.days.map(d => (
+            <ReviewDayRow
+              key={d.date}
+              day={d}
+              periodLabel={group.period}
+              weekLabel={group.week}
+              reviewByIncidentId={reviewByIncidentId}
+              onSave={onSave}
+              onDelete={onDelete}
+              canSave={canSave}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReviewDayRow({
+  day, periodLabel, weekLabel, reviewByIncidentId, onSave, onDelete, canSave,
+}: {
+  day: ReviewPeriodDay
+  periodLabel: string | null
+  weekLabel: string | null
+  reviewByIncidentId: Map<string, IncidentReview>
+  onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
+  onDelete: (incidentId: string) => Promise<void>
+  canSave: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const complete = day.incidentCount > 0 && day.reviewedCount >= day.incidentCount
+
+  // Sort: non-continuations first by start time; continuations grouped after their primary
+  const uniques = day.incidents.filter(i => !i.is_continuation)
+                                .sort((a, b) => (a.incident_start || '').localeCompare(b.incident_start || ''))
+
+  return (
+    <div className="border-b border-[var(--line)] last:border-b-0">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-3 px-6 py-2 text-left hover:bg-[var(--bg-card-hi)] transition-colors text-xs"
+      >
+        <ChevronDown size={12} style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
+        <span className="numeric-mono shrink-0" style={{ color: 'var(--ink-100)' }}>{formatDayLabel(day.date)}</span>
+        <span className="label-micro" style={{ color: 'var(--ink-500)' }}>{day.incidentCount} incident{day.incidentCount !== 1 ? 's' : ''}</span>
+        <span className="label-micro" style={{ color: 'var(--ink-500)' }}>{fmtMins(day.totalDelay)} delay</span>
+        <span className="ml-auto numeric-mono text-[10px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-400)' }}>
+          {day.reviewedCount}/{day.incidentCount} reviewed
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-6 pb-3 space-y-2">
+          {uniques.length === 0 ? (
+            <div className="text-[11px] py-2" style={{ color: 'var(--ink-500)' }}>No primary incidents on this day.</div>
+          ) : (
+            uniques.map(inc => (
+              <ReviewIncidentRow
+                key={inc.id}
+                incident={inc}
+                review={reviewByIncidentId.get(inc.id)}
+                defaultPeriod={periodLabel}
+                defaultWeek={weekLabel}
+                onSave={onSave}
+                onDelete={onDelete}
+                canSave={canSave}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReviewIncidentRow({
+  incident, review, defaultPeriod, defaultWeek, onSave, onDelete, canSave,
+}: {
+  incident: IncidentRow
+  review: IncidentReview | undefined
+  defaultPeriod: string | null
+  defaultWeek: string | null
+  onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
+  onDelete: (incidentId: string) => Promise<void>
+  canSave: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const cfg = CATEGORY_CONFIG[incident.category]
+  const reviewed = !!review
+  const cls = review?.incident_classification ?? null
+
+  return (
+    <div className="rounded border border-[var(--line)] overflow-hidden" style={{ background: 'var(--bg-card)' }}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-start gap-3 px-3 py-2.5 text-left text-xs hover:bg-[var(--bg-card-hi)] transition-colors"
+      >
+        <ChevronDown size={11} className="mt-1" style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
+        <span className={`pill pill-${incident.severity.toLowerCase()} shrink-0`}>{incident.severity}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-0.5">
+            {incident.ccil && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL {incident.ccil}</span>}
+            {incident.incident_start && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{incident.incident_start}</span>}
+            <span className="pill text-[9px]" style={{ background: `${cfg.color}20`, color: cfg.color, borderColor: `${cfg.color}50` }}>
+              {cfg.short}
+            </span>
+            {incident.area && <span className="text-[10px]" style={{ color: 'var(--ink-400)' }}>{incident.area}</span>}
+          </div>
+          <div className="font-medium truncate" style={{ color: 'var(--ink-200)' }}>
+            {review?.title_override ?? incident.title ?? '—'}
+          </div>
+          {(review?.location_override || incident.location) && (
+            <div className="text-[10px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+              {review?.location_override ?? incident.location}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          {cls && <ClassificationPill value={cls} />}
+          {reviewed
+            ? <span className="pill text-[9px]" style={{ background: 'rgba(39, 174, 96, 0.12)', color: 'var(--nr-green)', borderColor: 'rgba(39, 174, 96, 0.4)' }}><ClipboardCheck size={9} /> Reviewed</span>
+            : <span className="pill text-[9px]" style={{ background: 'rgba(122, 139, 168, 0.12)', color: 'var(--ink-400)', borderColor: 'var(--line)' }}>Pending</span>}
+          <div className="text-right w-16">
+            <div className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>DELAY</div>
+            <div className="numeric-mono text-[11px]" style={{ color: 'var(--nr-orange)' }}>
+              {(review?.minutes_delay_override ?? incident.minutes_delay)}m
+            </div>
+          </div>
+        </div>
+      </button>
+
+      {open && (
+        <ReviewForm
+          incident={incident}
+          review={review}
+          defaultPeriod={defaultPeriod}
+          defaultWeek={defaultWeek}
+          onSave={onSave}
+          onDelete={onDelete}
+          canSave={canSave}
+        />
+      )}
+    </div>
+  )
+}
+
+function ClassificationPill({ value }: { value: IncidentClassification }) {
+  const cfg = CLASSIFICATION_CONFIG[value]
+  return (
+    <span className="pill text-[9px] font-bold" style={{ background: cfg.color, color: cfg.textColor, borderColor: cfg.color }}>
+      {cfg.label.toUpperCase()}
+    </span>
+  )
+}
+
+// Form rendered when an incident is expanded. Top section is read-only CCIL
+// detail; below is the editable SNDM review form (all optional) and a
+// "Refine CCIL" disclosure for overriding captured values.
+function ReviewForm({
+  incident, review, defaultPeriod, defaultWeek, onSave, onDelete, canSave,
+}: {
+  incident: IncidentRow
+  review: IncidentReview | undefined
+  defaultPeriod: string | null
+  defaultWeek: string | null
+  onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
+  onDelete: (incidentId: string) => Promise<void>
+  canSave: boolean
+}) {
+  type FormState = Omit<IncidentReviewInput, 'incident_id' | 'report_date'>
+
+  const initial: FormState = useMemo(() => ({
+    period: review?.period ?? defaultPeriod ?? null,
+    week: review?.week ?? defaultWeek ?? null,
+    technical_conference: review?.technical_conference ?? null,
+    commentary: review?.commentary ?? null,
+    stranded_headcode: review?.stranded_headcode ?? null,
+    stranded_location: review?.stranded_location ?? null,
+    stranded_time_stranded: review?.stranded_time_stranded ?? null,
+    stranded_time_moved: review?.stranded_time_moved ?? null,
+    itsr: review?.itsr ?? null,
+    time_huddle_held: review?.time_huddle_held ?? null,
+    incident_classification: review?.incident_classification ?? null,
+    mom_response: review?.mom_response ?? null,
+    mom_depot: review?.mom_depot ?? null,
+    mom_response_time: review?.mom_response_time ?? null,
+    first_50_30min_target_met: review?.first_50_30min_target_met ?? null,
+    target_recovery_time: review?.target_recovery_time ?? null,
+    actual_recovery_time: review?.actual_recovery_time ?? null,
+    title_override: review?.title_override ?? null,
+    location_override: review?.location_override ?? null,
+    area_override: review?.area_override ?? null,
+    minutes_delay_override: review?.minutes_delay_override ?? null,
+    trains_delayed_override: review?.trains_delayed_override ?? null,
+    cancelled_override: review?.cancelled_override ?? null,
+    part_cancelled_override: review?.part_cancelled_override ?? null,
+    notes: review?.notes ?? null,
+    reviewed_by: review?.reviewed_by ?? null,
+  }), [review, defaultPeriod, defaultWeek])
+
+  const [form, setForm] = useState<FormState>(initial)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [showOverrides, setShowOverrides] = useState(false)
+
+  useEffect(() => { setForm(initial); setError(null) }, [initial])
+
+  const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm(prev => ({ ...prev, [k]: v }))
+
+  const liveTimeToRecover = useMemo(() => {
+    if (!incident.incident_start || !form.actual_recovery_time) return null
+    return minsBetweenHHMM(incident.incident_start, form.actual_recovery_time)
+  }, [incident.incident_start, form.actual_recovery_time])
+
+  const handleSave = async () => {
+    if (!canSave) return
+    setSaving(true); setError(null)
+    try {
+      // Strip empty strings → null so we don't write blanks
+      const cleaned: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(form)) {
+        cleaned[k] = v === '' ? null : v
+      }
+      await onSave(
+        { incident_id: incident.id, report_date: incident.report_date, ...cleaned },
+        incident.incident_start,
+      )
+    } catch (e: any) {
+      setError(e?.message || 'Failed to save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleClear = async () => {
+    if (!canSave || !review) return
+    if (!confirm('Remove this review? The CCIL row will remain untouched.')) return
+    setSaving(true); setError(null)
+    try {
+      await onDelete(incident.id)
+      setForm(initial)
+    } catch (e: any) {
+      setError(e?.message || 'Failed to remove review')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="border-t border-[var(--line)] p-4 text-xs space-y-5" style={{ background: 'var(--bg-card-hi)' }}>
+      <CcilDetailBlock incident={incident} />
+
+      <div className="border-t border-[var(--line)] pt-4 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <h4 className="label-micro" style={{ color: 'var(--nr-orange)' }}>SNDM Review · all fields optional</h4>
+          {review?.reviewed_at && (
+            <span className="numeric-mono text-[9px]" style={{ color: 'var(--ink-500)' }}>
+              Last saved {new Date(review.reviewed_at).toLocaleString()}
+              {review.reviewed_by ? ` · ${review.reviewed_by}` : ''}
+            </span>
+          )}
+        </div>
+
+        {/* Row 1 — Period / Week */}
+        <FieldGroup>
+          <Field label="Period">
+            <input className="input" value={form.period ?? ''} onChange={e => set('period', e.target.value)} placeholder="e.g. P02" />
+          </Field>
+          <Field label="Week">
+            <input className="input" value={form.week ?? ''} onChange={e => set('week', e.target.value)} placeholder="e.g. W3" />
+          </Field>
+        </FieldGroup>
+
+        {/* Row 2 — Technical conference / Commentary */}
+        <FieldGroup>
+          <Field label="Technical Conference">
+            <textarea className="input" rows={2} value={form.technical_conference ?? ''} onChange={e => set('technical_conference', e.target.value)} placeholder="Conference call notes, attendees, decisions…" />
+          </Field>
+          <Field label="Commentary">
+            <textarea className="input" rows={2} value={form.commentary ?? ''} onChange={e => set('commentary', e.target.value)} placeholder="Additional context, narrative, follow-up actions…" />
+          </Field>
+        </FieldGroup>
+
+        {/* Row 3 — Stranded train */}
+        <FieldGroup label="Stranded Train">
+          <Field label="Headcode">
+            <input className="input" value={form.stranded_headcode ?? ''} onChange={e => set('stranded_headcode', e.target.value.toUpperCase())} placeholder="e.g. 1B23" />
+          </Field>
+          <Field label="Location">
+            <input className="input" value={form.stranded_location ?? ''} onChange={e => set('stranded_location', e.target.value)} placeholder="Where stranded" />
+          </Field>
+          <Field label="Time Stranded">
+            <input className="input" type="time" value={form.stranded_time_stranded ?? ''} onChange={e => set('stranded_time_stranded', e.target.value)} />
+          </Field>
+          <Field label="Time Moved">
+            <input className="input" type="time" value={form.stranded_time_moved ?? ''} onChange={e => set('stranded_time_moved', e.target.value)} />
+          </Field>
+        </FieldGroup>
+
+        {/* Row 4 — ITSR / huddle */}
+        <FieldGroup>
+          <Field label="ITSR">
+            <input className="input" value={form.itsr ?? ''} onChange={e => set('itsr', e.target.value)} placeholder="ITSR reference / notes" />
+          </Field>
+          <Field label="Time Huddle Held">
+            <input className="input" type="time" value={form.time_huddle_held ?? ''} onChange={e => set('time_huddle_held', e.target.value)} />
+          </Field>
+        </FieldGroup>
+
+        {/* Row 5 — Incident classification */}
+        <FieldGroup label="Incident Classification">
+          <div className="col-span-full flex gap-2 flex-wrap">
+            {(Object.keys(CLASSIFICATION_CONFIG) as IncidentClassification[]).map(k => {
+              const cfg = CLASSIFICATION_CONFIG[k]
+              const active = form.incident_classification === k
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => set('incident_classification', active ? null : k)}
+                  className="px-3 py-1.5 rounded-sm text-[10px] font-bold tracking-wider uppercase transition-all"
+                  style={{
+                    background: active ? cfg.color : 'transparent',
+                    color: active ? cfg.textColor : cfg.color,
+                    border: `1px solid ${cfg.color}`,
+                    boxShadow: active ? `0 0 12px ${cfg.color}80` : 'none',
+                    fontFamily: 'JetBrains Mono, monospace',
+                  }}
+                >
+                  {cfg.label}
+                </button>
+              )
+            })}
+          </div>
+        </FieldGroup>
+
+        {/* Row 6 — MOM response */}
+        <FieldGroup label="MOM Response">
+          <Field label="Responder">
+            <input className="input" value={form.mom_response ?? ''} onChange={e => set('mom_response', e.target.value)} placeholder="Initials / name" />
+          </Field>
+          <Field label="Depot">
+            <input className="input" value={form.mom_depot ?? ''} onChange={e => set('mom_depot', e.target.value)} placeholder="MOM depot" />
+          </Field>
+          <Field label="Response Time">
+            <input className="input" type="time" value={form.mom_response_time ?? ''} onChange={e => set('mom_response_time', e.target.value)} />
+          </Field>
+          <Field label="First 50 — 30min target">
+            <select className="select" value={form.first_50_30min_target_met ?? ''} onChange={e => set('first_50_30min_target_met', (e.target.value || null) as First50Outcome | null)}>
+              <option value="">—</option>
+              <option value="YES">Yes</option>
+              <option value="NO">No</option>
+              <option value="NA">N/A</option>
+            </select>
+          </Field>
+        </FieldGroup>
+
+        {/* Row 7 — Recovery */}
+        <FieldGroup label="Recovery">
+          <Field label="Target Recovery Time">
+            <input className="input" type="time" value={form.target_recovery_time ?? ''} onChange={e => set('target_recovery_time', e.target.value)} />
+          </Field>
+          <Field label="Actual Recovery Time">
+            <input className="input" type="time" value={form.actual_recovery_time ?? ''} onChange={e => set('actual_recovery_time', e.target.value)} />
+          </Field>
+          <Field label="Time to Recover">
+            <div className="input flex items-center justify-between" style={{ background: 'var(--bg-card)', color: 'var(--ink-300)' }}>
+              <span className="numeric-mono">{liveTimeToRecover != null ? fmtMins(liveTimeToRecover) : '—'}</span>
+              <span className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Auto from start → actual</span>
+            </div>
+          </Field>
+        </FieldGroup>
+
+        {/* Notes */}
+        <Field label="Additional Notes">
+          <textarea className="input w-full" rows={2} value={form.notes ?? ''} onChange={e => set('notes', e.target.value)} placeholder="Anything else worth recording" />
+        </Field>
+
+        {/* Refine CCIL overrides */}
+        <div className="border border-[var(--line)] rounded-sm">
+          <button
+            type="button"
+            onClick={() => setShowOverrides(v => !v)}
+            className="w-full flex items-center justify-between px-3 py-2 text-left"
+          >
+            <span className="label-micro">Refine CCIL Capture</span>
+            <span className="flex items-center gap-2">
+              <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>
+                Override any captured field — original row stays intact
+              </span>
+              <ChevronDown size={12} style={{ transform: showOverrides ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
+            </span>
+          </button>
+          {showOverrides && (
+            <div className="px-3 pb-3 pt-2 space-y-3 border-t border-[var(--line)]">
+              <FieldGroup>
+                <Field label={`Title  (CCIL: ${incident.title ?? '—'})`}>
+                  <input className="input" value={form.title_override ?? ''} onChange={e => set('title_override', e.target.value)} placeholder={incident.title ?? ''} />
+                </Field>
+              </FieldGroup>
+              <FieldGroup>
+                <Field label={`Location  (CCIL: ${incident.location ?? '—'})`}>
+                  <input className="input" value={form.location_override ?? ''} onChange={e => set('location_override', e.target.value)} placeholder={incident.location ?? ''} />
+                </Field>
+                <Field label={`Area  (CCIL: ${incident.area ?? '—'})`}>
+                  <input className="input" value={form.area_override ?? ''} onChange={e => set('area_override', e.target.value)} placeholder={incident.area ?? ''} />
+                </Field>
+              </FieldGroup>
+              <FieldGroup>
+                <Field label={`Delay (mins)  (CCIL: ${incident.minutes_delay})`}>
+                  <input className="input" type="number" min={0} value={form.minutes_delay_override ?? ''} onChange={e => set('minutes_delay_override', e.target.value === '' ? null : Number(e.target.value))} placeholder={String(incident.minutes_delay)} />
+                </Field>
+                <Field label={`Trains Delayed  (CCIL: ${incident.trains_delayed})`}>
+                  <input className="input" type="number" min={0} value={form.trains_delayed_override ?? ''} onChange={e => set('trains_delayed_override', e.target.value === '' ? null : Number(e.target.value))} placeholder={String(incident.trains_delayed)} />
+                </Field>
+                <Field label={`Cancelled  (CCIL: ${incident.cancelled})`}>
+                  <input className="input" type="number" min={0} value={form.cancelled_override ?? ''} onChange={e => set('cancelled_override', e.target.value === '' ? null : Number(e.target.value))} placeholder={String(incident.cancelled)} />
+                </Field>
+                <Field label={`Part Cancelled  (CCIL: ${incident.part_cancelled})`}>
+                  <input className="input" type="number" min={0} value={form.part_cancelled_override ?? ''} onChange={e => set('part_cancelled_override', e.target.value === '' ? null : Number(e.target.value))} placeholder={String(incident.part_cancelled)} />
+                </Field>
+              </FieldGroup>
+            </div>
+          )}
+        </div>
+
+        <FieldGroup>
+          <Field label="Reviewed By">
+            <input className="input" value={form.reviewed_by ?? ''} onChange={e => set('reviewed_by', e.target.value)} placeholder="Your initials" />
+          </Field>
+        </FieldGroup>
+
+        {error && (
+          <div className="text-xs px-3 py-2 rounded-sm" style={{ background: 'rgba(231,76,60,0.1)', color: 'var(--nr-red)', border: '1px solid rgba(231,76,60,0.4)' }}>
+            {error}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-3 pt-2 border-t border-[var(--line)]">
+          <div className="text-[10px]" style={{ color: 'var(--ink-500)' }}>
+            {canSave ? 'Saves immediately to the incident_reviews table' : 'Saves disabled — Supabase not configured or demo data'}
+          </div>
+          <div className="flex items-center gap-2">
+            {review && (
+              <button type="button" onClick={handleClear} disabled={!canSave || saving} className="btn">
+                Remove Review
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={!canSave || saving}
+              className="btn btn-active"
+            >
+              {saving ? 'Saving…' : review ? 'Save Changes' : 'Save Review'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CcilDetailBlock({ incident }: { incident: IncidentRow }) {
+  const rows: { label: string; value: string | null }[] = [
+    { label: 'CCIL Reference',   value: incident.ccil ?? null },
+    { label: 'Report Date',      value: incident.report_date },
+    { label: 'Incident Start',   value: incident.incident_start ?? null },
+    { label: 'Category',         value: CATEGORY_CONFIG[incident.category]?.label ?? incident.category },
+    { label: 'Type',             value: incident.incident_type_label ?? incident.incident_type_code ?? null },
+    { label: 'Severity',         value: incident.severity },
+    { label: 'Title',            value: incident.title ?? null },
+    { label: 'Location',         value: incident.location ?? null },
+    { label: 'Area',             value: incident.area ?? null },
+    { label: 'Line',             value: incident.line ?? null },
+    { label: 'Fault Number',     value: incident.fault_number ?? null },
+    { label: 'Train ID',         value: incident.train_id ?? null },
+    { label: 'Operator',         value: incident.train_company ?? null },
+    { label: 'Origin → Dest',    value: incident.train_origin || incident.train_destination ? `${incident.train_origin ?? '—'} → ${incident.train_destination ?? '—'}` : null },
+    { label: 'Unit Numbers',     value: incident.unit_numbers?.length ? incident.unit_numbers.join(', ') : null },
+    { label: 'Delay (min)',      value: incident.minutes_delay != null ? String(incident.minutes_delay) : null },
+    { label: 'Trains Delayed',   value: incident.trains_delayed != null ? String(incident.trains_delayed) : null },
+    { label: 'Cancelled',        value: incident.cancelled != null ? String(incident.cancelled) : null },
+    { label: 'Part Cancelled',   value: incident.part_cancelled != null ? String(incident.part_cancelled) : null },
+    { label: 'Advised',          value: incident.advised_time ?? null },
+    { label: 'Initial Response', value: incident.initial_resp_time ?? null },
+    { label: 'Arrived',          value: incident.arrived_at_time ?? null },
+    { label: 'NWR',              value: incident.nwr_time ?? null },
+    { label: 'Duration (min)',   value: incident.incident_duration != null ? String(incident.incident_duration) : null },
+    { label: 'Responders',       value: incident.responder_initials?.length ? incident.responder_initials.join(' ') : null },
+    { label: 'TRUST Ref',        value: incident.trust_ref ?? null },
+    { label: 'TDA Ref',          value: incident.tda_ref ?? null },
+    { label: 'TRMC Code',        value: incident.trmc_code ?? null },
+    { label: 'Possession',       value: incident.possession_ref ?? null },
+    { label: 'BTP Ref',          value: incident.btp_ref ?? null },
+    { label: 'Third-Party Ref',  value: incident.third_party_ref ?? null },
+  ]
+
+  const populated = rows.filter(r => r.value && r.value.trim() !== '')
+
+  return (
+    <div>
+      <h4 className="label-micro mb-3" style={{ color: 'var(--ink-300)' }}>CCIL Captured Detail</h4>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2">
+        {populated.map(r => (
+          <div key={r.label} className="flex items-start gap-2">
+            <span className="label-micro text-[9px] shrink-0 w-32 truncate pt-0.5" title={r.label}>{r.label}</span>
+            <span className="text-[11px] break-words" style={{ color: 'var(--ink-200)' }}>{r.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="label-micro text-[9px]">{label}</span>
+      {children}
+    </label>
+  )
+}
+
+function FieldGroup({ label, children }: { label?: string; children: React.ReactNode }) {
+  return (
+    <div>
+      {label && <div className="label-micro text-[10px] mb-2" style={{ color: 'var(--nr-orange)' }}>{label}</div>}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">{children}</div>
+    </div>
+  )
+}
+
+function formatDayLabel(iso: string): string {
+  const [y, m, d] = iso.split('-')
+  if (!y || !m || !d) return iso
+  const dt = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)))
+  const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getUTCDay()]
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m) - 1]
+  return `${dow} ${Number(d)} ${mon} ${y}`
+}
+
+function minsBetweenHHMM(start: string, end: string): number | null {
+  const toMin = (t: string) => {
+    const [h, m] = t.split(':').map(Number)
+    return isNaN(h) || isNaN(m) ? null : h * 60 + m
+  }
+  const s = toMin(start); const e = toMin(end)
+  if (s == null || e == null) return null
+  return e >= s ? e - s : e + 1440 - s
+}
+
+// ─── Reports Tab (placeholder) ───────────────────────────────────────────────
+// Future home for the report-builder — take SNDM-reviewed data plus analytics
+// and emit set-format outputs (period reports, weekly briefings, etc.).
+
+function ReportsTab() {
+  return (
+    <div className="space-y-6">
+      <Card title="Report Builder" subtitle="Generate set-format reports from reviewed incidents and analytics data" className="tick-corners">
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <FileText size={32} style={{ color: 'var(--ink-500)' }} className="mb-4" />
+          <h4 className="serif text-lg font-medium mb-2" style={{ color: 'var(--ink-100)' }}>Coming Next</h4>
+          <p className="text-xs max-w-md" style={{ color: 'var(--ink-400)' }}>
+            This section will combine analytics data points with SNDM-reviewed incident detail
+            to produce set-format outputs — period summaries, weekly briefings,
+            safety-critical roll-ups, and bespoke management reports.
+          </p>
+          <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-2xl">
+            {[
+              { title: 'Period Report',  desc: 'P/W summary across all reviewed incidents' },
+              { title: 'Weekly Brief',   desc: 'Top-line metrics + classification breakdown' },
+              { title: 'Safety Roll-up', desc: 'Reviewed safety-critical events with commentary' },
+            ].map(r => (
+              <div key={r.title} className="card !bg-[var(--bg-card-hi)] p-4 text-left">
+                <div className="label-micro mb-1" style={{ color: 'var(--nr-orange)' }}>Planned</div>
+                <div className="text-sm font-medium" style={{ color: 'var(--ink-100)' }}>{r.title}</div>
+                <div className="text-[11px] mt-1" style={{ color: 'var(--ink-400)' }}>{r.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+    </div>
+  )
 }
 
 // ─── Explore Tab ─────────────────────────────────────────────────────────────
