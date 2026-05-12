@@ -47,3 +47,12 @@ export function clearDelayFilter(f: AnalyticsFilters): AnalyticsFilters {
   const { minDelay: _min, maxDelay: _max, ...rest } = f
   return { ...rest }
 }
+
+export function toggleIncidentTypeFilter(f: AnalyticsFilters, label: string): AnalyticsFilters {
+  return {
+    ...f,
+    incidentTypes: f.incidentTypes.includes(label)
+      ? f.incidentTypes.filter(x => x !== label)
+      : [...f.incidentTypes, label],
+  }
+}

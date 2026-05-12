@@ -25,14 +25,14 @@ import {
   deriveInfraFailureMix, deriveDelayDensity, deriveResponderLoad,
   deriveOperatorImpact, deriveHeatmap, deriveAreaList, deriveResponseDistribution,
   deriveSignals, deriveLineBreakdown, deriveDelayAttribution, deriveContinuationChains,
-  deriveChangePoints, deriveDelta, deriveHypotheses,
+  deriveChangePoints, deriveDelta, deriveHypotheses, deriveIncidentTypeList,
   effectiveDelay, effectiveMinsToArrival, effectiveDuration, SLA_THRESHOLD_MINS,
   searchMatch,
   RawData,
 } from '@/lib/queries'
 import {
   toggleCategoryFilter, toggleAreaFilter, toggleSeverityFilter,
-  removeSearchToken, clearCustomDate, clearDelayFilter,
+  removeSearchToken, clearCustomDate, clearDelayFilter, toggleIncidentTypeFilter,
 } from '@/lib/filterActions'
 import { generateSyntheticData } from '@/lib/syntheticData'
 import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
@@ -103,7 +103,6 @@ export default function InsightDashboard() {
   const [distChart, setDistChart] = useState<DistributionKind>('donut')
   const [drillDown, setDrillDown] = useState<{ title: string; incidents: IncidentRow[] } | null>(null)
   const [savedViews, setSavedViews] = useState<SavedView[]>(() => getSavedViews())
-  const [signalsOpen, setSignalsOpen] = useState(false)
 
   // Keep URL in sync with filters
   useEffect(() => { setFiltersInUrl(filters) }, [filters])
@@ -126,8 +125,14 @@ export default function InsightDashboard() {
         }
         const result = await fetchAnalytics(filters)
         if (cancelled) return
-        if (!result || result.incidents.length === 0) {
-          // Empty → fall back to demo so the dashboard isn't a void
+        const hasActiveFilters =
+          filters.categories.length > 0 || filters.areas.length > 0 ||
+          filters.severities.length > 0 || filters.searches.length > 0 ||
+          filters.incidentTypes.length > 0 ||
+          filters.minDelay != null || filters.maxDelay != null ||
+          filters.startDate != null || filters.endDate != null
+        if (!result || (result.incidents.length === 0 && !hasActiveFilters)) {
+          // No data and no filters → fall back to demo so the dashboard isn't a void
           setData(generateSyntheticData(filters.windowDays, 42, filters.startDate, filters.endDate))
           setDemoMode(true)
         } else {
@@ -160,13 +165,12 @@ export default function InsightDashboard() {
   const ops          = useMemo(() => data ? deriveOperatorImpact(data) : [], [data])
   const heat         = useMemo(() => data ? deriveHeatmap(data) : [], [data])
   const areas        = useMemo(() => data ? deriveAreaList(data) : [], [data])
+  const incidentTypeList = useMemo(() => data ? deriveIncidentTypeList(data) : [], [data])
   const respDist     = useMemo(() => data ? deriveResponseDistribution(data) : null, [data])
-  const signals      = useMemo(() => data ? deriveSignals(data) : [], [data])
   const lines        = useMemo(() => data ? deriveLineBreakdown(data) : [], [data])
   const attribution  = useMemo(() => data ? deriveDelayAttribution(data) : [], [data])
   const chains       = useMemo(() => data ? deriveContinuationChains(data) : [], [data])
   const changePoints = useMemo(() => deriveChangePoints(trend), [trend])
-  const hypotheses   = useMemo(() => data ? deriveHypotheses(data, trend, changePoints) : [], [data, trend, changePoints])
 
   // Decomposition lookup for KPI cards — computed lazily per card via this
   // closure rather than precomputed for every metric.
@@ -182,9 +186,10 @@ export default function InsightDashboard() {
   // Cross-filter drill-down: chart elements push their underlying value into
   // the corresponding filter list. Each helper toggles, so re-clicking a
   // pinned slice removes it from the filter — same affordance both ways.
-  const handleAddCategoryFilter = (c: IncidentCategory) => setFilters(f => toggleCategoryFilter(f, c))
-  const handleAddAreaFilter     = (a: string)            => setFilters(f => toggleAreaFilter(f, a))
-  const handleAddSeverityFilter = (s: Severity)          => setFilters(f => toggleSeverityFilter(f, s))
+  const handleAddCategoryFilter      = (c: IncidentCategory) => setFilters(f => toggleCategoryFilter(f, c))
+  const handleAddAreaFilter          = (a: string)            => setFilters(f => toggleAreaFilter(f, a))
+  const handleAddSeverityFilter      = (s: Severity)          => setFilters(f => toggleSeverityFilter(f, s))
+  const handleToggleIncidentType     = (label: string)        => setFilters(f => toggleIncidentTypeFilter(f, label))
 
   const handleSaveView = (name: string) => {
     const view = saveView(name, filters)
@@ -201,7 +206,6 @@ export default function InsightDashboard() {
     clearFiltersFromUrl()
   }
 
-  const criticalSignals = signals.filter(s => s.severity === 'critical').length
 
   return (
     <main className="min-h-screen pb-24">
@@ -219,11 +223,10 @@ export default function InsightDashboard() {
         activeFilterCount={
           filters.areas.length + filters.categories.length +
           filters.severities.length + filters.searches.length +
+          filters.incidentTypes.length +
           (filters.minDelay != null || filters.maxDelay != null ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
-        signalCount={signals.length}
-        criticalSignalCount={criticalSignals}
         onExport={data ? () => exportCSV(data.incidents, data.windowFrom, data.windowTo) : undefined}
       />
 
@@ -233,6 +236,7 @@ export default function InsightDashboard() {
         onRemoveArea={handleAddAreaFilter}
         onRemoveSeverity={handleAddSeverityFilter}
         onRemoveSearch={(t) => setFilters(f => removeSearchToken(f, t))}
+        onRemoveIncidentType={handleToggleIncidentType}
         onClearDate={() => setFilters(f => clearCustomDate(f))}
         onClearDelay={() => setFilters(f => clearDelayFilter(f))}
         onClearAll={handleResetFilters}
@@ -249,11 +253,6 @@ export default function InsightDashboard() {
             >
               <t.icon size={13} />
               {t.label}
-              {t.id === 'overview' && criticalSignals > 0 && (
-                <span className="ml-0.5 px-1 py-0.5 text-[9px] font-bold bg-[var(--nr-red,#E74C3C)] text-white rounded-sm leading-none">
-                  {criticalSignals}
-                </span>
-              )}
             </button>
           ))}
         </div>
@@ -264,7 +263,7 @@ export default function InsightDashboard() {
 
         {kpis && data && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} signals={signals} signalsOpen={signalsOpen} setSignalsOpen={setSignalsOpen} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} hypotheses={hypotheses} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={data} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
             {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={data.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={data.incidents} onDrillDown={setDrillDown} />}
@@ -293,6 +292,7 @@ export default function InsightDashboard() {
         onApply={(f: AnalyticsFilters) => { setFilters(f); setFiltersOpen(false) }}
         onReset={handleResetFilters}
         availableAreas={areas.map(a => a.area)}
+        availableIncidentTypes={incidentTypeList}
         savedViews={savedViews}
         onSaveView={handleSaveView}
         onDeleteView={handleDeleteView}
@@ -312,8 +312,6 @@ function Header(props: {
   loading: boolean
   activeFilterCount: number
   isAtToday: boolean
-  signalCount: number
-  criticalSignalCount: number
   onWindowChange: (d: number) => void
   onPrevWindow: () => void
   onNextWindow: () => void
@@ -400,20 +398,6 @@ function Header(props: {
             <RefreshCw size={12} className={props.loading ? 'animate-spin' : ''} />
             Refresh
           </button>
-
-          {props.signalCount > 0 && (
-            <div
-              className="flex items-center gap-2 px-3 py-1.5 border rounded cursor-default"
-              style={{
-                borderColor: props.criticalSignalCount > 0 ? '#E74C3C' : 'var(--nr-amber)',
-                color: props.criticalSignalCount > 0 ? '#E74C3C' : 'var(--nr-amber)',
-              }}
-              title="Active signals — see Overview tab"
-            >
-              <Bell size={12} />
-              <span className="label-micro">{props.signalCount} signal{props.signalCount !== 1 ? 's' : ''}</span>
-            </div>
-          )}
 
           <div className="flex items-center gap-2 px-3 py-1.5 border border-[var(--line)] rounded">
             <span className={`live-dot ${props.demoMode ? '!bg-[var(--nr-amber)]' : 'animate-pulse-soft'}`} style={props.demoMode ? { boxShadow: '0 0 8px var(--nr-amber)' } : {}} />
@@ -638,16 +622,9 @@ function HypothesisRow({ h, maxLift, onClick }: {
   )
 }
 
-function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, signals, signalsOpen, setSignalsOpen, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, hypotheses }: any) {
+function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose }: any) {
   return (
     <div className="space-y-6">
-      <SignalsPanel signals={signals} open={signalsOpen} setOpen={setSignalsOpen} />
-      <HypothesisPanel
-        clusters={hypotheses}
-        onAddCategoryFilter={onAddCategoryFilter}
-        onAddAreaFilter={onAddAreaFilter}
-        onAddSeverityFilter={onAddSeverityFilter}
-      />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 stagger">
         <KPICard
@@ -697,7 +674,7 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           deltaInverted
         />
         <KPICard
-          label="SLA Compliance"
+          label="Arrival SLA (≤45 min)"
           value={kpis.slaCompliancePct != null ? `${kpis.slaCompliancePct.toFixed(1)}%` : '—'}
           delta={kpis.slaBreachDeltaPct != null ? -kpis.slaBreachDeltaPct : null}
           icon={Clock}
@@ -812,7 +789,7 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
           icon={Clock}
         />
         <KPICard
-          label="SLA Compliance (≤45m)"
+          label="Arrival SLA (≤45 min)"
           value={kpis.slaCompliancePct != null ? `${kpis.slaCompliancePct.toFixed(1)}%` : '—'}
           delta={kpis.slaBreachDeltaPct != null ? -kpis.slaBreachDeltaPct : null}
           icon={Clock}
@@ -1166,7 +1143,7 @@ const METRIC_OPTS: { key: SeriesMetric; label: string; unit: string; ratio: bool
   { key: 'delayPerIncident',  label: 'Delay / Incident',  unit: 'm',    ratio: true,  risingIsBad: true  },
   { key: 'avgArrival',        label: 'Avg Arrival',       unit: 'm',    ratio: true,  risingIsBad: true  },
   { key: 'avgDuration',       label: 'Avg Duration',      unit: 'm',    ratio: true,  risingIsBad: true  },
-  { key: 'pctSlaBreach',      label: '% SLA Breach',      unit: '%',    ratio: true,  risingIsBad: true  },
+  { key: 'pctSlaBreach',      label: '% Arrival SLA breach',      unit: '%',    ratio: true,  risingIsBad: true  },
 ]
 
 function isRatioMetric(m: SeriesMetric): boolean {
@@ -1979,12 +1956,13 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
 // dimension below the header. Drives the cross-filter drill-down loop —
 // click anything in a chart, see it land here, click the X to remove.
 
-function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onClearDate, onClearDelay, onClearAll }: {
+function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onRemoveIncidentType, onClearDate, onClearDelay, onClearAll }: {
   filters: AnalyticsFilters
   onRemoveCategory: (c: IncidentCategory) => void
   onRemoveArea: (a: string) => void
   onRemoveSeverity: (s: Severity) => void
   onRemoveSearch: (s: string) => void
+  onRemoveIncidentType: (label: string) => void
   onClearDate: () => void
   onClearDelay: () => void
   onClearAll: () => void
@@ -1993,7 +1971,8 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
   const hasDelay = filters.minDelay != null || filters.maxDelay != null
   const total =
     filters.categories.length + filters.areas.length + filters.severities.length +
-    filters.searches.length + (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0)
+    filters.searches.length + filters.incidentTypes.length +
+    (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0)
   if (total === 0) return null
 
   const chip = (key: string, label: string, onRemove: () => void, color?: string, title?: string) => (
@@ -2047,6 +2026,7 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
           ))}
           {filters.areas.map(a => chip(`area-${a}`, a, () => onRemoveArea(a), 'var(--nr-steel)'))}
           {filters.severities.map(s => chip(`sev-${s}`, s, () => onRemoveSeverity(s), SEVERITY_CONFIG[s]?.color))}
+          {filters.incidentTypes.map(t => chip(`itype-${t}`, t, () => onRemoveIncidentType(t), 'var(--nr-orange)'))}
           {filters.searches.map(t => chip(`q-${t}`, `"${t}"`, () => onRemoveSearch(t), 'var(--ink-300)'))}
         </div>
         <button onClick={onClearAll} className="ml-auto btn !py-1 !px-2 !text-[10px] shrink-0">Clear all</button>
@@ -2588,7 +2568,30 @@ function DelayDensityTable({ data, incidents, onDrillDown }: any) {
 }
 
 function DrillDownModal({ title, incidents, onClose }: { title: string; incidents: IncidentRow[]; onClose: () => void }) {
-  const sorted = [...incidents]
+  // Group by CCIL so multi-day continuations appear under their primary
+  const groups: { primary: IncidentRow; continuations: IncidentRow[] }[] = []
+  const seen = new Map<string, number>()     // ccil → group index
+  const noKey: IncidentRow[] = []            // rows with no CCIL
+
+  const byDate = [...incidents].sort((a, b) => a.report_date.localeCompare(b.report_date))
+  for (const inc of byDate) {
+    const key = inc.ccil?.trim()
+    if (!key) { noKey.push(inc); continue }
+    if (seen.has(key)) {
+      groups[seen.get(key)!].continuations.push(inc)
+    } else {
+      seen.set(key, groups.length)
+      groups.push({ primary: inc, continuations: [] })
+    }
+  }
+  // Uncategorised rows (no CCIL) each get their own group
+  for (const inc of noKey) groups.push({ primary: inc, continuations: [] })
+
+  // Sort groups newest-primary-first for display
+  groups.sort((a, b) => b.primary.report_date.localeCompare(a.primary.report_date))
+
+  const uniqueCount = groups.length
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
@@ -2596,41 +2599,58 @@ function DrillDownModal({ title, incidents, onClose }: { title: string; incident
         <div className="flex items-start justify-between p-4 border-b border-[var(--line)] shrink-0">
           <div>
             <h3 className="serif text-xl font-medium" style={{ color: 'var(--ink-100)' }}>{title}</h3>
-            <p className="label-micro mt-0.5">{sorted.length} incident{sorted.length !== 1 ? 's' : ''} in window</p>
+            <p className="label-micro mt-0.5">
+              {uniqueCount} incident{uniqueCount !== 1 ? 's' : ''} in window
+              {incidents.length > uniqueCount && ` · ${incidents.length - uniqueCount} carried over`}
+            </p>
           </div>
           <button onClick={onClose} className="btn !p-2 shrink-0"><X size={14} /></button>
         </div>
-        <div className="overflow-y-auto p-4 space-y-2 flex-1">
-          {sorted.length === 0 && <Empty msg="No matching incidents in window" />}
-          {sorted.map((inc) => (
-            <div key={inc.id} className="card !bg-[var(--bg-card-hi)] !border-[var(--line)] p-3 text-xs">
-              <div className="flex items-start gap-3">
-                <span className={`pill pill-${inc.severity.toLowerCase()} shrink-0`}>{inc.severity}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap mb-1">
-                    {inc.ccil && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL {inc.ccil}</span>}
-                    <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{inc.report_date}{inc.incident_start ? ` · ${inc.incident_start}` : ''}</span>
-                    {inc.area && <span className="text-[10px]" style={{ color: 'var(--ink-400)' }}>{inc.area}</span>}
-                    {inc.incident_type_label && (
-                      <span className="pill" style={{ background: `${CATEGORY_CONFIG[inc.category].color}20`, color: CATEGORY_CONFIG[inc.category].color, borderColor: `${CATEGORY_CONFIG[inc.category].color}50` }}>
-                        {inc.incident_type_label}
-                      </span>
+        <div className="overflow-y-auto p-4 space-y-3 flex-1">
+          {groups.length === 0 && <Empty msg="No matching incidents in window" />}
+          {groups.map(({ primary: inc, continuations }) => (
+            <div key={inc.id} className="rounded border border-[var(--line)] overflow-hidden">
+              {/* Primary row */}
+              <div className="card !rounded-none !border-0 !bg-[var(--bg-card-hi)] p-3 text-xs">
+                <div className="flex items-start gap-3">
+                  <span className={`pill pill-${inc.severity.toLowerCase()} shrink-0`}>{inc.severity}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      {inc.ccil && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL {inc.ccil}</span>}
+                      <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{inc.report_date}{inc.incident_start ? ` · ${inc.incident_start}` : ''}</span>
+                      {inc.area && <span className="text-[10px]" style={{ color: 'var(--ink-400)' }}>{inc.area}</span>}
+                      {inc.incident_type_label && (
+                        <span className="pill" style={{ background: `${CATEGORY_CONFIG[inc.category].color}20`, color: CATEGORY_CONFIG[inc.category].color, borderColor: `${CATEGORY_CONFIG[inc.category].color}50` }}>
+                          {inc.incident_type_label}
+                        </span>
+                      )}
+                    </div>
+                    <div className="font-medium truncate" style={{ color: 'var(--ink-200)' }}>{inc.title || '—'}</div>
+                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>{inc.location}</div>
+                    {inc.incident_duration != null && (
+                      <div className="text-[10px] mt-1 numeric-mono" style={{ color: 'var(--ink-500)' }}>
+                        Duration: {inc.incident_duration}m
+                        {inc.incident_duration > 0 && ` · Density: ${(inc.minutes_delay / inc.incident_duration).toFixed(1)} delay/min`}
+                      </div>
                     )}
                   </div>
-                  <div className="font-medium truncate" style={{ color: 'var(--ink-200)' }}>{inc.title || '—'}</div>
-                  <div className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>{inc.location}</div>
-                  {inc.incident_duration != null && (
-                    <div className="text-[10px] mt-1 numeric-mono" style={{ color: 'var(--ink-500)' }}>
-                      Duration: {inc.incident_duration}m
-                      {inc.incident_duration > 0 && ` · Density: ${(inc.minutes_delay / inc.incident_duration).toFixed(1)} delay/min`}
-                    </div>
-                  )}
-                </div>
-                <div className="text-right shrink-0">
-                  <div className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>DELAY</div>
-                  <div className="numeric-mono" style={{ color: 'var(--nr-orange)' }}>{inc.minutes_delay}m</div>
+                  <div className="text-right shrink-0">
+                    <div className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>DELAY</div>
+                    <div className="numeric-mono" style={{ color: 'var(--nr-orange)' }}>{inc.minutes_delay}m</div>
+                  </div>
                 </div>
               </div>
+              {/* Continuation rows */}
+              {continuations.map((c) => (
+                <div key={c.id} className="border-t border-[var(--line)] px-3 py-2 text-xs flex items-center gap-3" style={{ background: 'var(--bg-card)' }}>
+                  <span className="label-micro shrink-0" style={{ color: 'var(--ink-500)' }}>↪ carried over</span>
+                  <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{c.report_date}</span>
+                  <span className="truncate flex-1 text-[11px]" style={{ color: 'var(--ink-400)' }}>{c.title || c.location || '—'}</span>
+                  {c.delay_delta != null && c.delay_delta > 0 && (
+                    <span className="numeric-mono text-[10px] shrink-0" style={{ color: 'var(--nr-orange)' }}>+{c.delay_delta}m</span>
+                  )}
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -2868,11 +2888,146 @@ function DualBarChart({ data }: any) {
   )
 }
 
-function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
-  const [draft, setDraft]         = useState<AnalyticsFilters>(filters)
-  const [saveName, setSaveName]   = useState('')
+// ─── CalendarPicker ───────────────────────────────────────────────────────────
+// Inline calendar that expands in-flow inside the filter drawer so it never
+// overlaps the sticky Apply bar or clips against the panel edge.
+// value / onChange use ISO 'YYYY-MM-DD' strings.
+
+function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
+  value: string | undefined
+  onChange: (v: string | undefined) => void
+  placeholder?: string
+}) {
+  const [open, setOpen] = useState(false)
+
+  const seed = value ? new Date(value + 'T00:00:00') : new Date()
+  const [viewYear,  setViewYear]  = useState(seed.getFullYear())
+  const [viewMonth, setViewMonth] = useState(seed.getMonth())
+
+  useEffect(() => {
+    if (value) {
+      const d = new Date(value + 'T00:00:00')
+      setViewYear(d.getFullYear())
+      setViewMonth(d.getMonth())
+    }
+  }, [value])
+
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const DAYS   = ['Su','Mo','Tu','We','Th','Fr','Sa']
+
+  function prevMonth() {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) }
+    else setViewMonth(m => m - 1)
+  }
+  function nextMonth() {
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) }
+    else setViewMonth(m => m + 1)
+  }
+
+  const firstDow   = new Date(viewYear, viewMonth, 1).getDay()
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
+  const cells: (number | null)[] = [
+    ...Array(firstDow).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ]
+  while (cells.length % 7 !== 0) cells.push(null)
+
+  function select(day: number) {
+    const iso = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    onChange(iso)
+    setOpen(false)
+  }
+
+  const today = new Date().toISOString().slice(0, 10)
+  const displayLabel = value
+    ? (() => {
+        const [y, m, d] = value.split('-')
+        return `${parseInt(d, 10)} ${MONTHS[parseInt(m, 10) - 1]} ${y}`
+      })()
+    : placeholder
+
+  return (
+    <div>
+      {/* Trigger button */}
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="input w-full text-left flex items-center gap-2"
+        style={{ color: value ? 'var(--ink-100)' : 'var(--ink-500)', fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' }}
+      >
+        <ChevronDown size={11} style={{ opacity: 0.5, transform: open ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }} />
+        {displayLabel}
+      </button>
+
+      {/* Inline calendar — expands in document flow, no overlap */}
+      {open && (
+        <div
+          className="rounded border border-[var(--line-hi)] p-3 mt-1"
+          style={{ background: 'var(--bg-card)' }}
+        >
+          {/* Month / Year navigation */}
+          <div className="flex items-center justify-between mb-2">
+            <button type="button" onClick={prevMonth} className="btn !p-1"><ChevronLeft size={12} /></button>
+            <span className="text-xs font-medium" style={{ color: 'var(--ink-100)', fontFamily: 'JetBrains Mono, monospace' }}>
+              {MONTHS[viewMonth]} {viewYear}
+            </span>
+            <button type="button" onClick={nextMonth} className="btn !p-1"><ChevronRight size={12} /></button>
+          </div>
+          {/* Day-of-week headers */}
+          <div className="grid grid-cols-7 mb-1">
+            {DAYS.map(d => (
+              <div key={d} className="text-center text-[10px]" style={{ color: 'var(--ink-500)', fontFamily: 'JetBrains Mono, monospace' }}>{d}</div>
+            ))}
+          </div>
+          {/* Date cells */}
+          <div className="grid grid-cols-7">
+            {cells.map((day, i) => {
+              if (!day) return <div key={`e-${i}`} />
+              const iso = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+              const isSelected = iso === value
+              const isToday    = iso === today
+              return (
+                <button
+                  key={iso}
+                  type="button"
+                  onClick={() => select(day)}
+                  className="rounded text-[11px] py-1.5 transition-colors hover:bg-[var(--bg-card-hi)]"
+                  style={{
+                    fontFamily: 'JetBrains Mono, monospace',
+                    background: isSelected ? 'var(--nr-orange)' : isToday ? 'var(--bg-card-hi)' : undefined,
+                    color: isSelected ? '#fff' : isToday ? 'var(--nr-orange)' : 'var(--ink-200)',
+                    fontWeight: isSelected || isToday ? 600 : undefined,
+                  }}
+                >
+                  {day}
+                </button>
+              )
+            })}
+          </div>
+          {/* Clear */}
+          {value && (
+            <button
+              type="button"
+              onClick={() => { onChange(undefined); setOpen(false) }}
+              className="mt-2 text-[10px] w-full text-center"
+              style={{ color: 'var(--ink-400)' }}
+            >
+              Clear date
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, availableIncidentTypes, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
+  const [draft, setDraft]               = useState<AnalyticsFilters>(filters)
+  const [saveName, setSaveName]         = useState('')
   const [showSaveInput, setShowSaveInput] = useState(false)
-  useEffect(() => { setDraft(filters); setShowSaveInput(false); setSaveName('') }, [filters, open])
+  const [typeSearch, setTypeSearch]     = useState('')
+  const [typesExpanded, setTypesExpanded] = useState(false)
+  useEffect(() => { setDraft(filters); setShowSaveInput(false); setSaveName(''); setTypeSearch('') }, [filters, open])
 
   if (!open) return null
   return (
@@ -2961,6 +3116,73 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
             </div>
           </FilterGroup>
 
+          {/* CCIL incident type filter — derived from live data in the current window */}
+          {availableIncidentTypes && availableIncidentTypes.length > 0 && (
+            <FilterGroup label="CCIL Incident Type">
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  className="input w-full text-xs"
+                  placeholder="Search types…"
+                  value={typeSearch}
+                  onChange={(e) => { setTypeSearch(e.target.value); setTypesExpanded(true) }}
+                />
+                {draft.incidentTypes.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {draft.incidentTypes.map((t: string) => (
+                      <button
+                        key={t}
+                        onClick={() => setDraft({ ...draft, incidentTypes: draft.incidentTypes.filter((x: string) => x !== t) })}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px]"
+                        style={{ background: 'var(--nr-orange)20', border: '1px solid var(--nr-orange)', color: 'var(--nr-orange)', fontFamily: 'JetBrains Mono, monospace' }}
+                      >
+                        {t}<X size={9} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className={typesExpanded ? '' : 'max-h-48 overflow-y-auto'}>
+                  {(typeSearch
+                    ? availableIncidentTypes.filter((t: any) => t.label.toLowerCase().includes(typeSearch.toLowerCase()))
+                    : typesExpanded
+                      ? availableIncidentTypes
+                      : availableIncidentTypes.slice(0, 8)
+                  ).map((t: any) => (
+                    <button
+                      key={t.label}
+                      onClick={() => setDraft({
+                        ...draft,
+                        incidentTypes: draft.incidentTypes.includes(t.label)
+                          ? draft.incidentTypes.filter((x: string) => x !== t.label)
+                          : [...draft.incidentTypes, t.label],
+                      })}
+                      className="w-full flex items-center justify-between px-2 py-1.5 rounded-sm text-xs transition-colors hover:bg-[var(--bg-card-hi)] text-left"
+                      style={{
+                        background: draft.incidentTypes.includes(t.label) ? 'var(--nr-orange)15' : undefined,
+                        border: `1px solid ${draft.incidentTypes.includes(t.label) ? 'var(--nr-orange)' : 'var(--line)'}`,
+                        color: draft.incidentTypes.includes(t.label) ? 'var(--nr-orange)' : 'var(--ink-200)',
+                        marginBottom: '4px',
+                        fontFamily: 'JetBrains Mono, monospace',
+                      }}
+                    >
+                      <span className="truncate">{t.label}</span>
+                      <span className="shrink-0 ml-2 text-[10px]" style={{ color: 'var(--ink-400)' }}>{t.count}</span>
+                    </button>
+                  ))}
+                </div>
+                {!typeSearch && availableIncidentTypes.length > 8 && (
+                  <button
+                    onClick={() => setTypesExpanded(e => !e)}
+                    className="text-xs w-full text-center pt-1"
+                    style={{ color: 'var(--ink-400)' }}
+                  >
+                    {typesExpanded ? 'Show less' : `Show all ${availableIncidentTypes.length} types`}
+                  </button>
+                )}
+              </div>
+            </FilterGroup>
+          )}
+
           <FilterGroup label="Severity">
             <div className="flex gap-2 flex-wrap">
               {(Object.keys(SEVERITY_CONFIG) as Severity[]).map(s => (
@@ -3017,9 +3239,23 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
           </FilterGroup>
 
           <FilterGroup label="Custom Date Range">
-            <div className="flex gap-2">
-              <input type="date" className="input flex-1" value={draft.startDate || ''} onChange={(e) => setDraft({ ...draft, startDate: e.target.value })} />
-              <input type="date" className="input flex-1" value={draft.endDate || ''} onChange={(e) => setDraft({ ...draft, endDate: e.target.value })} />
+            <div className="space-y-2">
+              <div>
+                <label className="label-micro mb-1 block">From</label>
+                <CalendarPicker
+                  value={draft.startDate}
+                  onChange={(v) => setDraft({ ...draft, startDate: v })}
+                  placeholder="Start date"
+                />
+              </div>
+              <div>
+                <label className="label-micro mb-1 block">To</label>
+                <CalendarPicker
+                  value={draft.endDate}
+                  onChange={(v) => setDraft({ ...draft, endDate: v })}
+                  placeholder="End date"
+                />
+              </div>
             </div>
             <button
               onClick={() => setDraft({ ...draft, startDate: undefined, endDate: undefined })}
@@ -3299,7 +3535,7 @@ const COHORT_METRIC_OPTS: { key: CohortMetric; label: string; unit: string; risi
   { key: 'p50Delay',     label: 'Median delay',         unit: 'm', risingIsBad: true  },
   { key: 'avgArrival',   label: 'Avg arrival',          unit: 'm', risingIsBad: true  },
   { key: 'avgDuration',  label: 'Avg duration',         unit: 'm', risingIsBad: true  },
-  { key: 'pctSlaBreach', label: '% SLA breach',         unit: '%', risingIsBad: true  },
+  { key: 'pctSlaBreach', label: '% Arrival SLA breach',  unit: '%', risingIsBad: true  },
   { key: 'count',        label: 'Incident count',       unit: '',  risingIsBad: true  },
   { key: 'totalDelay',   label: 'Total delay',          unit: 'm', risingIsBad: true  },
 ]
@@ -3988,7 +4224,7 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
                   <th className="text-right pr-3">Median delay</th>
                   <th className="text-right pr-3">Avg arrival</th>
                   <th className="text-right pr-3">Avg duration</th>
-                  <th className="text-right pr-3">% SLA breach</th>
+                  <th className="text-right pr-3">% Arrival SLA breach</th>
                   <th className="text-right">Total delay</th>
                 </tr>
               </thead>
@@ -4101,7 +4337,7 @@ function ExploreTab({ incidents, areaOptions }: { incidents: IncidentRow[]; area
               <CompareTile label="Avg delay"     a={selectedCohort.avgDelay}    b={restStats.avgDelay}     unit="m" goodWhenLower />
               <CompareTile label="Avg arrival"   a={selectedCohort.avgArrival}  b={restStats.avgArrival}   unit="m" goodWhenLower />
               <CompareTile label="Avg duration"  a={selectedCohort.avgDuration} b={restStats.avgDuration}  unit="m" goodWhenLower />
-              <CompareTile label="% SLA breach"  a={selectedCohort.pctSlaBreach} b={restStats.pctSlaBreach} unit="%" goodWhenLower />
+              <CompareTile label="% Arrival SLA breach"  a={selectedCohort.pctSlaBreach} b={restStats.pctSlaBreach} unit="%" goodWhenLower />
             </div>
           )}
 

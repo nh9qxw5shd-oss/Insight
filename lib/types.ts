@@ -88,6 +88,7 @@ export interface AnalyticsFilters {
   areas: string[]                 // empty = all
   categories: IncidentCategory[]  // empty = all
   severities: Severity[]          // empty = all
+  incidentTypes: string[]         // incident_type_label values; empty = all
   searches: string[]              // free-text tokens matched across title / location / fault
   searchMode: 'and' | 'or'       // 'or' = any token matches; 'and' = all tokens must match
   minDelay?: number               // inclusive lower bound on per-incident delay minutes
@@ -99,6 +100,7 @@ export const DEFAULT_FILTERS: AnalyticsFilters = {
   areas: [],
   categories: [],
   severities: [],
+  incidentTypes: [],
   searches: [],
   searchMode: 'or',
 }
