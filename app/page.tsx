@@ -4063,6 +4063,15 @@ function fmtMins(m: number): string {
 // and refine any CCIL-captured values that need correcting. All review fields
 // are optional — a saved row just means an SNDM has touched the incident.
 
+// Incidents with effective delay below this threshold are auto-classified N/A
+// and excluded from the review progress counter. Users can still open them.
+const NA_DELAY_THRESHOLD = 400
+
+function isReviewAutoNA(incident: IncidentRow, review: IncidentReview | undefined): boolean {
+  const delay = review?.minutes_delay_override ?? incident.minutes_delay ?? 0
+  return delay < NA_DELAY_THRESHOLD
+}
+
 function ReviewTab({
   periods, reviewByIncidentId, teamMembersByIncidentId, teamWorkload, onSave, onDelete, demoMode, supabaseConfigured,
 }: {
@@ -4075,9 +4084,13 @@ function ReviewTab({
   demoMode: boolean
   supabaseConfigured: boolean
 }) {
-  const totalIncidents = periods.reduce((s, g) => s + g.totalIncidents, 0)
-  const totalReviewed  = periods.reduce((s, g) => s + g.totalReviewed, 0)
-  const reviewPct = totalIncidents > 0 ? (totalReviewed / totalIncidents) * 100 : 0
+  const allUnique = periods.flatMap(g => g.days.flatMap(d => d.incidents.filter(i => !i.is_continuation)))
+  const totalIncidents   = allUnique.length
+  const reviewable       = allUnique.filter(i => !isReviewAutoNA(i, reviewByIncidentId.get(i.id)))
+  const reviewableTotal  = reviewable.length
+  const naCount          = totalIncidents - reviewableTotal
+  const totalReviewed    = reviewable.filter(i => reviewByIncidentId.has(i.id)).length
+  const reviewPct        = reviewableTotal > 0 ? (totalReviewed / reviewableTotal) * 100 : 0
 
   return (
     <div className="space-y-6">
@@ -4106,10 +4119,15 @@ function ReviewTab({
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 stagger">
         <KPICard label="Open Log Periods" value={periods.length.toLocaleString()} icon={ClipboardList} />
-        <KPICard label="Incidents in Window" value={totalIncidents.toLocaleString()} icon={Activity} />
+        <KPICard
+          label="Incidents in Window"
+          value={totalIncidents.toLocaleString()}
+          subValue={naCount > 0 ? `${naCount} auto N/A (< ${NA_DELAY_THRESHOLD} min)` : undefined}
+          icon={Activity}
+        />
         <KPICard
           label="Reviewed"
-          value={`${totalReviewed.toLocaleString()} / ${totalIncidents.toLocaleString()}`}
+          value={`${totalReviewed.toLocaleString()} / ${reviewableTotal.toLocaleString()}`}
           subValue={`${reviewPct.toFixed(0)}% complete`}
           icon={ClipboardCheck}
           accent
@@ -4196,8 +4214,13 @@ function PeriodGroupRow({
   canSave: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const complete = group.totalIncidents > 0 && group.totalReviewed >= group.totalIncidents
-  const pct = group.totalIncidents > 0 ? (group.totalReviewed / group.totalIncidents) * 100 : 0
+
+  const groupReviewable = group.days.reduce((s, d) =>
+    s + d.incidents.filter(i => !i.is_continuation && !isReviewAutoNA(i, reviewByIncidentId.get(i.id))).length, 0)
+  const groupReviewed   = group.days.reduce((s, d) =>
+    s + d.incidents.filter(i => !i.is_continuation && !isReviewAutoNA(i, reviewByIncidentId.get(i.id)) && reviewByIncidentId.has(i.id)).length, 0)
+  const complete = groupReviewable > 0 && groupReviewed >= groupReviewable
+  const pct      = groupReviewable > 0 ? (groupReviewed / groupReviewable) * 100 : 0
 
   return (
     <div className="rounded border border-[var(--line)] overflow-hidden">
@@ -4234,7 +4257,7 @@ function PeriodGroupRow({
                 <div className="h-full" style={{ width: `${pct}%`, background: complete ? 'var(--nr-green)' : 'var(--nr-orange)' }} />
               </div>
               <span className="numeric-mono text-[10px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-300)' }}>
-                {group.totalReviewed}/{group.totalIncidents}
+                {groupReviewed}/{groupReviewable}
               </span>
             </div>
           </div>
@@ -4271,10 +4294,13 @@ function ReviewDayRow({
   canSave: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const complete = day.incidentCount > 0 && day.reviewedCount >= day.incidentCount
 
   const uniques = day.incidents.filter(i => !i.is_continuation)
                                 .sort((a, b) => (a.incident_start || '').localeCompare(b.incident_start || ''))
+  const reviewableUniques = uniques.filter(i => !isReviewAutoNA(i, reviewByIncidentId.get(i.id)))
+  const dayReviewedCount  = reviewableUniques.filter(i => reviewByIncidentId.has(i.id)).length
+  const dayReviewableCount = reviewableUniques.length
+  const complete = dayReviewableCount > 0 && dayReviewedCount >= dayReviewableCount
 
   return (
     <div className="border-b border-[var(--line)] last:border-b-0">
@@ -4289,7 +4315,7 @@ function ReviewDayRow({
         <span className="label-micro" style={{ color: 'var(--ink-500)' }}>{day.incidentCount} incident{day.incidentCount !== 1 ? 's' : ''}</span>
         <span className="label-micro" style={{ color: 'var(--ink-500)' }}>{fmtMins(day.totalDelay)} delay</span>
         <span className="ml-auto numeric-mono text-[10px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-400)' }}>
-          {day.reviewedCount}/{day.incidentCount} reviewed
+          {dayReviewedCount}/{dayReviewableCount} reviewed
         </span>
       </button>
 
@@ -4327,19 +4353,28 @@ function ReviewIncidentRow({
   canSave: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const cfg = CATEGORY_CONFIG[incident.category]
+  const cfg      = CATEGORY_CONFIG[incident.category]
   const reviewed = !!review
-  const cls = review?.incident_classification ?? null
+  const cls      = review?.incident_classification ?? null
+  const autoNA   = isReviewAutoNA(incident, review)
 
   return (
-    <div className="rounded border border-[var(--line)] overflow-hidden" style={{ background: 'var(--bg-card)' }}>
+    <div
+      className="rounded border overflow-hidden"
+      style={{
+        background: 'var(--bg-card)',
+        borderColor: autoNA ? 'var(--line)' : 'var(--line)',
+        opacity: autoNA ? 0.6 : 1,
+      }}
+    >
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-start gap-3 px-3 py-2.5 text-left text-xs hover:bg-[var(--bg-card-hi)] transition-colors"
+        title={autoNA ? `Auto N/A — delay below ${NA_DELAY_THRESHOLD} min. Click to open and override.` : undefined}
       >
         <ChevronDown size={11} className="mt-1" style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
-        <span className={`pill pill-${incident.severity.toLowerCase()} shrink-0`}>{incident.severity}</span>
+        <span className={`pill pill-${incident.severity.toLowerCase()} shrink-0`} style={autoNA ? { filter: 'grayscale(0.7)' } : undefined}>{incident.severity}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap mb-0.5">
             {incident.ccil && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL {incident.ccil}</span>}
@@ -4349,23 +4384,35 @@ function ReviewIncidentRow({
             </span>
             {incident.area && <span className="text-[10px]" style={{ color: 'var(--ink-400)' }}>{incident.area}</span>}
           </div>
-          <div className="font-medium truncate" style={{ color: 'var(--ink-200)' }}>
+          <div className="font-medium truncate" style={{ color: autoNA ? 'var(--ink-400)' : 'var(--ink-200)' }}>
             {review?.title_override ?? incident.title ?? '—'}
           </div>
           {(review?.location_override || incident.location) && (
-            <div className="text-[10px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+            <div className="text-[10px] mt-0.5" style={{ color: 'var(--ink-500)' }}>
               {review?.location_override ?? incident.location}
             </div>
           )}
         </div>
         <div className="flex items-center gap-3 shrink-0">
           {cls && <ClassificationPill value={cls} />}
-          {reviewed
-            ? <span className="pill text-[9px]" style={{ background: 'rgba(39, 174, 96, 0.12)', color: 'var(--nr-green)', borderColor: 'rgba(39, 174, 96, 0.4)' }}><ClipboardCheck size={9} /> Reviewed</span>
-            : <span className="pill text-[9px]" style={{ background: 'rgba(122, 139, 168, 0.12)', color: 'var(--ink-400)', borderColor: 'var(--line)' }}>Pending</span>}
+          {autoNA && !reviewed && (
+            <span className="pill text-[9px]" style={{ background: 'rgba(122,139,168,0.08)', color: 'var(--ink-500)', borderColor: 'var(--line)', fontStyle: 'italic' }}>
+              Auto N/A
+            </span>
+          )}
+          {reviewed && (
+            <span className="pill text-[9px]" style={{ background: 'rgba(39,174,96,0.12)', color: 'var(--nr-green)', borderColor: 'rgba(39,174,96,0.4)' }}>
+              <ClipboardCheck size={9} /> Reviewed
+            </span>
+          )}
+          {!autoNA && !reviewed && (
+            <span className="pill text-[9px]" style={{ background: 'rgba(122,139,168,0.12)', color: 'var(--ink-400)', borderColor: 'var(--line)' }}>
+              Pending
+            </span>
+          )}
           <div className="text-right w-16">
             <div className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>DELAY</div>
-            <div className="numeric-mono text-[11px]" style={{ color: 'var(--nr-orange)' }}>
+            <div className="numeric-mono text-[11px]" style={{ color: autoNA ? 'var(--ink-400)' : 'var(--nr-orange)' }}>
               {(review?.minutes_delay_override ?? incident.minutes_delay)}m
             </div>
           </div>
@@ -4373,14 +4420,22 @@ function ReviewIncidentRow({
       </button>
 
       {open && (
-        <ReviewForm
-          incident={incident}
-          review={review}
-          teamMembers={teamMembers}
-          onSave={onSave}
-          onDelete={onDelete}
-          canSave={canSave}
-        />
+        <>
+          {autoNA && !reviewed && (
+            <div className="px-3 py-2 text-[11px] flex items-center gap-2 border-t border-[var(--line)]" style={{ background: 'var(--bg-card-hi)', color: 'var(--ink-400)' }}>
+              <AlertTriangle size={11} style={{ color: 'var(--ink-500)' }} />
+              This incident is auto-classified N/A (delay below {NA_DELAY_THRESHOLD} min) and excluded from review counts. Fill in the form below to record a manual review.
+            </div>
+          )}
+          <ReviewForm
+            incident={incident}
+            review={review}
+            teamMembers={teamMembers}
+            onSave={onSave}
+            onDelete={onDelete}
+            canSave={canSave}
+          />
+        </>
       )}
     </div>
   )
