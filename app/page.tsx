@@ -901,22 +901,30 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
 // ─── Safety tab ──────────────────────────────────────────────────────────────
 
 function SafetyTab({ kpis, trend, cats, data, onAddCategoryFilter, decompose }: any) {
-  const safetyOnly = cats.filter((c: any) => SAFETY_CATEGORIES.includes(c.category))
+  // Operational safety (excluding PAX which is tracked separately)
+  const CORE_SAFETY = SAFETY_CATEGORIES.filter(c => c !== 'PASSENGER_INJURY')
+  const safetyCore = cats.filter((c: any) => CORE_SAFETY.includes(c.category))
+  const safetyPax  = cats.filter((c: any) => c.category === 'PASSENGER_INJURY')
   const safetyCritical = data.incidents.filter((i: any) => SAFETY_CATEGORIES.includes(i.category) && !i.is_continuation)
+  const paxCount   = data.incidents.filter((i: any) => i.category === 'PASSENGER_INJURY' && !i.is_continuation).length
+  const coreCount  = safetyCritical.length - paxCount
 
-  // Build radar dataset — current vs prior window
-  const safetyRadar = SAFETY_CATEGORIES.map(cat => ({
+  // Radar excludes PAX so operational categories are readable at scale
+  const coreRadar = CORE_SAFETY.filter(c => c !== 'FATALITY').map(cat => ({
     category: CATEGORY_CONFIG[cat].short,
-    current: data.incidents.filter((i: any) => i.category === cat && !i.is_continuation).length,
+    current:  data.incidents.filter((i: any) => i.category === cat && !i.is_continuation).length,
     previous: data.prevIncidents.filter((i: any) => i.category === cat && !i.is_continuation).length,
   }))
 
+  const paxIncidents = data.incidents.filter((i: any) => i.category === 'PASSENGER_INJURY' && !i.is_continuation)
+
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 stagger">
-        <KPICard label="Safety-Critical Events" value={kpis.safetyCriticalCount} delta={kpis.safetyDeltaPct} icon={AlertTriangle} deltaInverted critical accent decompose={decompose} metric="safety" />
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 stagger">
+        <KPICard label="Safety-Critical (Total)" value={kpis.safetyCriticalCount} delta={kpis.safetyDeltaPct} icon={AlertTriangle} deltaInverted critical accent decompose={decompose} metric="safety" />
+        <KPICard label="Operational Safety" value={coreCount} icon={AlertTriangle} hint="Excl. passenger injuries" />
+        <KPICard label="PAX / Public Injuries" value={paxCount} icon={AlertTriangle} critical={paxCount > 0} hint="Passenger &amp; public injuries" />
         <KPICard label="SPADs" value={data.incidents.filter((i: any) => i.category === 'SPAD' && !i.is_continuation).length} icon={AlertTriangle} />
-        <KPICard label="Near Miss" value={data.incidents.filter((i: any) => i.category === 'NEAR_MISS' && !i.is_continuation).length} icon={AlertTriangle} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -940,9 +948,9 @@ function SafetyTab({ kpis, trend, cats, data, onAddCategoryFilter, decompose }: 
           </ResponsiveContainer>
         </Card>
 
-        <Card title="Current vs Previous Window" subtitle="Safety-critical category radar">
+        <Card title="Operational Safety Radar" subtitle="Excl. PAX — current vs previous window">
           <ResponsiveContainer width="100%" height={280}>
-            <RadarChart data={safetyRadar}>
+            <RadarChart data={coreRadar}>
               <PolarGrid stroke="var(--line)" />
               <PolarAngleAxis dataKey="category" tick={{ fill: 'var(--ink-300)', fontSize: 10, fontFamily: 'JetBrains Mono' }} />
               <PolarRadiusAxis tick={false} axisLine={false} />
@@ -954,11 +962,31 @@ function SafetyTab({ kpis, trend, cats, data, onAddCategoryFilter, decompose }: 
         </Card>
       </div>
 
-      <Card title="Safety Category Breakdown" subtitle="By count and total delay impact · click to pin filter">
-        <SafetyTable rows={safetyOnly} onCategoryClick={onAddCategoryFilter} />
+      <Card title="Operational Safety Breakdown" subtitle="SPAD · TPWS · Near Miss · Derailment · Person Struck etc. · click to pin filter">
+        <SafetyTable rows={safetyCore} onCategoryClick={onAddCategoryFilter} />
       </Card>
 
-      <Card title="Recent Safety-Critical Events" subtitle="Latest 10 in window">
+      <Card
+        title="Passenger & Public Injuries (PAX)"
+        subtitle="Tracked separately — high volume category; click to pin filter"
+        right={
+          <span className="pill text-[10px]" style={{ background: '#E0520615', color: '#E05206', border: '1px solid #E0520640' }}>
+            {paxCount} incident{paxCount !== 1 ? 's' : ''}
+          </span>
+        }
+      >
+        {safetyPax.length > 0
+          ? <SafetyTable rows={safetyPax} onCategoryClick={onAddCategoryFilter} />
+          : <Empty msg="No passenger injury incidents in window" />}
+        {paxIncidents.length > 0 && (
+          <div className="mt-4">
+            <p className="label-micro mb-2" style={{ color: 'var(--ink-400)' }}>Recent PAX incidents</p>
+            <IncidentList rows={paxIncidents.slice(-10).reverse()} />
+          </div>
+        )}
+      </Card>
+
+      <Card title="Recent Safety-Critical Events" subtitle="Latest 10 across all categories">
         <IncidentList rows={safetyCritical.slice(-10).reverse()} />
       </Card>
     </div>

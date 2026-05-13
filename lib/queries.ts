@@ -835,13 +835,20 @@ export function deriveLocationHotspots(data: RawData, limit = 12): LocationDatum
     .slice(0, limit)
 }
 
+// "N/A", "NA" etc. are database markers for "no fault number applicable" — not real identifiers.
+function isValidFaultNumber(fn: string | null | undefined): fn is string {
+  if (!fn) return false
+  const n = fn.trim().toLowerCase()
+  return n !== '' && n !== 'n/a' && n !== 'na' && n !== 'n-a' && n !== 'nil' && n !== 'none'
+}
+
 export function deriveRepeatFaults(data: RawData, limit = 10): RepeatFault[] {
   const byFault = new Map<string, RepeatFault>()
   // Group by fault_number across continuations & first-seen alike — a recurring
   // fault number genuinely is the same asset failing repeatedly.
   for (const i of data.incidents) {
     const fn = i.fault_number?.trim()
-    if (!fn) continue
+    if (!isValidFaultNumber(fn)) continue
     const agg = byFault.get(fn) ?? {
       faultNumber: fn,
       occurrences: 0,
@@ -1158,7 +1165,7 @@ export function deriveSignals(data: RawData): Signal[] {
   const faultDays = new Map<string, Set<string>>()
   for (const i of data.incidents) {
     const fn = i.fault_number?.trim()
-    if (!fn) continue
+    if (!isValidFaultNumber(fn)) continue
     const days = faultDays.get(fn) ?? new Set<string>()
     days.add(i.report_date)
     faultDays.set(fn, days)
