@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, ClipboardList, Clock, Compass, Download, FileText, Filter, GitBranch, Layers, List, MapPin,
-  Minus, RefreshCw, Route, Search, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
+  Minus, Moon, RefreshCw, Route, Search, Sun, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
@@ -125,6 +125,7 @@ export default function InsightDashboard() {
   const [error, setError] = useState<string | null>(null)
   const [demoMode, setDemoMode] = useState(false)
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [trendChart, setTrendChart] = useState<ChartKind>('area')
   const [distChart, setDistChart] = useState<DistributionKind>('donut')
   const [drillDown, setDrillDown] = useState<{ title: string; incidents: IncidentRow[] } | null>(null)
@@ -147,6 +148,18 @@ export default function InsightDashboard() {
     if (urlFilters) setFilters(urlFilters)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Sync theme from localStorage after hydration, then apply on every change.
+  useEffect(() => {
+    const saved = (localStorage.getItem('theme') || 'dark') as 'dark' | 'light'
+    setTheme(saved)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('theme', theme)
+  }, [theme])
 
   // Keep URL in sync with filters
   useEffect(() => { setFiltersInUrl(filters) }, [filters])
@@ -399,6 +412,8 @@ export default function InsightDashboard() {
         }
         onRefresh={() => setFilters({ ...filters })}
         onExport={effectiveData ? () => exportCSV(effectiveData.incidents, effectiveData.windowFrom, effectiveData.windowTo) : undefined}
+        theme={theme}
+        onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
       />
 
       <ActiveFilterChips
@@ -509,11 +524,13 @@ function Header(props: {
   onOpenFilters: () => void
   onRefresh: () => void
   onExport?: () => void
+  theme: 'dark' | 'light'
+  onToggleTheme: () => void
 }) {
   const customRange = !!props.startDate
 
   return (
-    <header className="border-b border-[var(--line)] bg-gradient-to-b from-[#0B1226] to-transparent">
+    <header className="border-b border-[var(--line)] header-gradient">
       <div className="max-w-[1480px] mx-auto px-6 py-7 flex items-start justify-between gap-6 flex-wrap">
         <div>
           <div className="flex items-center gap-3 mb-2">
@@ -588,6 +605,14 @@ function Header(props: {
           <button onClick={props.onRefresh} className="btn" disabled={props.loading}>
             <RefreshCw size={12} className={props.loading ? 'animate-spin' : ''} />
             Refresh
+          </button>
+
+          <button
+            onClick={props.onToggleTheme}
+            className="btn"
+            title={props.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {props.theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
           </button>
 
           <div className="flex items-center gap-2 px-3 py-1.5 border border-[var(--line)] rounded">
