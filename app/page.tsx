@@ -1186,40 +1186,25 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
         </Card>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {ops && ops.length > 0 && (
-          <Card
-            title={isCancMode ? 'Operator Cancellation Impact' : 'Operator Delay Impact'}
-            subtitle={isCancMode ? 'Total cancellations per train operator' : 'Total delay minutes per train operator'}
-          >
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={ops} layout="vertical" margin={{ left: 10, right: 30 }}>
-                <CartesianGrid strokeDasharray="2 6" horizontal={false} />
-                <XAxis type="number" />
-                <YAxis dataKey="company" type="category" width={80} tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
-                <Tooltip content={<CustomTooltip />} />
-                {isCancMode
-                  ? <Bar dataKey="cancellations" name="Cancellations" fill="#4A6FA5" radius={[0, 2, 2, 0]} />
-                  : <Bar dataKey="delayMins" name="Delay (mins)" fill="#E05206" radius={[0, 2, 2, 0]} />
-                }
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
-        )}
-        {responderLoad && responderLoad.length > 0 && (
-          <Card title="Responder Workload" subtitle="Incidents handled per control room initials">
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={responderLoad}>
-                <CartesianGrid strokeDasharray="2 6" />
-                <XAxis dataKey="initials" tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
-                <YAxis allowDecimals={false} />
-                <Tooltip content={<CustomTooltip />} />
-                <Bar dataKey="incidentCount" name="Incidents" fill="#4A6FA5" radius={[2, 2, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
-        )}
-      </div>
+      {ops && ops.length > 0 && (
+        <Card
+          title={isCancMode ? 'Operator Cancellation Impact' : 'Operator Delay Impact'}
+          subtitle={isCancMode ? 'Total cancellations per train operator' : 'Total delay minutes per train operator'}
+        >
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={ops} layout="vertical" margin={{ left: 10, right: 30 }}>
+              <CartesianGrid strokeDasharray="2 6" horizontal={false} />
+              <XAxis type="number" />
+              <YAxis dataKey="company" type="category" width={80} tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
+              <Tooltip content={<CustomTooltip />} />
+              {isCancMode
+                ? <Bar dataKey="cancellations" name="Cancellations" fill="#4A6FA5" radius={[0, 2, 2, 0]} />
+                : <Bar dataKey="delayMins" name="Delay (mins)" fill="#E05206" radius={[0, 2, 2, 0]} />
+              }
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+      )}
 
       <DelayThresholdSplitter incidents={incidents} />
     </div>
