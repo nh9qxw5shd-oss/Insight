@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
-  ClipboardCheck, ClipboardList, Clock, Compass, Download, FileText, Filter, GitBranch, Layers, List, MapPin,
+  ClipboardCheck, ClipboardList, Clock, Compass, Download, FileText, Filter, FlaskConical, GitBranch, Layers, List, MapPin,
   Minus, Moon, RefreshCw, Route, Search, Sun, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -57,10 +57,11 @@ import {
 import { buildReportPlan } from '@/lib/reports/builder'
 import { renderReportDocument } from '@/lib/reports/html'
 import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/print'
+import { DistillationTab } from './distillation-tab'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'explore' | 'analytics' | 'review' | 'reports'
+type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'explore' | 'analytics' | 'review' | 'reports' | 'distillation'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -72,8 +73,9 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'trends',      label: 'Trends',      icon: GitBranch },
   { id: 'explore',     label: 'Explore',     icon: Compass },
   { id: 'analytics',   label: 'Analytics',   icon: BarChart2 },
-  { id: 'review',      label: 'Review',      icon: ClipboardCheck },
-  { id: 'reports',     label: 'Reports',     icon: FileText },
+  { id: 'review',       label: 'Review',       icon: ClipboardCheck },
+  { id: 'reports',      label: 'Reports',      icon: FileText },
+  { id: 'distillation', label: 'Distillation', icon: FlaskConical },
 ]
 
 // ─── Window navigation helper ────────────────────────────────────────────────
@@ -478,7 +480,8 @@ export default function InsightDashboard() {
                     />
                   </>
             )}
-            {tab === 'reports'     && <ReportsTab data={effectiveData} filters={filters} demoMode={demoMode} />}
+            {tab === 'reports'      && <ReportsTab data={effectiveData} filters={filters} demoMode={demoMode} />}
+            {tab === 'distillation' && <DistillationTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
           </>
         )}
       </div>
