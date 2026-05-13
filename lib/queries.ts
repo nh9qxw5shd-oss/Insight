@@ -354,12 +354,14 @@ export function deriveTrend(data: RawData): TrendPoint[] {
   const startMs = new Date(data.windowFrom + 'T00:00:00Z').getTime()
   for (let i = 0; i < data.windowDays; i++) {
     const k = new Date(startMs + i * 86_400_000).toISOString().slice(0, 10)
-    byDate.set(k, { date: k, incidents: 0, delayMins: 0, safetyCritical: 0 })
+    byDate.set(k, { date: k, incidents: 0, delayMins: 0, safetyCritical: 0, cancelled: 0, partCancelled: 0 })
   }
   for (const inc of data.incidents) {
     const pt = byDate.get(inc.report_date)
     if (!pt) continue
-    pt.delayMins += effectiveDelay(inc)
+    pt.delayMins      += effectiveDelay(inc)
+    pt.cancelled      += (inc.cancelled      || 0)
+    pt.partCancelled  += (inc.part_cancelled || 0)
     if (!inc.is_continuation) {
       pt.incidents += 1
       if (SAFETY_CATEGORIES.includes(inc.category)) pt.safetyCritical += 1

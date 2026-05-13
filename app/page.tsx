@@ -408,7 +408,8 @@ export default function InsightDashboard() {
           filters.areas.length + filters.categories.length +
           filters.severities.length + filters.searches.length +
           filters.incidentTypes.length + filters.staffNames.length +
-          (filters.minDelay != null || filters.maxDelay != null ? 1 : 0)
+          (filters.minDelay != null || filters.maxDelay != null ? 1 : 0) +
+          (filters.metricFocus === 'cancellations' ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
         onExport={effectiveData ? () => exportCSV(effectiveData.incidents, effectiveData.windowFrom, effectiveData.windowTo) : undefined}
@@ -452,7 +453,7 @@ export default function InsightDashboard() {
           <>
             {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={effectiveData} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
-            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} />}
+            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} metricFocus={filters.metricFocus} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
             {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} staffPatterns={staffPatterns} />}
             {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={effectiveData.incidents} onDrillDown={setDrillDown} chains={chains} />}
@@ -1020,13 +1021,101 @@ function SafetyTab({ kpis, trend, cats, data, onAddCategoryFilter, decompose }: 
 
 // ─── Performance tab ─────────────────────────────────────────────────────────
 
-function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, ops, attribution, chart, setChart, incidents, onDrillDown, onDateClick, decompose }: any) {
+function DelayThresholdSplitter({ incidents }: { incidents: any[] }) {
+  const [threshold, setThreshold] = useState(200)
+  const [input, setInput]         = useState('200')
+
+  const validThreshold = threshold > 0
+
+  const above = incidents.filter(i => (i.minutes_delay ?? 0) >  threshold)
+  const below = incidents.filter(i => (i.minutes_delay ?? 0) <= threshold)
+
+  const stats = (group: any[]) => {
+    const count     = group.length
+    const total     = group.reduce((s: number, i: any) => s + (i.minutes_delay ?? 0), 0)
+    const avg       = count > 0 ? total / count : 0
+    const pct       = incidents.length > 0 ? (count / incidents.length) * 100 : 0
+    const delayPct  = incidents.reduce((s: number, i: any) => s + (i.minutes_delay ?? 0), 0)
+    const delayShare = delayPct > 0 ? (total / delayPct) * 100 : 0
+    return { count, total, avg, pct, delayShare }
+  }
+
+  const aboveStats = stats(above)
+  const belowStats = stats(below)
+
+  return (
+    <Card title="Delay Threshold Analysis" subtitle="Split incidents above and below a delay demarcation line">
+      <div className="flex items-end gap-3 mb-6">
+        <div>
+          <label className="label-micro mb-1 block">Threshold (minutes)</label>
+          <input
+            type="number"
+            min={1}
+            className="input w-36"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onBlur={() => {
+              const v = parseInt(input, 10)
+              if (!isNaN(v) && v > 0) setThreshold(v)
+              else setInput(String(threshold))
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const v = parseInt(input, 10)
+                if (!isNaN(v) && v > 0) setThreshold(v)
+                else setInput(String(threshold));
+                (e.target as HTMLInputElement).blur()
+              }
+            }}
+          />
+        </div>
+        <div className="text-xs pb-2" style={{ color: 'var(--ink-400)' }}>
+          Splitting {incidents.length} incident{incidents.length !== 1 ? 's' : ''} at {threshold} min
+        </div>
+      </div>
+
+      {validThreshold && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {[
+            { label: `Above ${threshold} min`, s: aboveStats, color: 'var(--nr-orange)', bg: 'rgba(224,82,6,0.08)', border: 'rgba(224,82,6,0.35)' },
+            { label: `At or below ${threshold} min`, s: belowStats, color: 'var(--nr-steel)', bg: 'rgba(74,111,165,0.08)', border: 'rgba(74,111,165,0.3)' },
+          ].map(({ label, s, color, bg, border }) => (
+            <div key={label} className="rounded p-4 space-y-3" style={{ background: bg, border: `1px solid ${border}` }}>
+              <div className="label-micro" style={{ color }}>{label}</div>
+              <div className="grid grid-cols-2 gap-y-3">
+                <div>
+                  <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Incidents</div>
+                  <div className="numeric text-2xl font-light" style={{ color: 'var(--ink-100)' }}>{s.count.toLocaleString()}</div>
+                  <div className="text-[10px] numeric-mono" style={{ color: 'var(--ink-400)' }}>{s.pct.toFixed(1)}% of total</div>
+                </div>
+                <div>
+                  <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Total Delay</div>
+                  <div className="numeric text-2xl font-light" style={{ color: 'var(--ink-100)' }}>{s.total.toLocaleString()}</div>
+                  <div className="text-[10px] numeric-mono" style={{ color: 'var(--ink-400)' }}>{s.delayShare.toFixed(1)}% of delay</div>
+                </div>
+                <div>
+                  <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Avg Delay</div>
+                  <div className="numeric-mono text-lg font-semibold" style={{ color }}>{s.count > 0 ? Math.round(s.avg).toLocaleString() : '—'} min</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, ops, attribution, chart, setChart, incidents, onDrillDown, onDateClick, decompose, metricFocus }: any) {
+  const [attrExpanded, setAttrExpanded] = useState(false)
+  const isCancMode = metricFocus === 'cancellations'
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 stagger">
-        <KPICard label="Total Delay (mins)" value={kpis.totalDelayMins.toLocaleString()} delta={kpis.delayDeltaPct} icon={Clock} deltaInverted accent decompose={decompose} metric="delay" />
-        <KPICard label="Cancelled" value={kpis.totalCancelled} icon={X} />
-        <KPICard label="Part Cancelled" value={kpis.totalPartCancelled} icon={X} />
+        <KPICard label="Total Delay (mins)" value={kpis.totalDelayMins.toLocaleString()} delta={kpis.delayDeltaPct} icon={Clock} deltaInverted accent={!isCancMode} decompose={decompose} metric="delay" />
+        <KPICard label="Cancelled" value={kpis.totalCancelled} icon={X} accent={isCancMode} />
+        <KPICard label="Part Cancelled" value={kpis.totalPartCancelled} icon={Minus} accent={isCancMode} />
         <KPICard
           label="Median Arrival"
           value={kpis.medianArrivalMins != null ? `${kpis.medianArrivalMins} min` : '—'}
@@ -1041,9 +1130,15 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
         />
       </div>
 
-      <Card title="Delay Minutes — Daily" subtitle="Aggregate impact · change-points marked" right={<ChartTypeToggle value={chart} onChange={setChart} />} className="tick-corners">
-        <TrendChart data={trend} kind={chart} dataKey="delayMins" gradient="orange" onDateClick={onDateClick} changePoints={changePoints} />
-      </Card>
+      {isCancMode ? (
+        <Card title="Cancellations — Daily" subtitle="Cancelled and part-cancelled trains per day" right={<ChartTypeToggle value={chart} onChange={setChart} />} className="tick-corners">
+          <CancellationsTrendChart data={trend} kind={chart} />
+        </Card>
+      ) : (
+        <Card title="Delay Minutes — Daily" subtitle="Aggregate impact · change-points marked" right={<ChartTypeToggle value={chart} onChange={setChart} />} className="tick-corners">
+          <TrendChart data={trend} kind={chart} dataKey="delayMins" gradient="orange" onDateClick={onDateClick} changePoints={changePoints} />
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card title="Response-Time Distribution" subtitle="Mins from incident start">
@@ -1059,19 +1154,33 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
           <div className="space-y-2">
             {(() => {
               const max = attribution[0]?.totalDelay || 1
-              return attribution.map((a: any, i: number) => (
-                <div key={i} className="grid grid-cols-12 gap-3 items-center text-xs py-1.5 border-b border-[var(--line)] last:border-0">
-                  <div className="col-span-2 numeric-mono text-[10px] font-bold" style={{ color: 'var(--nr-orange)' }}>{a.code}</div>
-                  <div className="col-span-4 truncate" style={{ color: 'var(--ink-200)' }}>{a.label}</div>
-                  <div className="col-span-4">
-                    <div className="h-1.5 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden">
-                      <div className="h-full rounded-sm" style={{ width: `${(a.totalDelay / max) * 100}%`, background: 'var(--nr-orange)' }} />
+              const visible = attrExpanded ? attribution : attribution.slice(0, 5)
+              return (
+                <>
+                  {visible.map((a: any, i: number) => (
+                    <div key={i} className="grid grid-cols-12 gap-3 items-center text-xs py-1.5 border-b border-[var(--line)] last:border-0">
+                      <div className="col-span-2 numeric-mono text-[10px] font-bold" style={{ color: 'var(--nr-orange)' }}>{a.code}</div>
+                      <div className="col-span-4 truncate" style={{ color: 'var(--ink-200)' }}>{a.label}</div>
+                      <div className="col-span-4">
+                        <div className="h-1.5 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden">
+                          <div className="h-full rounded-sm" style={{ width: `${(a.totalDelay / max) * 100}%`, background: 'var(--nr-orange)' }} />
+                        </div>
+                      </div>
+                      <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-400)' }}>{a.incidentCount}</div>
+                      <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-100)' }}>{a.pct.toFixed(1)}%</div>
                     </div>
-                  </div>
-                  <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-400)' }}>{a.incidentCount}</div>
-                  <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-100)' }}>{a.pct.toFixed(1)}%</div>
-                </div>
-              ))
+                  ))}
+                  {attribution.length > 5 && (
+                    <button
+                      onClick={() => setAttrExpanded(e => !e)}
+                      className="text-xs w-full text-center pt-2"
+                      style={{ color: 'var(--ink-400)' }}
+                    >
+                      {attrExpanded ? 'Show top 5 only' : `Show all ${attribution.length} codes`}
+                    </button>
+                  )}
+                </>
+              )
             })()}
           </div>
         </Card>
@@ -1079,14 +1188,20 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {ops && ops.length > 0 && (
-          <Card title="Operator Delay Impact" subtitle="Total delay minutes per train operator">
+          <Card
+            title={isCancMode ? 'Operator Cancellation Impact' : 'Operator Delay Impact'}
+            subtitle={isCancMode ? 'Total cancellations per train operator' : 'Total delay minutes per train operator'}
+          >
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={ops} layout="vertical" margin={{ left: 10, right: 30 }}>
                 <CartesianGrid strokeDasharray="2 6" horizontal={false} />
                 <XAxis type="number" />
                 <YAxis dataKey="company" type="category" width={80} tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
                 <Tooltip content={<CustomTooltip />} />
-                <Bar dataKey="delayMins" name="Delay (mins)" fill="#E05206" radius={[0, 2, 2, 0]} />
+                {isCancMode
+                  ? <Bar dataKey="cancellations" name="Cancellations" fill="#4A6FA5" radius={[0, 2, 2, 0]} />
+                  : <Bar dataKey="delayMins" name="Delay (mins)" fill="#E05206" radius={[0, 2, 2, 0]} />
+                }
               </BarChart>
             </ResponsiveContainer>
           </Card>
@@ -1105,6 +1220,8 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
           </Card>
         )}
       </div>
+
+      <DelayThresholdSplitter incidents={incidents} />
     </div>
   )
 }
@@ -2421,6 +2538,22 @@ function DistributionToggle({ value, onChange }: { value: DistributionKind; onCh
   )
 }
 
+function CancellationsTrendChart({ data, kind }: { data: any[]; kind: string }) {
+  return (
+    <ResponsiveContainer width="100%" height={240}>
+      <BarChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="2 6" />
+        <XAxis dataKey="date" tickFormatter={(d: string) => d.slice(5)} tick={{ fontSize: 10, fill: 'var(--ink-400)', fontFamily: 'JetBrains Mono' }} />
+        <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: 'var(--ink-400)', fontFamily: 'JetBrains Mono' }} />
+        <Tooltip content={<CustomTooltip />} />
+        <Legend wrapperStyle={{ fontSize: 10, fontFamily: 'JetBrains Mono' }} />
+        <Bar dataKey="cancelled" name="Cancelled" stackId="a" fill="#E05206" radius={[0, 0, 0, 0]} />
+        <Bar dataKey="partCancelled" name="Part Cancelled" stackId="a" fill="#F39C12" radius={[2, 2, 0, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  )
+}
+
 const ROLLING_KEY: Record<string, string> = {
   incidents:     'rolling7Avg',
   delayMins:     'rolling7DelayAvg',
@@ -3430,6 +3563,28 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
         )}
 
         <div className="space-y-6">
+          <FilterGroup label="Primary Metric">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDraft({ ...draft, metricFocus: 'delay' })}
+                className={`btn flex-1 justify-center ${draft.metricFocus !== 'cancellations' ? 'btn-active' : ''}`}
+              >
+                <Clock size={11} />
+                Delay (mins)
+              </button>
+              <button
+                onClick={() => setDraft({ ...draft, metricFocus: 'cancellations' })}
+                className={`btn flex-1 justify-center ${draft.metricFocus === 'cancellations' ? 'btn-active' : ''}`}
+              >
+                <X size={11} />
+                Cancellations
+              </button>
+            </div>
+            <p className="text-[10px] mt-2" style={{ color: 'var(--ink-500)' }}>
+              Switches the primary metric used in trend charts, operator tables, and KPI emphasis across the performance view.
+            </p>
+          </FilterGroup>
+
           <FilterGroup label="Search">
             <SearchTokenInput
               tokens={draft.searches}
@@ -3971,6 +4126,7 @@ function ReviewTab({
                   <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Role</th>
                   <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Incidents</th>
                   <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Total Delay</th>
+                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Avg / Incident</th>
                   <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Shifts</th>
                 </tr>
               </thead>
@@ -3981,6 +4137,9 @@ function ReviewTab({
                     <td className="py-2" style={{ color: 'var(--ink-300)' }}>{w.role}</td>
                     <td className="py-2 text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>{w.incidentCount}</td>
                     <td className="py-2 text-right numeric-mono" style={{ color: 'var(--nr-orange)' }}>{fmtMins(w.totalDelay)}</td>
+                    <td className="py-2 text-right numeric-mono" style={{ color: 'var(--ink-300)' }}>
+                      {w.incidentCount > 0 ? fmtMins(w.totalDelay / w.incidentCount) : '—'}
+                    </td>
                     <td className="py-2 text-right">
                       <span className="inline-flex items-center gap-1.5">
                         {w.dayShifts > 0 && (
