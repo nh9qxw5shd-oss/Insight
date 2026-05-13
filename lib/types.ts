@@ -199,6 +199,7 @@ export interface AnalyticsFilters {
   searchMode: 'and' | 'or'       // 'or' = any token matches; 'and' = all tokens must match
   minDelay?: number               // inclusive lower bound on per-incident delay minutes
   maxDelay?: number               // inclusive upper bound on per-incident delay minutes
+  metricFocus: 'delay' | 'cancellations'  // which primary metric drives charts & tables
 }
 
 export const DEFAULT_FILTERS: AnalyticsFilters = {
@@ -210,6 +211,7 @@ export const DEFAULT_FILTERS: AnalyticsFilters = {
   staffNames: [],
   searches: [],
   searchMode: 'or',
+  metricFocus: 'delay',
 }
 
 // ─── Category visual config (mirrors DLog2 master) ───────────────────────────
@@ -308,6 +310,8 @@ export interface TrendPoint {
   incidents: number
   delayMins: number
   safetyCritical: number
+  cancelled: number
+  partCancelled: number
   rolling7Avg?: number         // 7-day rolling average of incident count
   rolling7DelayAvg?: number    // 7-day rolling average of delay minutes
   rolling7SafetyAvg?: number   // 7-day rolling average of safety-critical count

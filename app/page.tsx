@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, ClipboardList, Clock, Compass, Download, FileText, Filter, GitBranch, Layers, List, MapPin,
-  Minus, RefreshCw, Route, Search, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
+  Minus, Moon, RefreshCw, Route, Search, Sun, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
@@ -125,6 +125,7 @@ export default function InsightDashboard() {
   const [error, setError] = useState<string | null>(null)
   const [demoMode, setDemoMode] = useState(false)
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [trendChart, setTrendChart] = useState<ChartKind>('area')
   const [distChart, setDistChart] = useState<DistributionKind>('donut')
   const [drillDown, setDrillDown] = useState<{ title: string; incidents: IncidentRow[] } | null>(null)
@@ -147,6 +148,18 @@ export default function InsightDashboard() {
     if (urlFilters) setFilters(urlFilters)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Sync theme from localStorage after hydration, then apply on every change.
+  useEffect(() => {
+    const saved = (localStorage.getItem('theme') || 'dark') as 'dark' | 'light'
+    setTheme(saved)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('theme', theme)
+  }, [theme])
 
   // Keep URL in sync with filters
   useEffect(() => { setFiltersInUrl(filters) }, [filters])
@@ -395,10 +408,13 @@ export default function InsightDashboard() {
           filters.areas.length + filters.categories.length +
           filters.severities.length + filters.searches.length +
           filters.incidentTypes.length + filters.staffNames.length +
-          (filters.minDelay != null || filters.maxDelay != null ? 1 : 0)
+          (filters.minDelay != null || filters.maxDelay != null ? 1 : 0) +
+          (filters.metricFocus === 'cancellations' ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
         onExport={effectiveData ? () => exportCSV(effectiveData.incidents, effectiveData.windowFrom, effectiveData.windowTo) : undefined}
+        theme={theme}
+        onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
       />
 
       <ActiveFilterChips
@@ -437,7 +453,7 @@ export default function InsightDashboard() {
           <>
             {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={effectiveData} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
-            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} />}
+            {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} metricFocus={filters.metricFocus} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
             {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} staffPatterns={staffPatterns} />}
             {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={effectiveData.incidents} onDrillDown={setDrillDown} chains={chains} />}
@@ -509,11 +525,13 @@ function Header(props: {
   onOpenFilters: () => void
   onRefresh: () => void
   onExport?: () => void
+  theme: 'dark' | 'light'
+  onToggleTheme: () => void
 }) {
   const customRange = !!props.startDate
 
   return (
-    <header className="border-b border-[var(--line)] bg-gradient-to-b from-[#0B1226] to-transparent">
+    <header className="border-b border-[var(--line)] header-gradient">
       <div className="max-w-[1480px] mx-auto px-6 py-7 flex items-start justify-between gap-6 flex-wrap">
         <div>
           <div className="flex items-center gap-3 mb-2">
@@ -588,6 +606,14 @@ function Header(props: {
           <button onClick={props.onRefresh} className="btn" disabled={props.loading}>
             <RefreshCw size={12} className={props.loading ? 'animate-spin' : ''} />
             Refresh
+          </button>
+
+          <button
+            onClick={props.onToggleTheme}
+            className="btn"
+            title={props.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {props.theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
           </button>
 
           <div className="flex items-center gap-2 px-3 py-1.5 border border-[var(--line)] rounded">
@@ -995,13 +1021,101 @@ function SafetyTab({ kpis, trend, cats, data, onAddCategoryFilter, decompose }: 
 
 // ─── Performance tab ─────────────────────────────────────────────────────────
 
-function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, ops, attribution, chart, setChart, incidents, onDrillDown, onDateClick, decompose }: any) {
+function DelayThresholdSplitter({ incidents }: { incidents: any[] }) {
+  const [threshold, setThreshold] = useState(200)
+  const [input, setInput]         = useState('200')
+
+  const validThreshold = threshold > 0
+
+  const above = incidents.filter(i => (i.minutes_delay ?? 0) >  threshold)
+  const below = incidents.filter(i => (i.minutes_delay ?? 0) <= threshold)
+
+  const stats = (group: any[]) => {
+    const count     = group.length
+    const total     = group.reduce((s: number, i: any) => s + (i.minutes_delay ?? 0), 0)
+    const avg       = count > 0 ? total / count : 0
+    const pct       = incidents.length > 0 ? (count / incidents.length) * 100 : 0
+    const delayPct  = incidents.reduce((s: number, i: any) => s + (i.minutes_delay ?? 0), 0)
+    const delayShare = delayPct > 0 ? (total / delayPct) * 100 : 0
+    return { count, total, avg, pct, delayShare }
+  }
+
+  const aboveStats = stats(above)
+  const belowStats = stats(below)
+
+  return (
+    <Card title="Delay Threshold Analysis" subtitle="Split incidents above and below a delay demarcation line">
+      <div className="flex items-end gap-3 mb-6">
+        <div>
+          <label className="label-micro mb-1 block">Threshold (minutes)</label>
+          <input
+            type="number"
+            min={1}
+            className="input w-36"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onBlur={() => {
+              const v = parseInt(input, 10)
+              if (!isNaN(v) && v > 0) setThreshold(v)
+              else setInput(String(threshold))
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const v = parseInt(input, 10)
+                if (!isNaN(v) && v > 0) setThreshold(v)
+                else setInput(String(threshold));
+                (e.target as HTMLInputElement).blur()
+              }
+            }}
+          />
+        </div>
+        <div className="text-xs pb-2" style={{ color: 'var(--ink-400)' }}>
+          Splitting {incidents.length} incident{incidents.length !== 1 ? 's' : ''} at {threshold} min
+        </div>
+      </div>
+
+      {validThreshold && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {[
+            { label: `Above ${threshold} min`, s: aboveStats, color: 'var(--nr-orange)', bg: 'rgba(224,82,6,0.08)', border: 'rgba(224,82,6,0.35)' },
+            { label: `At or below ${threshold} min`, s: belowStats, color: 'var(--nr-steel)', bg: 'rgba(74,111,165,0.08)', border: 'rgba(74,111,165,0.3)' },
+          ].map(({ label, s, color, bg, border }) => (
+            <div key={label} className="rounded p-4 space-y-3" style={{ background: bg, border: `1px solid ${border}` }}>
+              <div className="label-micro" style={{ color }}>{label}</div>
+              <div className="grid grid-cols-2 gap-y-3">
+                <div>
+                  <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Incidents</div>
+                  <div className="numeric text-2xl font-light" style={{ color: 'var(--ink-100)' }}>{s.count.toLocaleString()}</div>
+                  <div className="text-[10px] numeric-mono" style={{ color: 'var(--ink-400)' }}>{s.pct.toFixed(1)}% of total</div>
+                </div>
+                <div>
+                  <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Total Delay</div>
+                  <div className="numeric text-2xl font-light" style={{ color: 'var(--ink-100)' }}>{s.total.toLocaleString()}</div>
+                  <div className="text-[10px] numeric-mono" style={{ color: 'var(--ink-400)' }}>{s.delayShare.toFixed(1)}% of delay</div>
+                </div>
+                <div>
+                  <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Avg Delay</div>
+                  <div className="numeric-mono text-lg font-semibold" style={{ color }}>{s.count > 0 ? Math.round(s.avg).toLocaleString() : '—'} min</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, ops, attribution, chart, setChart, incidents, onDrillDown, onDateClick, decompose, metricFocus }: any) {
+  const [attrExpanded, setAttrExpanded] = useState(false)
+  const isCancMode = metricFocus === 'cancellations'
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 stagger">
-        <KPICard label="Total Delay (mins)" value={kpis.totalDelayMins.toLocaleString()} delta={kpis.delayDeltaPct} icon={Clock} deltaInverted accent decompose={decompose} metric="delay" />
-        <KPICard label="Cancelled" value={kpis.totalCancelled} icon={X} />
-        <KPICard label="Part Cancelled" value={kpis.totalPartCancelled} icon={X} />
+        <KPICard label="Total Delay (mins)" value={kpis.totalDelayMins.toLocaleString()} delta={kpis.delayDeltaPct} icon={Clock} deltaInverted accent={!isCancMode} decompose={decompose} metric="delay" />
+        <KPICard label="Cancelled" value={kpis.totalCancelled} icon={X} accent={isCancMode} />
+        <KPICard label="Part Cancelled" value={kpis.totalPartCancelled} icon={Minus} accent={isCancMode} />
         <KPICard
           label="Median Arrival"
           value={kpis.medianArrivalMins != null ? `${kpis.medianArrivalMins} min` : '—'}
@@ -1016,9 +1130,15 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
         />
       </div>
 
-      <Card title="Delay Minutes — Daily" subtitle="Aggregate impact · change-points marked" right={<ChartTypeToggle value={chart} onChange={setChart} />} className="tick-corners">
-        <TrendChart data={trend} kind={chart} dataKey="delayMins" gradient="orange" onDateClick={onDateClick} changePoints={changePoints} />
-      </Card>
+      {isCancMode ? (
+        <Card title="Cancellations — Daily" subtitle="Cancelled and part-cancelled trains per day" right={<ChartTypeToggle value={chart} onChange={setChart} />} className="tick-corners">
+          <CancellationsTrendChart data={trend} kind={chart} />
+        </Card>
+      ) : (
+        <Card title="Delay Minutes — Daily" subtitle="Aggregate impact · change-points marked" right={<ChartTypeToggle value={chart} onChange={setChart} />} className="tick-corners">
+          <TrendChart data={trend} kind={chart} dataKey="delayMins" gradient="orange" onDateClick={onDateClick} changePoints={changePoints} />
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card title="Response-Time Distribution" subtitle="Mins from incident start">
@@ -1034,52 +1154,59 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
           <div className="space-y-2">
             {(() => {
               const max = attribution[0]?.totalDelay || 1
-              return attribution.map((a: any, i: number) => (
-                <div key={i} className="grid grid-cols-12 gap-3 items-center text-xs py-1.5 border-b border-[var(--line)] last:border-0">
-                  <div className="col-span-2 numeric-mono text-[10px] font-bold" style={{ color: 'var(--nr-orange)' }}>{a.code}</div>
-                  <div className="col-span-4 truncate" style={{ color: 'var(--ink-200)' }}>{a.label}</div>
-                  <div className="col-span-4">
-                    <div className="h-1.5 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden">
-                      <div className="h-full rounded-sm" style={{ width: `${(a.totalDelay / max) * 100}%`, background: 'var(--nr-orange)' }} />
+              const visible = attrExpanded ? attribution : attribution.slice(0, 5)
+              return (
+                <>
+                  {visible.map((a: any, i: number) => (
+                    <div key={i} className="grid grid-cols-12 gap-3 items-center text-xs py-1.5 border-b border-[var(--line)] last:border-0">
+                      <div className="col-span-2 numeric-mono text-[10px] font-bold" style={{ color: 'var(--nr-orange)' }}>{a.code}</div>
+                      <div className="col-span-4 truncate" style={{ color: 'var(--ink-200)' }}>{a.label}</div>
+                      <div className="col-span-4">
+                        <div className="h-1.5 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden">
+                          <div className="h-full rounded-sm" style={{ width: `${(a.totalDelay / max) * 100}%`, background: 'var(--nr-orange)' }} />
+                        </div>
+                      </div>
+                      <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-400)' }}>{a.incidentCount}</div>
+                      <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-100)' }}>{a.pct.toFixed(1)}%</div>
                     </div>
-                  </div>
-                  <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-400)' }}>{a.incidentCount}</div>
-                  <div className="col-span-1 numeric-mono text-right text-[10px]" style={{ color: 'var(--ink-100)' }}>{a.pct.toFixed(1)}%</div>
-                </div>
-              ))
+                  ))}
+                  {attribution.length > 5 && (
+                    <button
+                      onClick={() => setAttrExpanded(e => !e)}
+                      className="text-xs w-full text-center pt-2"
+                      style={{ color: 'var(--ink-400)' }}
+                    >
+                      {attrExpanded ? 'Show top 5 only' : `Show all ${attribution.length} codes`}
+                    </button>
+                  )}
+                </>
+              )
             })()}
           </div>
         </Card>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {ops && ops.length > 0 && (
-          <Card title="Operator Delay Impact" subtitle="Total delay minutes per train operator">
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={ops} layout="vertical" margin={{ left: 10, right: 30 }}>
-                <CartesianGrid strokeDasharray="2 6" horizontal={false} />
-                <XAxis type="number" />
-                <YAxis dataKey="company" type="category" width={80} tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
-                <Tooltip content={<CustomTooltip />} />
-                <Bar dataKey="delayMins" name="Delay (mins)" fill="#E05206" radius={[0, 2, 2, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
-        )}
-        {responderLoad && responderLoad.length > 0 && (
-          <Card title="Responder Workload" subtitle="Incidents handled per control room initials">
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={responderLoad}>
-                <CartesianGrid strokeDasharray="2 6" />
-                <XAxis dataKey="initials" tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
-                <YAxis allowDecimals={false} />
-                <Tooltip content={<CustomTooltip />} />
-                <Bar dataKey="incidentCount" name="Incidents" fill="#4A6FA5" radius={[2, 2, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
-        )}
-      </div>
+      {ops && ops.length > 0 && (
+        <Card
+          title={isCancMode ? 'Operator Cancellation Impact' : 'Operator Delay Impact'}
+          subtitle={isCancMode ? 'Total cancellations per train operator' : 'Total delay minutes per train operator'}
+        >
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={ops} layout="vertical" margin={{ left: 10, right: 30 }}>
+              <CartesianGrid strokeDasharray="2 6" horizontal={false} />
+              <XAxis type="number" />
+              <YAxis dataKey="company" type="category" width={80} tick={{ fontSize: 10, fill: 'var(--ink-300)', fontFamily: 'JetBrains Mono' }} />
+              <Tooltip content={<CustomTooltip />} />
+              {isCancMode
+                ? <Bar dataKey="cancellations" name="Cancellations" fill="#4A6FA5" radius={[0, 2, 2, 0]} />
+                : <Bar dataKey="delayMins" name="Delay (mins)" fill="#E05206" radius={[0, 2, 2, 0]} />
+              }
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+      )}
+
+      <DelayThresholdSplitter incidents={incidents} />
     </div>
   )
 }
@@ -2396,6 +2523,22 @@ function DistributionToggle({ value, onChange }: { value: DistributionKind; onCh
   )
 }
 
+function CancellationsTrendChart({ data, kind }: { data: any[]; kind: string }) {
+  return (
+    <ResponsiveContainer width="100%" height={240}>
+      <BarChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="2 6" />
+        <XAxis dataKey="date" tickFormatter={(d: string) => d.slice(5)} tick={{ fontSize: 10, fill: 'var(--ink-400)', fontFamily: 'JetBrains Mono' }} />
+        <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: 'var(--ink-400)', fontFamily: 'JetBrains Mono' }} />
+        <Tooltip content={<CustomTooltip />} />
+        <Legend wrapperStyle={{ fontSize: 10, fontFamily: 'JetBrains Mono' }} />
+        <Bar dataKey="cancelled" name="Cancelled" stackId="a" fill="#E05206" radius={[0, 0, 0, 0]} />
+        <Bar dataKey="partCancelled" name="Part Cancelled" stackId="a" fill="#F39C12" radius={[2, 2, 0, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  )
+}
+
 const ROLLING_KEY: Record<string, string> = {
   incidents:     'rolling7Avg',
   delayMins:     'rolling7DelayAvg',
@@ -3405,6 +3548,28 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
         )}
 
         <div className="space-y-6">
+          <FilterGroup label="Primary Metric">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDraft({ ...draft, metricFocus: 'delay' })}
+                className={`btn flex-1 justify-center ${draft.metricFocus !== 'cancellations' ? 'btn-active' : ''}`}
+              >
+                <Clock size={11} />
+                Delay (mins)
+              </button>
+              <button
+                onClick={() => setDraft({ ...draft, metricFocus: 'cancellations' })}
+                className={`btn flex-1 justify-center ${draft.metricFocus === 'cancellations' ? 'btn-active' : ''}`}
+              >
+                <X size={11} />
+                Cancellations
+              </button>
+            </div>
+            <p className="text-[10px] mt-2" style={{ color: 'var(--ink-500)' }}>
+              Switches the primary metric used in trend charts, operator tables, and KPI emphasis across the performance view.
+            </p>
+          </FilterGroup>
+
           <FilterGroup label="Search">
             <SearchTokenInput
               tokens={draft.searches}
@@ -3883,6 +4048,15 @@ function fmtMins(m: number): string {
 // and refine any CCIL-captured values that need correcting. All review fields
 // are optional — a saved row just means an SNDM has touched the incident.
 
+// Incidents with effective delay below this threshold are auto-classified N/A
+// and excluded from the review progress counter. Users can still open them.
+const NA_DELAY_THRESHOLD = 400
+
+function isReviewAutoNA(incident: IncidentRow, review: IncidentReview | undefined): boolean {
+  const delay = review?.minutes_delay_override ?? incident.minutes_delay ?? 0
+  return delay < NA_DELAY_THRESHOLD
+}
+
 function ReviewTab({
   periods, reviewByIncidentId, teamMembersByIncidentId, teamWorkload, onSave, onDelete, demoMode, supabaseConfigured,
 }: {
@@ -3895,9 +4069,13 @@ function ReviewTab({
   demoMode: boolean
   supabaseConfigured: boolean
 }) {
-  const totalIncidents = periods.reduce((s, g) => s + g.totalIncidents, 0)
-  const totalReviewed  = periods.reduce((s, g) => s + g.totalReviewed, 0)
-  const reviewPct = totalIncidents > 0 ? (totalReviewed / totalIncidents) * 100 : 0
+  const allUnique = periods.flatMap(g => g.days.flatMap(d => d.incidents.filter(i => !i.is_continuation)))
+  const totalIncidents   = allUnique.length
+  const reviewable       = allUnique.filter(i => !isReviewAutoNA(i, reviewByIncidentId.get(i.id)))
+  const reviewableTotal  = reviewable.length
+  const naCount          = totalIncidents - reviewableTotal
+  const totalReviewed    = reviewable.filter(i => reviewByIncidentId.has(i.id)).length
+  const reviewPct        = reviewableTotal > 0 ? (totalReviewed / reviewableTotal) * 100 : 0
 
   return (
     <div className="space-y-6">
@@ -3926,10 +4104,15 @@ function ReviewTab({
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 stagger">
         <KPICard label="Open Log Periods" value={periods.length.toLocaleString()} icon={ClipboardList} />
-        <KPICard label="Incidents in Window" value={totalIncidents.toLocaleString()} icon={Activity} />
+        <KPICard
+          label="Incidents in Window"
+          value={totalIncidents.toLocaleString()}
+          subValue={naCount > 0 ? `${naCount} auto N/A (< ${NA_DELAY_THRESHOLD} min)` : undefined}
+          icon={Activity}
+        />
         <KPICard
           label="Reviewed"
-          value={`${totalReviewed.toLocaleString()} / ${totalIncidents.toLocaleString()}`}
+          value={`${totalReviewed.toLocaleString()} / ${reviewableTotal.toLocaleString()}`}
           subValue={`${reviewPct.toFixed(0)}% complete`}
           icon={ClipboardCheck}
           accent
@@ -3946,6 +4129,7 @@ function ReviewTab({
                   <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Role</th>
                   <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Incidents</th>
                   <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Total Delay</th>
+                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Avg / Incident</th>
                   <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Shifts</th>
                 </tr>
               </thead>
@@ -3956,6 +4140,9 @@ function ReviewTab({
                     <td className="py-2" style={{ color: 'var(--ink-300)' }}>{w.role}</td>
                     <td className="py-2 text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>{w.incidentCount}</td>
                     <td className="py-2 text-right numeric-mono" style={{ color: 'var(--nr-orange)' }}>{fmtMins(w.totalDelay)}</td>
+                    <td className="py-2 text-right numeric-mono" style={{ color: 'var(--ink-300)' }}>
+                      {w.incidentCount > 0 ? fmtMins(w.totalDelay / w.incidentCount) : '—'}
+                    </td>
                     <td className="py-2 text-right">
                       <span className="inline-flex items-center gap-1.5">
                         {w.dayShifts > 0 && (
@@ -4012,8 +4199,13 @@ function PeriodGroupRow({
   canSave: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const complete = group.totalIncidents > 0 && group.totalReviewed >= group.totalIncidents
-  const pct = group.totalIncidents > 0 ? (group.totalReviewed / group.totalIncidents) * 100 : 0
+
+  const groupReviewable = group.days.reduce((s, d) =>
+    s + d.incidents.filter(i => !i.is_continuation && !isReviewAutoNA(i, reviewByIncidentId.get(i.id))).length, 0)
+  const groupReviewed   = group.days.reduce((s, d) =>
+    s + d.incidents.filter(i => !i.is_continuation && !isReviewAutoNA(i, reviewByIncidentId.get(i.id)) && reviewByIncidentId.has(i.id)).length, 0)
+  const complete = groupReviewable > 0 && groupReviewed >= groupReviewable
+  const pct      = groupReviewable > 0 ? (groupReviewed / groupReviewable) * 100 : 0
 
   return (
     <div className="rounded border border-[var(--line)] overflow-hidden">
@@ -4050,7 +4242,7 @@ function PeriodGroupRow({
                 <div className="h-full" style={{ width: `${pct}%`, background: complete ? 'var(--nr-green)' : 'var(--nr-orange)' }} />
               </div>
               <span className="numeric-mono text-[10px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-300)' }}>
-                {group.totalReviewed}/{group.totalIncidents}
+                {groupReviewed}/{groupReviewable}
               </span>
             </div>
           </div>
@@ -4087,10 +4279,13 @@ function ReviewDayRow({
   canSave: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const complete = day.incidentCount > 0 && day.reviewedCount >= day.incidentCount
 
   const uniques = day.incidents.filter(i => !i.is_continuation)
                                 .sort((a, b) => (a.incident_start || '').localeCompare(b.incident_start || ''))
+  const reviewableUniques = uniques.filter(i => !isReviewAutoNA(i, reviewByIncidentId.get(i.id)))
+  const dayReviewedCount  = reviewableUniques.filter(i => reviewByIncidentId.has(i.id)).length
+  const dayReviewableCount = reviewableUniques.length
+  const complete = dayReviewableCount > 0 && dayReviewedCount >= dayReviewableCount
 
   return (
     <div className="border-b border-[var(--line)] last:border-b-0">
@@ -4105,7 +4300,7 @@ function ReviewDayRow({
         <span className="label-micro" style={{ color: 'var(--ink-500)' }}>{day.incidentCount} incident{day.incidentCount !== 1 ? 's' : ''}</span>
         <span className="label-micro" style={{ color: 'var(--ink-500)' }}>{fmtMins(day.totalDelay)} delay</span>
         <span className="ml-auto numeric-mono text-[10px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-400)' }}>
-          {day.reviewedCount}/{day.incidentCount} reviewed
+          {dayReviewedCount}/{dayReviewableCount} reviewed
         </span>
       </button>
 
@@ -4143,19 +4338,28 @@ function ReviewIncidentRow({
   canSave: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const cfg = CATEGORY_CONFIG[incident.category]
+  const cfg      = CATEGORY_CONFIG[incident.category]
   const reviewed = !!review
-  const cls = review?.incident_classification ?? null
+  const cls      = review?.incident_classification ?? null
+  const autoNA   = isReviewAutoNA(incident, review)
 
   return (
-    <div className="rounded border border-[var(--line)] overflow-hidden" style={{ background: 'var(--bg-card)' }}>
+    <div
+      className="rounded border overflow-hidden"
+      style={{
+        background: 'var(--bg-card)',
+        borderColor: autoNA ? 'var(--line)' : 'var(--line)',
+        opacity: autoNA ? 0.6 : 1,
+      }}
+    >
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-start gap-3 px-3 py-2.5 text-left text-xs hover:bg-[var(--bg-card-hi)] transition-colors"
+        title={autoNA ? `Auto N/A — delay below ${NA_DELAY_THRESHOLD} min. Click to open and override.` : undefined}
       >
         <ChevronDown size={11} className="mt-1" style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
-        <span className={`pill pill-${incident.severity.toLowerCase()} shrink-0`}>{incident.severity}</span>
+        <span className={`pill pill-${incident.severity.toLowerCase()} shrink-0`} style={autoNA ? { filter: 'grayscale(0.7)' } : undefined}>{incident.severity}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap mb-0.5">
             {incident.ccil && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL {incident.ccil}</span>}
@@ -4165,23 +4369,35 @@ function ReviewIncidentRow({
             </span>
             {incident.area && <span className="text-[10px]" style={{ color: 'var(--ink-400)' }}>{incident.area}</span>}
           </div>
-          <div className="font-medium truncate" style={{ color: 'var(--ink-200)' }}>
+          <div className="font-medium truncate" style={{ color: autoNA ? 'var(--ink-400)' : 'var(--ink-200)' }}>
             {review?.title_override ?? incident.title ?? '—'}
           </div>
           {(review?.location_override || incident.location) && (
-            <div className="text-[10px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+            <div className="text-[10px] mt-0.5" style={{ color: 'var(--ink-500)' }}>
               {review?.location_override ?? incident.location}
             </div>
           )}
         </div>
         <div className="flex items-center gap-3 shrink-0">
           {cls && <ClassificationPill value={cls} />}
-          {reviewed
-            ? <span className="pill text-[9px]" style={{ background: 'rgba(39, 174, 96, 0.12)', color: 'var(--nr-green)', borderColor: 'rgba(39, 174, 96, 0.4)' }}><ClipboardCheck size={9} /> Reviewed</span>
-            : <span className="pill text-[9px]" style={{ background: 'rgba(122, 139, 168, 0.12)', color: 'var(--ink-400)', borderColor: 'var(--line)' }}>Pending</span>}
+          {autoNA && !reviewed && (
+            <span className="pill text-[9px]" style={{ background: 'rgba(122,139,168,0.08)', color: 'var(--ink-500)', borderColor: 'var(--line)', fontStyle: 'italic' }}>
+              Auto N/A
+            </span>
+          )}
+          {reviewed && (
+            <span className="pill text-[9px]" style={{ background: 'rgba(39,174,96,0.12)', color: 'var(--nr-green)', borderColor: 'rgba(39,174,96,0.4)' }}>
+              <ClipboardCheck size={9} /> Reviewed
+            </span>
+          )}
+          {!autoNA && !reviewed && (
+            <span className="pill text-[9px]" style={{ background: 'rgba(122,139,168,0.12)', color: 'var(--ink-400)', borderColor: 'var(--line)' }}>
+              Pending
+            </span>
+          )}
           <div className="text-right w-16">
             <div className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>DELAY</div>
-            <div className="numeric-mono text-[11px]" style={{ color: 'var(--nr-orange)' }}>
+            <div className="numeric-mono text-[11px]" style={{ color: autoNA ? 'var(--ink-400)' : 'var(--nr-orange)' }}>
               {(review?.minutes_delay_override ?? incident.minutes_delay)}m
             </div>
           </div>
@@ -4189,14 +4405,22 @@ function ReviewIncidentRow({
       </button>
 
       {open && (
-        <ReviewForm
-          incident={incident}
-          review={review}
-          teamMembers={teamMembers}
-          onSave={onSave}
-          onDelete={onDelete}
-          canSave={canSave}
-        />
+        <>
+          {autoNA && !reviewed && (
+            <div className="px-3 py-2 text-[11px] flex items-center gap-2 border-t border-[var(--line)]" style={{ background: 'var(--bg-card-hi)', color: 'var(--ink-400)' }}>
+              <AlertTriangle size={11} style={{ color: 'var(--ink-500)' }} />
+              This incident is auto-classified N/A (delay below {NA_DELAY_THRESHOLD} min) and excluded from review counts. Fill in the form below to record a manual review.
+            </div>
+          )}
+          <ReviewForm
+            incident={incident}
+            review={review}
+            teamMembers={teamMembers}
+            onSave={onSave}
+            onDelete={onDelete}
+            canSave={canSave}
+          />
+        </>
       )}
     </div>
   )
