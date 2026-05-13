@@ -22,7 +22,11 @@ import {
   CLASSIFICATION_CONFIG, YesNoNa, MomDepot, MOM_DEPOT_LABELS, StrandedTrainEntry,
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
 } from '@/lib/types'
-import { railwayPeriodWeek } from '@/lib/railwayCalendar'
+import {
+  railwayPeriodWeek, listPeriods, listWeeks, listRailYears,
+  railwayPeriodBounds, railwayWeekBounds,
+  defaultPeriodSelection, defaultWeekSelection,
+} from '@/lib/railwayCalendar'
 import {
   fetchAnalytics, deriveKPIs, deriveTrend, deriveCategorySplit,
   deriveLocationHotspots, deriveRepeatFaults, deriveRepeatAssets,
@@ -4700,11 +4704,31 @@ function minsBetweenHHMM(start: string, end: string): number | null {
 }
 
 // ─── Reports Tab ─────────────────────────────────────────────────────────────
-// Aesthetically-styled, insight-rich PDF reports generated client-side. The
-// user picks a template, optionally toggles sections, sees a live A4 preview,
-// then either downloads the HTML archive or prints to PDF via the browser
-// dialog. Everything runs against whatever filter window is currently active
-// on the dashboard, so the report inherits the route's chosen scope.
+// Aesthetically-styled, insight-rich PDF reports generated client-side. Each
+// template owns its own date scope independently of the dashboard's filter
+// bar — Period reports are locked to railway periods, Weekly briefs to
+// railway weeks, and Safety / Custom Range expose a free from–to picker.
+// The dashboard's category / area / severity / search filters still apply.
+
+type ReportScope =
+  | { kind: 'period';  railYear: number; period: number; from: string; to: string }
+  | { kind: 'weekly';  railYear: number; period: number; week: number; from: string; to: string }
+  | { kind: 'range';   from: string; to: string }
+
+function daysBetween(from: string, to: string): number {
+  const fromMs = new Date(from + 'T00:00:00Z').getTime()
+  const toMs   = new Date(to   + 'T00:00:00Z').getTime()
+  return Math.max(1, Math.round((toMs - fromMs) / 86_400_000) + 1)
+}
+
+function yesterdayISO(): string {
+  return new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
+}
+
+function isoMinusDays(iso: string, days: number): string {
+  const ms = new Date(iso + 'T00:00:00Z').getTime() - days * 86_400_000
+  return new Date(ms).toISOString().slice(0, 10)
+}
 
 function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters: AnalyticsFilters; demoMode: boolean }) {
   const [template, setTemplate]    = useState<ReportTemplate>('period')
@@ -4712,33 +4736,116 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   const [appendixLimit, setAppendixLimit] = useState<number>(40)
   const [previewKey, setPreviewKey] = useState<number>(0)
 
-  // When the template changes, reset the section toggles to its default set.
+  // Per-template scope state, kept side-by-side so switching template doesn't
+  // wipe a careful selection in another. Initialised to sensible defaults:
+  // the last completed period / week, and the previous 30 days for range
+  // templates.
+  const [periodSel, setPeriodSel] = useState(() => {
+    const d = defaultPeriodSelection()
+    const b = railwayPeriodBounds(d.period, d.railYear)
+    return { railYear: d.railYear, period: d.period, from: b.from, to: b.to }
+  })
+  const [weekSel, setWeekSel] = useState(() => {
+    const d = defaultWeekSelection()
+    const b = railwayWeekBounds(d.period, d.week, d.railYear)
+    return { railYear: d.railYear, period: d.period, week: d.week, from: b.from, to: b.to }
+  })
+  const [safetyRange, setSafetyRange] = useState<{ from: string; to: string }>(() => ({
+    from: isoMinusDays(yesterdayISO(), 29),
+    to:   yesterdayISO(),
+  }))
+  const [customRange, setCustomRange] = useState<{ from: string; to: string }>(() => ({
+    from: isoMinusDays(yesterdayISO(), 29),
+    to:   yesterdayISO(),
+  }))
+
+  const scope: ReportScope = useMemo(() => {
+    if (template === 'period') return { kind: 'period', ...periodSel }
+    if (template === 'weekly') return { kind: 'weekly', ...weekSel }
+    if (template === 'safety') return { kind: 'range', ...safetyRange }
+    return { kind: 'range', ...customRange }
+  }, [template, periodSel, weekSel, safetyRange, customRange])
+
+  // Reset section toggles whenever the template changes.
+  useEffect(() => { setSections(TEMPLATE_DEFAULT_SECTIONS[template]) }, [template])
+
+  // ── Independent data fetch for the report's chosen scope ──────────────────
+  // The dashboard's data covers a different window most of the time, so the
+  // Reports tab fires its own fetch (or synth) keyed on scope + non-date
+  // filters. Mirrors fetchAnalytics so all the usual category / area filters
+  // still apply.
+  const [reportData, setReportData] = useState<RawData | null>(null)
+  const [loadingReport, setLoadingReport] = useState(false)
+  const [reportError, setReportError] = useState<string | null>(null)
+
+  // Stable signature of the non-date filters so we only re-fetch when
+  // something genuinely changes — avoids hammering Supabase on every render.
+  const filterSig = useMemo(() => JSON.stringify({
+    areas: filters.areas, categories: filters.categories, severities: filters.severities,
+    incidentTypes: filters.incidentTypes, staffNames: filters.staffNames,
+    searches: filters.searches, searchMode: filters.searchMode,
+    minDelay: filters.minDelay, maxDelay: filters.maxDelay,
+  }), [filters])
+
   useEffect(() => {
-    setSections(TEMPLATE_DEFAULT_SECTIONS[template])
-  }, [template])
+    let cancelled = false
+    const days = daysBetween(scope.from, scope.to)
+
+    async function run() {
+      setLoadingReport(true)
+      setReportError(null)
+      try {
+        if (!isSupabaseConfigured() || demoMode) {
+          // Demo mode: regenerate synthetic data sized to the chosen window
+          // so the preview always has something to draw against.
+          const result = generateSyntheticData(days, 42, scope.from, scope.to)
+          if (!cancelled) setReportData(result)
+          return
+        }
+        const reportFilters: AnalyticsFilters = {
+          ...filters,
+          startDate: scope.from,
+          endDate:   scope.to,
+          windowDays: days,
+        }
+        const result = await fetchAnalytics(reportFilters)
+        if (cancelled) return
+        if (result) setReportData(result)
+        else setReportData(generateSyntheticData(days, 42, scope.from, scope.to))
+      } catch (e: any) {
+        if (!cancelled) {
+          setReportError(e?.message || 'Failed to load report data')
+          setReportData(generateSyntheticData(days, 42, scope.from, scope.to))
+        }
+      } finally {
+        if (!cancelled) setLoadingReport(false)
+      }
+    }
+    run()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope.from, scope.to, filterSig, demoMode])
 
   const filtersDescriptor = useMemo(() => describeFilters(filters), [filters])
 
   const plan = useMemo(() => {
-    if (!data) return null
+    if (!reportData) return null
     return buildReportPlan(
       {
         filtersDescriptor,
-        windowFrom:    data.windowFrom,
-        windowTo:      data.windowTo,
-        windowDays:    data.windowDays,
-        demoMode,
-        incidents:     data.incidents,
-        prevIncidents: data.prevIncidents,
+        windowFrom:    reportData.windowFrom,
+        windowTo:      reportData.windowTo,
+        windowDays:    reportData.windowDays,
+        demoMode:      demoMode || !isSupabaseConfigured(),
+        incidents:     reportData.incidents,
+        prevIncidents: reportData.prevIncidents,
       },
       { template, sections, appendixLimit, clientLine: 'Network Rail · EMCC', preparedBy: 'EMCC Insight' },
     )
-  }, [data, filtersDescriptor, demoMode, template, sections, appendixLimit])
+  }, [reportData, filtersDescriptor, demoMode, template, sections, appendixLimit])
 
   const html = useMemo(() => plan ? renderReportDocument(plan) : '', [plan])
 
-  // Live preview via srcdoc — re-mount via key whenever the html changes so
-  // the iframe scroll resets and any internal layout settles cleanly.
   useEffect(() => { setPreviewKey(k => k + 1) }, [html])
 
   const handlePrint = () => {
@@ -4754,12 +4861,6 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
     setSections(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id])
   }
 
-  // For Period template, offer a "snap to active period" affordance so the
-  // user doesn't have to wrangle the date picker manually. Doesn't apply
-  // here directly — the snap helper just hints the operator to adjust their
-  // window from the main filter bar; making it actionable would require
-  // lifting the filter setter, so we keep it advisory for now.
-
   if (!data) {
     return (
       <Card title="Reports" subtitle="Generate aesthetically styled, data-driven PDF reports">
@@ -4770,17 +4871,20 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
     )
   }
 
+  const incidentsCovered = reportData?.incidents.filter(i => !i.is_continuation).length ?? 0
+
   return (
     <div className="space-y-6">
       <Card
         title="Report Builder"
-        subtitle="Editorial PDFs generated from the current filter window — preview live, then print or archive"
+        subtitle="Pick a template, lock in the window, then print or archive the editorial PDF"
         className="tick-corners"
         right={
           <div className="flex items-center gap-2">
             <button
               onClick={handleDownload}
               className="btn"
+              disabled={!plan}
               title="Download as standalone HTML (open and print to PDF later)"
             >
               <Download size={12} /> Save HTML
@@ -4788,6 +4892,7 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
             <button
               onClick={handlePrint}
               className="btn btn-active"
+              disabled={!plan}
               title="Open in a new tab and bring up the print dialog (choose Save as PDF)"
             >
               <FileText size={12} /> Print / Save PDF
@@ -4819,8 +4924,17 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
           })}
         </div>
 
+        {/* Per-template scope picker */}
+        <ScopePicker
+          template={template}
+          periodSel={periodSel}      setPeriodSel={setPeriodSel}
+          weekSel={weekSel}          setWeekSel={setWeekSel}
+          safetyRange={safetyRange}  setSafetyRange={setSafetyRange}
+          customRange={customRange}  setCustomRange={setCustomRange}
+        />
+
         {/* Section toggles */}
-        <div className="border-t border-[var(--line)] pt-4 mb-5">
+        <div className="border-t border-[var(--line)] pt-4 mb-5 mt-5">
           <div className="flex items-baseline justify-between mb-3">
             <div className="label-micro">Sections in this report</div>
             <button
@@ -4852,18 +4966,25 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
           </div>
         </div>
 
-        {/* Options row */}
+        {/* Status row */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-2 text-xs">
           <div>
-            <div className="label-micro mb-1.5">Window scope</div>
-            <div style={{ color: 'var(--ink-200)' }}>{plan?.meta.scopeLabel ?? '—'}</div>
+            <div className="label-micro mb-1.5">Resolved window</div>
+            <div style={{ color: 'var(--ink-200)' }}>
+              {plan?.meta.scopeLabel ?? `${scope.from} → ${scope.to}`}
+            </div>
             <div className="text-[10.5px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
-              Change scope via the main filter bar above.
+              {loadingReport
+                ? 'Loading data for this window…'
+                : `${incidentsCovered} incident${incidentsCovered === 1 ? '' : 's'} in scope · ${daysBetween(scope.from, scope.to)}-day window`}
             </div>
           </div>
           <div>
-            <div className="label-micro mb-1.5">Active filters</div>
+            <div className="label-micro mb-1.5">Filters from dashboard</div>
             <div style={{ color: 'var(--ink-200)' }}>{filtersDescriptor}</div>
+            <div className="text-[10.5px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+              Category / area / severity filters carry across — change them from the main filter bar.
+            </div>
           </div>
           <div>
             <div className="label-micro mb-1.5">Appendix limit</div>
@@ -4878,6 +4999,14 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
             </select>
           </div>
         </div>
+
+        {reportError && (
+          <div className="mt-4 text-[11px] px-3 py-2" style={{
+            color: '#FF8077',
+            background: 'rgba(231, 76, 60, 0.08)',
+            border: '1px solid rgba(231, 76, 60, 0.3)',
+          }}>{reportError}</div>
+        )}
       </Card>
 
       {/* Live preview */}
@@ -4885,8 +5014,11 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
         title="Live preview"
         subtitle="Exact A4-portrait rendering of the report. What you see is what prints."
         right={
-          <div className="label-micro" style={{ color: 'var(--ink-400)' }}>
-            {sections.filter(s => s !== 'cover').length + (sections.includes('cover') ? 1 : 0)} pages · {plan?.meta.windowDays ?? 0} day window
+          <div className="label-micro flex items-center gap-3" style={{ color: 'var(--ink-400)' }}>
+            {loadingReport && <RefreshCw size={11} className="animate-spin" />}
+            <span>
+              {sections.filter(s => s !== 'cover').length + (sections.includes('cover') ? 1 : 0)} pages · {plan?.meta.windowDays ?? 0} day window
+            </span>
           </div>
         }
       >
@@ -4898,18 +5030,24 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
             border: '1px solid var(--line-hi)',
           }}
         >
-          <iframe
-            key={previewKey}
-            title="Report preview"
-            srcDoc={html}
-            sandbox="allow-same-origin"
-            style={{
-              width: '100%',
-              height: '100%',
-              border: 'none',
-              background: '#FBF7EE',
-            }}
-          />
+          {plan ? (
+            <iframe
+              key={previewKey}
+              title="Report preview"
+              srcDoc={html}
+              sandbox="allow-same-origin"
+              style={{
+                width: '100%',
+                height: '100%',
+                border: 'none',
+                background: '#FBF7EE',
+              }}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full" style={{ color: 'var(--ink-400)' }}>
+              <RefreshCw size={14} className="animate-spin mr-2" /> Building report…
+            </div>
+          )}
         </div>
         <div className="flex items-center justify-between mt-4 text-[11px]" style={{ color: 'var(--ink-400)' }}>
           <div>
@@ -4918,6 +5056,210 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
           <div className="mono">{plan?.meta.template === 'safety' ? 'Safety lens applied' : null}</div>
         </div>
       </Card>
+    </div>
+  )
+}
+
+// ─── Per-template scope picker ───────────────────────────────────────────────
+// Period reports lock to a railway period (4 or 5 weeks). Weekly briefs lock
+// to a single railway week. Safety roll-up and Custom Range expose a free
+// from–to picker so the user can frame any window they like.
+
+function ScopePicker({
+  template, periodSel, setPeriodSel, weekSel, setWeekSel, safetyRange, setSafetyRange, customRange, setCustomRange,
+}: {
+  template: ReportTemplate
+  periodSel:   { railYear: number; period: number; from: string; to: string }
+  setPeriodSel: (s: { railYear: number; period: number; from: string; to: string }) => void
+  weekSel:     { railYear: number; period: number; week: number; from: string; to: string }
+  setWeekSel:  (s: { railYear: number; period: number; week: number; from: string; to: string }) => void
+  safetyRange: { from: string; to: string }
+  setSafetyRange: (s: { from: string; to: string }) => void
+  customRange: { from: string; to: string }
+  setCustomRange: (s: { from: string; to: string }) => void
+}) {
+  const years = useMemo(() => listRailYears(), [])
+
+  if (template === 'period') {
+    const periods = listPeriods(periodSel.railYear)
+    return (
+      <div className="rounded-sm p-4" style={{ background: 'var(--bg-card-hi)', border: '1px solid var(--line)' }}>
+        <div className="label-micro mb-3">Period scope · railway calendar (P1 W1 = Sunday nearest 1 April)</div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <div className="label-micro mb-1.5">Railway year</div>
+            <select
+              className="select w-full"
+              value={periodSel.railYear}
+              onChange={e => {
+                const y = Number(e.target.value)
+                const b = railwayPeriodBounds(periodSel.period, y)
+                setPeriodSel({ railYear: y, period: periodSel.period, from: b.from, to: b.to })
+              }}
+            >
+              {years.map(y => <option key={y.railYear} value={y.railYear}>{y.label}</option>)}
+            </select>
+          </div>
+          <div className="sm:col-span-2">
+            <div className="label-micro mb-1.5">Period</div>
+            <select
+              className="select w-full"
+              value={periodSel.period}
+              onChange={e => {
+                const p = Number(e.target.value)
+                const b = railwayPeriodBounds(p, periodSel.railYear)
+                setPeriodSel({ railYear: periodSel.railYear, period: p, from: b.from, to: b.to })
+              }}
+            >
+              {periods.map(p => {
+                const tag = p.status === 'future' ? ' — future' : p.status === 'current' ? ' — in progress' : ''
+                return (
+                  <option key={p.period} value={p.period} disabled={p.status === 'future'}>
+                    {p.longLabel}{tag}
+                  </option>
+                )
+              })}
+            </select>
+          </div>
+        </div>
+        <div className="text-[10.5px] mt-3" style={{ color: 'var(--ink-400)' }}>
+          Locked to a single Network Rail period (4 weeks, 5 in 53-week years). Comparison runs against the period immediately before.
+        </div>
+      </div>
+    )
+  }
+
+  if (template === 'weekly') {
+    const periods = listPeriods(weekSel.railYear)
+    const weeks = listWeeks(weekSel.period, weekSel.railYear)
+    return (
+      <div className="rounded-sm p-4" style={{ background: 'var(--bg-card-hi)', border: '1px solid var(--line)' }}>
+        <div className="label-micro mb-3">Weekly scope · pick a period then a week within it</div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <div className="label-micro mb-1.5">Railway year</div>
+            <select
+              className="select w-full"
+              value={weekSel.railYear}
+              onChange={e => {
+                const y = Number(e.target.value)
+                const b = railwayWeekBounds(weekSel.period, weekSel.week, y)
+                setWeekSel({ railYear: y, period: weekSel.period, week: weekSel.week, from: b.from, to: b.to })
+              }}
+            >
+              {years.map(y => <option key={y.railYear} value={y.railYear}>{y.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <div className="label-micro mb-1.5">Period</div>
+            <select
+              className="select w-full"
+              value={weekSel.period}
+              onChange={e => {
+                const p = Number(e.target.value)
+                // Reset to W1 when the period changes so we don't end up
+                // pointing at a week that doesn't exist (e.g. W5 in a P12).
+                const b = railwayWeekBounds(p, 1, weekSel.railYear)
+                setWeekSel({ railYear: weekSel.railYear, period: p, week: 1, from: b.from, to: b.to })
+              }}
+            >
+              {periods.map(p => (
+                <option key={p.period} value={p.period} disabled={p.status === 'future'}>
+                  {p.label}{p.status === 'current' ? ' (current)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div className="label-micro mb-1.5">Week</div>
+            <select
+              className="select w-full"
+              value={weekSel.week}
+              onChange={e => {
+                const w = Number(e.target.value)
+                const b = railwayWeekBounds(weekSel.period, w, weekSel.railYear)
+                setWeekSel({ railYear: weekSel.railYear, period: weekSel.period, week: w, from: b.from, to: b.to })
+              }}
+            >
+              {weeks.map(w => {
+                const tag = w.status === 'future' ? ' — future' : w.status === 'current' ? ' — in progress' : ''
+                return (
+                  <option key={w.week} value={w.week} disabled={w.status === 'future'}>
+                    {w.longLabel}{tag}
+                  </option>
+                )
+              })}
+            </select>
+          </div>
+        </div>
+        <div className="text-[10.5px] mt-3" style={{ color: 'var(--ink-400)' }}>
+          A railway week runs Sunday → Saturday and sits inside the four-week period. Comparison runs against the week immediately before.
+        </div>
+      </div>
+    )
+  }
+
+  // Date range pickers for safety / custom
+  const range = template === 'safety' ? safetyRange : customRange
+  const setRange = template === 'safety' ? setSafetyRange : setCustomRange
+  const presets: { label: string; days: number }[] = [
+    { label: 'Last 7 days',  days: 7  },
+    { label: 'Last 14 days', days: 14 },
+    { label: 'Last 30 days', days: 30 },
+    { label: 'Last 90 days', days: 90 },
+  ]
+  return (
+    <div className="rounded-sm p-4" style={{ background: 'var(--bg-card-hi)', border: '1px solid var(--line)' }}>
+      <div className="label-micro mb-3">
+        {template === 'safety' ? 'Safety roll-up · date range' : 'Custom range · date range'}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <div className="label-micro mb-1.5">From</div>
+          <input
+            type="date"
+            className="input w-full"
+            value={range.from}
+            max={range.to}
+            onChange={e => setRange({ from: e.target.value || range.from, to: range.to })}
+          />
+        </div>
+        <div>
+          <div className="label-micro mb-1.5">To</div>
+          <input
+            type="date"
+            className="input w-full"
+            value={range.to}
+            min={range.from}
+            max={yesterdayISO()}
+            onChange={e => setRange({ from: range.from, to: e.target.value || range.to })}
+          />
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2 mt-3">
+        {presets.map(p => {
+          const to = yesterdayISO()
+          const from = isoMinusDays(to, p.days - 1)
+          const active = range.from === from && range.to === to
+          return (
+            <button
+              key={p.days}
+              onClick={() => setRange({ from, to })}
+              className="text-[10.5px] tracking-wider uppercase px-2.5 py-1.5 rounded-sm transition-colors font-mono"
+              style={{
+                background: active ? 'var(--nr-orange-glow)' : 'var(--bg-card)',
+                border: `1px solid ${active ? 'var(--nr-orange)' : 'var(--line)'}`,
+                color: active ? 'var(--ink-100)' : 'var(--ink-400)',
+              }}
+            >
+              {p.label}
+            </button>
+          )
+        })}
+      </div>
+      <div className="text-[10.5px] mt-3" style={{ color: 'var(--ink-400)' }}>
+        Comparison runs against the preceding equivalent window of the same length. Data ceiling is yesterday.
+      </div>
     </div>
   )
 }

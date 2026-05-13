@@ -33,11 +33,16 @@ function buildScopeLabel(template: ReportOptions['template'], from: string, to: 
     const pwFrom = railwayPeriodWeek(from)
     const pwTo   = railwayPeriodWeek(to)
     if (pwFrom.period === pwTo.period && pwFrom.railYear === pwTo.railYear) {
-      return `${pwFrom.yearLabel} · P${String(pwFrom.period).padStart(2, '0')} (W${pwFrom.week}–W${pwTo.week})`
+      // Standard 4-week period — show the period number and the date span on
+      // the cover so the reader instantly knows what's covered.
+      return `${pwFrom.yearLabel} · P${String(pwFrom.period).padStart(2, '0')} · ${shortDate(from)} → ${shortDate(to)}`
     }
     return `${pwFrom.yearLabel} · P${String(pwFrom.period).padStart(2, '0')} W${pwFrom.week} → P${String(pwTo.period).padStart(2, '0')} W${pwTo.week}`
   }
-  if (template === 'weekly')  return `${shortDate(from)} → ${shortDate(to)} · 7-day brief`
+  if (template === 'weekly') {
+    const pw = railwayPeriodWeek(from)
+    return `${pw.yearLabel} · P${String(pw.period).padStart(2, '0')} · W${pw.week} · ${shortDate(from)} → ${shortDate(to)}`
+  }
   if (template === 'safety')  return `${shortDate(from)} → ${shortDate(to)} · safety roll-up`
   return `${shortDate(from)} → ${shortDate(to)} · ${days}-day window`
 }
