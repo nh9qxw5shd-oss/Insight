@@ -5,6 +5,7 @@
 
 import {
   AppendixRow, AssetRow, AttributionRow, CategoryRow, GeoRow, HeatmapCellPlain,
+  PmcIncidentRow, PmcItsrPlan, PmcLocationRow, PmcTopicPlan,
   ReportKpi, ReportPlan, ReportSectionId, SafetyRadarRow, SignalRow, TrendPointPlain,
 } from './types'
 import { donutSvg, hbarSvg, heatmapSvg, safetyRadarSvg, trendAreaSvg, REPORT_COLORS } from './charts'
@@ -967,6 +968,300 @@ function renderAppendix(plan: ReportPlan, num: number): string {
   `
 }
 
+// ─── Control PMC renderers ───────────────────────────────────────────────────
+// Each topic gets its own page with the same shape: header card + delta row,
+// top-locations bar chart (when data exists), then the per-incident table.
+
+function pmcDeltaSpan(signedPct: number | null, inverted = true): string {
+  if (signedPct == null) return `<span class="delta-flat mono">—</span>`
+  if (Math.abs(signedPct) < 0.5) return `<span class="delta-flat mono">~0%</span>`
+  const up = signedPct > 0
+  const isBad = (up && inverted) || (!up && !inverted)
+  const cls = isBad ? 'delta-bad' : 'delta-good'
+  const arrow = up ? '▲' : '▼'
+  return `<span class="${cls} mono">${arrow}&nbsp;${fmtPct(signedPct)}</span>`
+}
+
+function pmcIncidentTable(rows: PmcIncidentRow[], opts: { showNote?: boolean } = {}): string {
+  if (rows.length === 0) {
+    return `<p style="color: var(--ink-3); font-size: 9.5pt; margin: 6pt 0;">No incidents in this band for the selected week.</p>`
+  }
+  return `
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>CCIL</th>
+          <th>TDA</th>
+          <th>Category</th>
+          <th>Title</th>
+          <th>Location</th>
+          <th class="num">Delay</th>
+          <th class="num">Trains</th>
+          <th class="num">Cancel</th>
+          ${opts.showNote ? '<th>Notes</th>' : ''}
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map(r => `
+          <tr>
+            <td>${esc(shortDate(r.date))}</td>
+            <td><span class="mono" style="font-size: 8.5pt;">${esc(r.ccil ?? '—')}</span></td>
+            <td><span class="mono" style="font-size: 8.5pt;">${esc(r.tda ?? '—')}</span></td>
+            <td><span class="cat-chip" style="color: ${r.categoryColor}">${esc(r.categoryShort)}</span></td>
+            <td>${esc(truncate(r.title ?? '—', 36))}</td>
+            <td>${esc(r.location ?? '—')}${r.area ? ` <span class="mono" style="font-size: 7pt; color: var(--ink-3);">· ${esc(r.area)}</span>` : ''}</td>
+            <td class="num">${fmt(r.delayMins)}m</td>
+            <td class="num">${fmt(r.trainsDelayed)}</td>
+            <td class="num">${fmt(r.cancelled)}${r.partCancelled ? `+${fmt(r.partCancelled)}p` : ''}</td>
+            ${opts.showNote ? `<td><span class="mono" style="font-size: 8.5pt; color: var(--ink-3);">${esc(r.note ?? '')}</span></td>` : ''}
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `
+}
+
+function pmcLocationTable(locs: PmcLocationRow[]): string {
+  if (locs.length === 0) return ''
+  return `
+    <div class="panel-light" style="margin-top: 6pt;">
+      <div class="panel-title">Top locations by delay</div>
+      <table class="data" style="margin-top: 4pt;">
+        <thead><tr><th>Location</th><th>Area</th><th class="num">Incidents</th><th class="num">Delay</th></tr></thead>
+        <tbody>
+          ${locs.map(l => `
+            <tr>
+              <td>${esc(l.location)}</td>
+              <td>${esc(l.area ?? '—')}</td>
+              <td class="num">${fmt(l.count)}</td>
+              <td class="num">${fmtMins(l.delayMins)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `
+}
+
+function pmcInsights(insights: string[]): string {
+  if (insights.length === 0) return ''
+  return `
+    <ul class="findings" style="margin-top: 6pt;">
+      ${insights.map(b => `<li class="neutral">${esc(b)}</li>`).join('')}
+    </ul>
+  `
+}
+
+function pmcSummaryCard(plan: PmcTopicPlan): string {
+  const s = plan.summary
+  return `
+    <div class="kpi-grid" style="grid-template-columns: repeat(5, 1fr);">
+      <div class="kpi">
+        <div class="kpi-label">Incidents</div>
+        <div class="kpi-value">${fmt(s.count)}</div>
+        <div class="kpi-delta">${pmcDeltaSpan(s.countDeltaPct)} vs prev wk</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Total delay</div>
+        <div class="kpi-value">${fmtMins(s.delayMins)}</div>
+        <div class="kpi-delta">${pmcDeltaSpan(s.delayDeltaPct)} vs prev wk</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Locations</div>
+        <div class="kpi-value">${fmt(s.uniqueLocations)}</div>
+        <div class="kpi-hint">Distinct sites affected</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">CCIL refs</div>
+        <div class="kpi-value">${fmt(s.uniqueCcil)}</div>
+        <div class="kpi-hint">Unique CCIL numbers</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">TDA refs</div>
+        <div class="kpi-value">${fmt(s.uniqueTda)}</div>
+        <div class="kpi-hint">Unique TDA references</div>
+      </div>
+    </div>
+  `
+}
+
+function renderPmcTopic(
+  plan: ReportPlan, num: number,
+  title: string, subtitle: string, topic: PmcTopicPlan | undefined,
+  opts: { showNote?: boolean } = {},
+): string {
+  if (!topic) return ''
+  const status = topic.status
+    ? `<div class="signal signal-info"><div class="signal-detail">${esc(topic.status)}</div></div>`
+    : ''
+  const secondary = topic.secondary
+    ? `
+      <hr class="rule" />
+      <div class="panel-title">${esc(topic.secondary.title)}</div>
+      ${pmcIncidentTable(topic.secondary.incidents, { showNote: opts.showNote })}
+    `
+    : ''
+  return `
+    <section class="page section">
+      ${sectionHead(String(num).padStart(2, '0'), title, plan.meta.scopeLabel)}
+      <p class="section-lede">${esc(subtitle)}</p>
+      ${status}
+      ${pmcSummaryCard(topic)}
+      ${pmcLocationTable(topic.locations)}
+      ${pmcInsights(topic.insights)}
+      <hr class="rule" />
+      <div class="panel-title">Incidents in scope</div>
+      ${pmcIncidentTable(topic.incidents, { showNote: opts.showNote })}
+      ${secondary}
+      ${footer(plan, num)}
+    </section>
+  `
+}
+
+function renderPmcSummary(plan: ReportPlan, num: number): string {
+  if (!plan.controlPmc) return ''
+  const k = plan.controlPmc.headline
+  const tiles = k.map(kpi => `
+    <div class="kpi ${kpi.critical ? 'kpi-critical' : ''}">
+      <div class="kpi-label">${esc(kpi.label)}</div>
+      <div class="kpi-value">${esc(kpi.value)}</div>
+      ${kpi.delta ? deltaTag(kpi.delta.signedPct, kpi.delta.deltaInverted, kpi.delta.label) : ''}
+      ${kpi.hint ? `<div class="kpi-hint">${esc(kpi.hint)}</div>` : ''}
+    </div>
+  `).join('')
+  return `
+    <section class="page section">
+      ${sectionHead(String(num).padStart(2, '0'), 'Control PMC · Week summary', plan.meta.scopeLabel)}
+      <p class="section-lede">Six headline numbers for the Control PMC week. Each topic is broken down in detail in the sections that follow.</p>
+      <div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr);">${tiles}</div>
+      <hr class="rule" />
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-title">How this report is built</div>
+          <p>Incidents are grouped by topic from the same CCIL feed used by the live dashboard. Stranded-train and ITSR adherence figures are driven by reviewed incidents — events without an SNDM review on file count against ITSR adherence and don't appear in the stranded-train list until reviewed.</p>
+        </div>
+        <div class="panel-light">
+          <div class="panel-title">Period vector</div>
+          <p>Each topic shows a percentage change against the same week one cycle earlier. Up-arrows are red where rising is bad (incidents, delay) and green where rising is good (ITSR adherence).</p>
+        </div>
+      </div>
+      ${footer(plan, num)}
+    </section>
+  `
+}
+
+function renderPmcFatalities(plan: ReportPlan, num: number): string {
+  return renderPmcTopic(plan, num,
+    'Fatalities · Person Struck',
+    'All person-struck and fatality incidents recorded in the week. Zero is the target — any non-zero number triggers a deep-dive in the Control room.',
+    plan.controlPmc?.fatalities)
+}
+
+function renderPmcStranded(plan: ReportPlan, num: number): string {
+  return renderPmcTopic(plan, num,
+    'Stranded train incidents',
+    'Incidents flagged by an SNDM review as having stranded a train. Detail rows show the affected headcodes, locations and times pulled from the review record.',
+    plan.controlPmc?.stranded, { showNote: true })
+}
+
+function renderPmcIrregular(plan: ReportPlan, num: number): string {
+  return renderPmcTopic(plan, num,
+    'Irregular working',
+    'Irregular-working incidents from the CCIL feed. Used to monitor procedural drift and refresh briefings where volume rises week-on-week.',
+    plan.controlPmc?.irregular)
+}
+
+function renderPmcPax(plan: ReportPlan, num: number): string {
+  const pax = plan.controlPmc?.pax
+  if (!pax) return ''
+  const subtitle = pax.summary.count > 10
+    ? `Passenger / public injury events ranked by delay impact — only the top 10 of ${pax.summary.count} appear in the table.`
+    : 'Passenger / public injury events captured this week, ranked by delay impact.'
+  return renderPmcTopic(plan, num, 'PAX incidents', subtitle, pax)
+}
+
+function renderPmcTrainFaults(plan: ReportPlan, num: number): string {
+  return renderPmcTopic(plan, num,
+    'Train fault incidents',
+    'All train faults above 200 minutes delay are reported individually. The top 5 below the 200-minute threshold are appended in the secondary table for awareness.',
+    plan.controlPmc?.trainFaults, { showNote: true })
+}
+
+function renderPmcItsr(plan: ReportPlan, num: number): string {
+  const itsr = plan.controlPmc?.itsr as PmcItsrPlan | undefined
+  if (!itsr) return ''
+  const adherenceTile = `
+    <div class="panel" style="margin-bottom: 6pt;">
+      <div class="panel-title">ITSR adherence — incidents over 300 minutes</div>
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin-top: 6pt; border: 0.5pt solid var(--rule-hi);">
+        <div class="kpi" style="padding: 6mm 5mm;">
+          <div class="kpi-label">Adherence</div>
+          <div class="kpi-value">${itsr.itsrPct.toFixed(0)}%</div>
+          <div class="kpi-hint">${fmt(itsr.itsrCompleted)} of ${fmt(itsr.itsrCount)} reviewed with ITSR</div>
+        </div>
+        <div class="kpi" style="padding: 6mm 5mm;">
+          <div class="kpi-label">ITSR completed</div>
+          <div class="kpi-value">${fmt(itsr.itsrCompleted)}</div>
+          <div class="kpi-hint">Reviewed · ITSR required = Yes</div>
+        </div>
+        <div class="kpi" style="padding: 6mm 5mm;">
+          <div class="kpi-label">No ITSR (reviewed)</div>
+          <div class="kpi-value">${fmt(itsr.itsrMissing)}</div>
+          <div class="kpi-hint">Reviewed · ITSR not required</div>
+        </div>
+        <div class="kpi ${itsr.itsrUnreviewed > 0 ? 'kpi-critical' : ''}" style="padding: 6mm 5mm; border-right: none;">
+          <div class="kpi-label">Unreviewed</div>
+          <div class="kpi-value">${fmt(itsr.itsrUnreviewed)}</div>
+          <div class="kpi-hint">No SNDM review on file</div>
+        </div>
+      </div>
+    </div>
+  `
+  const status = itsr.status
+    ? `<div class="signal signal-info"><div class="signal-detail">${esc(itsr.status)}</div></div>`
+    : ''
+  const secondary = itsr.secondary
+    ? `
+      <hr class="rule" />
+      <div class="panel-title">${esc(itsr.secondary.title)}</div>
+      ${pmcIncidentTable(itsr.secondary.incidents, { showNote: true })}
+    `
+    : ''
+  return `
+    <section class="page section">
+      ${sectionHead(String(num).padStart(2, '0'), 'ITSR adherence', plan.meta.scopeLabel)}
+      <p class="section-lede">Every incident with delay above 300 minutes should have a completed ITSR. The adherence figure measures the share of those incidents whose review confirms an ITSR was completed.</p>
+      ${status}
+      ${adherenceTile}
+      ${pmcLocationTable(itsr.locations)}
+      ${pmcInsights(itsr.insights)}
+      <hr class="rule" />
+      <div class="panel-title">Incidents above 300m with ITSR completed</div>
+      ${pmcIncidentTable(itsr.incidents, { showNote: true })}
+      ${secondary}
+      ${footer(plan, num)}
+    </section>
+  `
+}
+
+function renderPmcSatisfaction(plan: ReportPlan, num: number): string {
+  const sat = plan.controlPmc?.satisfaction
+  if (!sat) return ''
+  return `
+    <section class="page section">
+      ${sectionHead(String(num).padStart(2, '0'), 'Passenger satisfaction', plan.meta.scopeLabel)}
+      <p class="section-lede">${esc(sat.status ?? 'Reserved for passenger satisfaction reporting.')}</p>
+      <div class="panel">
+        <div class="panel-title">Reserved section</div>
+        ${pmcInsights(sat.insights)}
+        <p style="color: var(--ink-3); font-size: 9.5pt; margin-top: 6pt;">When the satisfaction data feed is wired up, this section will display weekly survey results, top complaint themes, and movement against the prior week — using the same period-vs-period framing as the rest of this pack.</p>
+      </div>
+      ${footer(plan, num)}
+    </section>
+  `
+}
+
 function severityPillClass(s: string): string {
   if (s === 'CRITICAL') return 'critical'
   if (s === 'HIGH')     return 'high'
@@ -1006,6 +1301,14 @@ const SECTION_RENDERERS: Record<Exclude<ReportSectionId, 'cover'>, (plan: Report
   signals:      renderSignals,
   narrative:    renderNarrative,
   appendix:     renderAppendix,
+  pmcSummary:      renderPmcSummary,
+  pmcFatalities:   renderPmcFatalities,
+  pmcStranded:     renderPmcStranded,
+  pmcIrregular:    renderPmcIrregular,
+  pmcPax:          renderPmcPax,
+  pmcTrainFaults:  renderPmcTrainFaults,
+  pmcItsr:         renderPmcItsr,
+  pmcSatisfaction: renderPmcSatisfaction,
 }
 
 export function renderReportDocument(plan: ReportPlan): string {

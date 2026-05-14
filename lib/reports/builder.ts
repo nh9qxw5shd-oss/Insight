@@ -13,6 +13,7 @@ import {
 } from '../queries'
 import { railwayPeriodWeek } from '../railwayCalendar'
 import { buildNarrative } from './narrative'
+import { buildControlPmcPlan } from './controlPmc'
 import {
   AppendixRow, AssetRow, AttributionRow, CategoryRow, ChangePointRow, GeoRow,
   HeatmapCellPlain, ReportKpi, ReportOptions, ReportPlan, ReportSource,
@@ -39,7 +40,7 @@ function buildScopeLabel(template: ReportOptions['template'], from: string, to: 
     }
     return `${pwFrom.yearLabel} · P${String(pwFrom.period).padStart(2, '0')} W${pwFrom.week} → P${String(pwTo.period).padStart(2, '0')} W${pwTo.week}`
   }
-  if (template === 'weekly') {
+  if (template === 'weekly' || template === 'controlPmc') {
     const pw = railwayPeriodWeek(from)
     return `${pw.yearLabel} · P${String(pw.period).padStart(2, '0')} · W${pw.week} · ${shortDate(from)} → ${shortDate(to)}`
   }
@@ -314,7 +315,16 @@ export function buildReportPlan(src: ReportSource, options: ReportOptions): Repo
     weekly: 'Weekly Brief',
     safety: 'Safety Roll-up',
     custom: 'Strategic Report',
+    controlPmc: 'Control PMC',
   } as const)[options.template]
+
+  // Control PMC is a structurally different report — its sections drive a
+  // dedicated topic-by-topic plan rather than the strategic dashboards above.
+  // We still keep heroKpis / cover working so the rest of the renderer is
+  // unchanged.
+  const controlPmc = options.template === 'controlPmc'
+    ? buildControlPmcPlan(src.incidents, src.prevIncidents, src.reviews ?? [], src.prevReviews ?? [])
+    : undefined
 
   return {
     meta: {
@@ -329,7 +339,7 @@ export function buildReportPlan(src: ReportSource, options: ReportOptions): Repo
       demoMode: src.demoMode,
     },
     sections: options.sections,
-    heroKpis: buildHeroKpis(data),
+    heroKpis: controlPmc ? controlPmc.headline : buildHeroKpis(data),
     kpis:           want.has('kpis')         ? buildKpis(data) : undefined,
     trend:          want.has('trend')        ? { points: buildTrend(trendPts), changePoints } : undefined,
     categories:     want.has('categoryMix')  ? categories : undefined,
@@ -342,5 +352,6 @@ export function buildReportPlan(src: ReportSource, options: ReportOptions): Repo
     narrative:      want.has('narrative')    ? narrative : undefined,
     executive:      want.has('executive')    ? narrative.executive : undefined,
     appendix:       want.has('appendix')     ? buildAppendix(lensData, options.appendixLimit) : undefined,
+    controlPmc,
   }
 }
