@@ -1386,7 +1386,7 @@ const REVIEW_COLS =
   'id, incident_id, report_date, reviewed_by, reviewed_at, updated_at, ' +
   'technical_conference_outcome, commentary, ' +
   'stranded_trains_occurred, stranded_trains, ' +
-  'itsr_required, time_huddle_held, incident_classification, ' +
+  'itsr_required, itsr_commentary, time_huddle_held, incident_classification, ' +
   'mom_responded, mom_depot, mom_response_time, first_50_30min_target_met, ' +
   'target_recovery_time, actual_recovery_time, time_to_recover_mins, ' +
   'title_override, location_override, area_override, ' +

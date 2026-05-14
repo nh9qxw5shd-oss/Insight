@@ -114,6 +114,7 @@ export interface IncidentReview {
   stranded_trains: StrandedTrainEntry[] | null
 
   itsr_required: YesNoNa | null
+  itsr_commentary: string | null
   time_huddle_held: string | null
 
   incident_classification: IncidentClassification | null

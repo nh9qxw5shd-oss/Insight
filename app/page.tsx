@@ -4616,9 +4616,13 @@ function ReviewForm({
           <Field label="Conference Held?">
             <YesNoNaSelect value={form.technical_conference_outcome} onChange={v => set('technical_conference_outcome', v)} />
           </Field>
-          {(form.technical_conference_outcome === 'YES' || form.technical_conference_outcome === 'NO') && (
+          {form.technical_conference_outcome && (
             <div className="sm:col-span-2 lg:col-span-3">
-              <Field label={form.technical_conference_outcome === 'YES' ? 'Commentary (statement supporting the YES decision)' : 'Commentary (statement supporting the NO decision)'}>
+              <Field label={
+                form.technical_conference_outcome === 'YES' ? 'Commentary (statement supporting the YES decision)' :
+                form.technical_conference_outcome === 'NO'  ? 'Commentary (statement supporting the NO decision)' :
+                                                              'Commentary (statement supporting the N/A decision)'
+              }>
                 <textarea
                   className="input"
                   rows={2}
@@ -4667,13 +4671,26 @@ function ReviewForm({
 
         {/* Row 4 — ITSR */}
         <FieldGroup label="ITSR">
-          <Field label="ITSR Required?">
+          <Field label="ITSR Implemented">
             <YesNoNaSelect value={form.itsr_required} onChange={v => set('itsr_required', v)} />
           </Field>
           {form.itsr_required === 'YES' && (
             <Field label="Time Huddle Held">
               <input className="input" type="time" value={form.time_huddle_held ?? ''} onChange={e => set('time_huddle_held', e.target.value || null)} />
             </Field>
+          )}
+          {(form.itsr_required === 'NO' || form.itsr_required === 'NA') && (
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Field label={form.itsr_required === 'NO' ? 'Commentary (statement supporting the NO decision)' : 'Commentary (statement supporting the N/A decision)'}>
+                <textarea
+                  className="input"
+                  rows={2}
+                  value={form.itsr_commentary ?? ''}
+                  onChange={e => set('itsr_commentary', e.target.value)}
+                  placeholder="Record the statement against the decision…"
+                />
+              </Field>
+            </div>
           )}
         </FieldGroup>
 
