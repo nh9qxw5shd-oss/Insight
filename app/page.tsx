@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
-  ClipboardCheck, ClipboardList, Clock, Compass, Download, FileText, Filter, FlaskConical, GitBranch, Layers, List, MapPin,
+  ClipboardCheck, ClipboardList, Clock, Compass, Crosshair, Download, FileText, Filter, FlaskConical, GitBranch, Layers, List, MapPin,
   Minus, Moon, RefreshCw, Route, Search, Sun, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -60,10 +60,11 @@ import { renderReportDocument } from '@/lib/reports/html'
 import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/print'
 import { serialiseControlPmcCsv, controlPmcCsvFilename } from '@/lib/reports/controlPmc'
 import { DistillationTab } from './distillation-tab'
+import { FocusTab } from './focus-tab'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'explore' | 'analytics' | 'review' | 'reports' | 'distillation'
+type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'explore' | 'analytics' | 'focus' | 'review' | 'reports' | 'distillation'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -75,6 +76,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'trends',      label: 'Trends',      icon: GitBranch },
   { id: 'explore',     label: 'Explore',     icon: Compass },
   { id: 'analytics',   label: 'Analytics',   icon: BarChart2 },
+  { id: 'focus',        label: 'Focus',        icon: Crosshair },
   { id: 'review',       label: 'Review',       icon: ClipboardCheck },
   { id: 'reports',      label: 'Reports',      icon: FileText },
   { id: 'distillation', label: 'Distillation', icon: FlaskConical },
@@ -465,6 +467,7 @@ export default function InsightDashboard() {
             {tab === 'trends'      && <TrendsTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowDays={effectiveData.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'explore'     && <ExploreTab incidents={effectiveData.incidents} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} />}
+            {tab === 'focus'       && <FocusTab incidents={effectiveData.incidents} />}
             {tab === 'review'      && (
               reviewLoading && !reviewIncidents
                 ? <div className="flex items-center justify-center py-24"><RefreshCw size={16} className="animate-spin" style={{ color: 'var(--ink-400)' }} /></div>
