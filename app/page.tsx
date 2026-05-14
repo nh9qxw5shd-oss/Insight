@@ -5018,7 +5018,14 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
 
   const scope: ReportScope = useMemo(() => {
     if (template === 'period') return { kind: 'period', ...periodSel }
-    if (template === 'weekly' || template === 'controlPmc') return { kind: 'weekly', ...weekSel }
+    if (template === 'weekly' || template === 'controlPmc') {
+      // Always derive `to` as `from + 6 days` so a stale weekSel.to (e.g. one
+      // that somehow inherited a 28-day period range) can't widen the window.
+      // The Control PMC report is strictly week-based.
+      const fromMs = new Date(weekSel.from + 'T00:00:00Z').getTime()
+      const to = new Date(fromMs + 6 * 86_400_000).toISOString().slice(0, 10)
+      return { kind: 'weekly', railYear: weekSel.railYear, period: weekSel.period, week: weekSel.week, from: weekSel.from, to }
+    }
     if (template === 'safety') return { kind: 'range', ...safetyRange }
     return { kind: 'range', ...customRange }
   }, [template, periodSel, weekSel, safetyRange, customRange])

@@ -556,6 +556,11 @@ function reportStylesheet(): string {
         text-transform: uppercase;
         color: var(--ink-3);
         margin-bottom: 2px;
+        /* Keep long uppercase labels (CANCELLATIONS, FILES ATTACHED) inside
+           their grid column rather than bleeding into the next cell. */
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        white-space: normal;
       }
       .td-value {
         font-size: 9.5pt;
@@ -1492,12 +1497,12 @@ function renderPmcTopDelayCard(d: PmcTopDelayDetail, rank: number, maxDelay: num
         <div>
           <div class="panel-title">Impact</div>
           <div class="td-grid">
-            ${detailCell('Trains delayed',  fmt(d.trainsDelayed))}
-            ${detailCell('Cancellations',   fmt(d.cancelled))}
-            ${detailCell('Part-cancel',     fmt(d.partCancelled))}
-            ${detailCell('Event count',     d.eventCount != null ? fmt(d.eventCount) : null)}
-            ${detailCell('FTS div count',   d.ftsDivCount != null ? fmt(d.ftsDivCount) : null)}
-            ${detailCell('Files attached',  d.hasFiles == null ? null : d.hasFiles ? 'Yes' : 'No')}
+            ${detailCell('Trains',     fmt(d.trainsDelayed))}
+            ${detailCell('Cancelled',  fmt(d.cancelled))}
+            ${detailCell('Part-canc.', fmt(d.partCancelled))}
+            ${detailCell('Events',     d.eventCount != null ? fmt(d.eventCount) : null)}
+            ${detailCell('FTS div',    d.ftsDivCount != null ? fmt(d.ftsDivCount) : null)}
+            ${detailCell('Files',      d.hasFiles == null ? null : d.hasFiles ? 'Yes' : 'No')}
           </div>
         </div>
         <div>
