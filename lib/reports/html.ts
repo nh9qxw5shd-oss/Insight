@@ -1189,8 +1189,10 @@ function pmcInsights(insights: string[]): string {
 
 function pmcSummaryCard(plan: PmcTopicPlan): string {
   const s = plan.summary
+  // CCIL refs intentionally omitted — every incident carries one CCIL so the
+  // figure was always equal to "Incidents" and offered no extra information.
   return `
-    <div class="kpi-grid" style="grid-template-columns: repeat(5, 1fr);">
+    <div class="kpi-grid" style="grid-template-columns: repeat(4, 1fr);">
       <div class="kpi">
         <div class="kpi-label">Incidents</div>
         <div class="kpi-value">${fmt(s.count)}</div>
@@ -1205,11 +1207,6 @@ function pmcSummaryCard(plan: PmcTopicPlan): string {
         <div class="kpi-label">Locations</div>
         <div class="kpi-value">${fmt(s.uniqueLocations)}</div>
         <div class="kpi-hint">Distinct sites affected</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">CCIL refs</div>
-        <div class="kpi-value">${fmt(s.uniqueCcil)}</div>
-        <div class="kpi-hint">Unique CCIL numbers</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">TDA refs</div>
