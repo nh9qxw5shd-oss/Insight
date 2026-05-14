@@ -2,13 +2,14 @@
 // The builder produces a ReportPlan from RawData + filters; the renderer turns
 // that plan into a fully styled HTML document ready to print as a PDF.
 
-import { IncidentCategory, IncidentRow, Severity } from '../types'
+import { IncidentCategory, IncidentReview, IncidentRow, Severity } from '../types'
 
 export type ReportTemplate =
   | 'period'        // Railway period (P/W) overview — strategic
   | 'weekly'        // 7-day brief — tactical
   | 'safety'        // Safety-critical roll-up with reviewed commentary
   | 'custom'        // Current dashboard window, every section
+  | 'controlPmc'    // Control PMC weekly KPI roll-up by topic
 
 export const REPORT_TEMPLATES: { id: ReportTemplate; name: string; subtitle: string; tagline: string }[] = [
   { id: 'period',  name: 'Period Report',
@@ -20,6 +21,9 @@ export const REPORT_TEMPLATES: { id: ReportTemplate; name: string; subtitle: str
   { id: 'safety',  name: 'Safety Roll-up',
     subtitle: 'Operational',
     tagline: 'Safety-critical incidents only — radar comparison, location clusters, reviewed commentary.' },
+  { id: 'controlPmc', name: 'Control PMC',
+    subtitle: 'Weekly · Control',
+    tagline: 'Weekly Control PMC roll-up by topic — fatalities, stranded trains, irregular working, PAX, train faults, ITSR adherence and (later) passenger satisfaction.' },
   { id: 'custom',  name: 'Custom Range Report',
     subtitle: 'Bespoke',
     tagline: 'Uses the dashboard\'s current filter window. Toggle individual sections in or out.' },
@@ -39,6 +43,16 @@ export type ReportSectionId =
   | 'signals'
   | 'narrative'
   | 'appendix'
+  // Control PMC sections — each one corresponds to a single KPI topic in the
+  // weekly Control PMC pack (one section per topic).
+  | 'pmcSummary'
+  | 'pmcFatalities'
+  | 'pmcStranded'
+  | 'pmcIrregular'
+  | 'pmcPax'
+  | 'pmcTrainFaults'
+  | 'pmcItsr'
+  | 'pmcSatisfaction'
 
 export const SECTION_LABELS: Record<ReportSectionId, string> = {
   cover:        'Cover page',
@@ -54,6 +68,14 @@ export const SECTION_LABELS: Record<ReportSectionId, string> = {
   signals:      'Anomalies & signals',
   narrative:    'Findings & guidance',
   appendix:     'Incident appendix',
+  pmcSummary:      'PMC week summary',
+  pmcFatalities:   'Fatalities · Person Struck',
+  pmcStranded:     'Stranded train incidents',
+  pmcIrregular:    'Irregular working',
+  pmcPax:          'PAX incidents (top 10)',
+  pmcTrainFaults:  'Train faults (>200m + top 5)',
+  pmcItsr:         'ITSR adherence (>300m)',
+  pmcSatisfaction: 'Passenger satisfaction',
 }
 
 export const TEMPLATE_DEFAULT_SECTIONS: Record<ReportTemplate, ReportSectionId[]> = {
@@ -61,7 +83,22 @@ export const TEMPLATE_DEFAULT_SECTIONS: Record<ReportTemplate, ReportSectionId[]
   weekly:  ['cover', 'executive', 'kpis', 'trend', 'categoryMix', 'signals', 'narrative'],
   safety:  ['cover', 'executive', 'kpis', 'safetyRadar', 'geography', 'patterns', 'signals', 'narrative', 'appendix'],
   custom:  ['cover', 'executive', 'kpis', 'trend', 'categoryMix', 'geography', 'patterns', 'assets', 'safetyRadar', 'attribution', 'signals', 'narrative', 'appendix'],
+  controlPmc: ['cover', 'pmcSummary', 'pmcFatalities', 'pmcStranded', 'pmcIrregular', 'pmcPax', 'pmcTrainFaults', 'pmcItsr', 'pmcSatisfaction'],
 }
+
+// Sections selectable in the Control PMC builder UI — kept narrow so the
+// section toggle row only shows topics that belong to this template.
+export const CONTROL_PMC_SECTIONS: ReportSectionId[] = [
+  'cover', 'pmcSummary', 'pmcFatalities', 'pmcStranded', 'pmcIrregular',
+  'pmcPax', 'pmcTrainFaults', 'pmcItsr', 'pmcSatisfaction',
+]
+
+// Sections selectable in the legacy templates (period / weekly / safety /
+// custom) — excludes the Control PMC topic sections.
+export const STANDARD_TEMPLATE_SECTIONS: ReportSectionId[] = [
+  'cover', 'executive', 'kpis', 'trend', 'categoryMix', 'geography',
+  'patterns', 'safetyRadar', 'assets', 'attribution', 'signals', 'narrative', 'appendix',
+]
 
 export interface ReportMeta {
   template:    ReportTemplate
@@ -172,6 +209,87 @@ export interface HeatmapCellPlain {
   count: number
 }
 
+// ─── Control PMC topic plans ─────────────────────────────────────────────────
+// Each KPI topic in the Control PMC pack shares the same shape: a header card
+// of summary stats, a per-location breakdown, and a per-incident table with
+// CCIL / TDA references. Some topics ride on top of incident-review fields
+// (stranded trains, ITSR adherence) so they may be empty in demo mode.
+
+export interface PmcIncidentRow {
+  date:        string
+  ccil:        string | null
+  tda:         string | null
+  category:    IncidentCategory
+  categoryShort: string
+  categoryColor: string
+  title:       string | null
+  location:    string | null
+  area:        string | null
+  delayMins:   number
+  trainsDelayed: number
+  cancelled:   number
+  partCancelled: number
+  // Topic-specific notes the renderer can surface inline.
+  note?:       string | null
+}
+
+export interface PmcLocationRow {
+  location:    string
+  area:        string | null
+  count:       number
+  delayMins:   number
+}
+
+export interface PmcTopicSummary {
+  count:        number               // distinct (non-continuation) incidents in scope
+  prevCount:    number
+  countDeltaPct: number | null
+  delayMins:    number
+  prevDelay:    number
+  delayDeltaPct: number | null
+  uniqueLocations: number
+  uniqueCcil:   number
+  uniqueTda:    number
+}
+
+export interface PmcTopicPlan {
+  topic:       string                // human label
+  summary:     PmcTopicSummary
+  locations:   PmcLocationRow[]      // top locations by delay
+  incidents:   PmcIncidentRow[]      // table rows
+  // Optional secondary table for two-section topics (e.g. train faults split,
+  // ITSR did-have / didn't-have). When present, the renderer shows two tables.
+  secondary?: {
+    title:     string
+    incidents: PmcIncidentRow[]
+  }
+  // Topic-level callouts / insights, e.g. "all 3 fatalities were near-miss".
+  insights:    string[]
+  // Free-text status (e.g. "data not yet captured — implementation pending").
+  status?:     string
+}
+
+export interface PmcItsrPlan extends PmcTopicPlan {
+  // ITSR-specific roll-up. The 300-min threshold is the policy gate.
+  itsrPct:        number               // pct of >300m incidents that had ITSR completed
+  itsrCount:      number               // total >300m incidents
+  itsrCompleted:  number               // those with itsr_required = YES on the review
+  itsrMissing:    number               // those without ITSR
+  itsrUnreviewed: number               // those with no review at all
+}
+
+export interface ControlPmcPlan {
+  fatalities:    PmcTopicPlan
+  stranded:      PmcTopicPlan
+  irregular:     PmcTopicPlan
+  pax:           PmcTopicPlan
+  trainFaults:   PmcTopicPlan          // primary >200m, secondary top 5 below 200m
+  itsr:          PmcItsrPlan
+  satisfaction:  PmcTopicPlan          // placeholder topic
+  // Headline KPIs surfaced in the PMC summary section / cover.
+  headline:      ReportKpi[]
+}
+
 export interface ReportPlan {
   meta:        ReportMeta
   sections:    ReportSectionId[]
@@ -189,6 +307,8 @@ export interface ReportPlan {
   narrative?:      { headline: string; paragraphs: string[]; bullets: { kind: 'positive' | 'warning' | 'neutral'; text: string }[] }
   executive?:      string                  // 2–3 sentence summary
   appendix?:       AppendixRow[]
+  // Control PMC composite payload — only set when template === 'controlPmc'.
+  controlPmc?:     ControlPmcPlan
   // Heroes shown on the cover even if KPI section is disabled
   heroKpis?:       ReportKpi[]
 }
@@ -222,4 +342,8 @@ export interface ReportSource {
   demoMode:          boolean
   incidents:         IncidentRow[]
   prevIncidents:     IncidentRow[]
+  // Reviews keyed by incident id — required for the Control PMC template
+  // (stranded train detection, ITSR adherence). Optional for other templates.
+  reviews?:          IncidentReview[]
+  prevReviews?:      IncidentReview[]
 }

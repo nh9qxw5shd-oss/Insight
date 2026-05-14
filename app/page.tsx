@@ -53,10 +53,12 @@ import { exportCSV } from '@/lib/export'
 import {
   ReportTemplate, ReportSectionId,
   REPORT_TEMPLATES, TEMPLATE_DEFAULT_SECTIONS, SECTION_LABELS,
+  CONTROL_PMC_SECTIONS, STANDARD_TEMPLATE_SECTIONS,
 } from '@/lib/reports/types'
 import { buildReportPlan } from '@/lib/reports/builder'
 import { renderReportDocument } from '@/lib/reports/html'
 import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/print'
+import { serialiseControlPmcCsv, controlPmcCsvFilename } from '@/lib/reports/controlPmc'
 import { DistillationTab } from './distillation-tab'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
@@ -5016,7 +5018,7 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
 
   const scope: ReportScope = useMemo(() => {
     if (template === 'period') return { kind: 'period', ...periodSel }
-    if (template === 'weekly') return { kind: 'weekly', ...weekSel }
+    if (template === 'weekly' || template === 'controlPmc') return { kind: 'weekly', ...weekSel }
     if (template === 'safety') return { kind: 'range', ...safetyRange }
     return { kind: 'range', ...customRange }
   }, [template, periodSel, weekSel, safetyRange, customRange])
@@ -5032,6 +5034,10 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   const [reportData, setReportData] = useState<RawData | null>(null)
   const [loadingReport, setLoadingReport] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
+  // Control PMC needs incident reviews to drive stranded-train and ITSR
+  // adherence figures. Fetched on demand for the chosen week + the previous
+  // week (for week-on-week deltas).
+  const [reviewBundle, setReviewBundle] = useState<{ reviews: IncidentReview[]; prevReviews: IncidentReview[] } | null>(null)
 
   // Stable signature of the non-date filters so we only re-fetch when
   // something genuinely changes — avoids hammering Supabase on every render.
@@ -5081,6 +5087,43 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope.from, scope.to, filterSig, demoMode])
 
+  // Fetch incident reviews for the Control PMC template so stranded-train and
+  // ITSR adherence sections are populated. Skipped for other templates to
+  // avoid an unused round-trip.
+  useEffect(() => {
+    if (template !== 'controlPmc') {
+      setReviewBundle(null)
+      return
+    }
+    let cancelled = false
+    const days = daysBetween(scope.from, scope.to)
+    const prevTo = isoMinusDays(scope.from, 1)
+    const prevFrom = isoMinusDays(prevTo, days - 1)
+
+    async function run() {
+      try {
+        if (!isSupabaseConfigured() || demoMode) {
+          // No reviews in demo mode — Control PMC sections will surface an
+          // explanatory status banner rather than fake adherence numbers.
+          if (!cancelled) setReviewBundle({ reviews: [], prevReviews: [] })
+          return
+        }
+        const [reviews, prevReviews] = await Promise.all([
+          fetchReviewsForRange(scope.from, scope.to),
+          fetchReviewsForRange(prevFrom, prevTo),
+        ])
+        if (!cancelled) setReviewBundle({ reviews, prevReviews })
+      } catch (e: any) {
+        if (!cancelled) {
+          setReviewBundle({ reviews: [], prevReviews: [] })
+        }
+      }
+    }
+    run()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [template, scope.from, scope.to, demoMode])
+
   const filtersDescriptor = useMemo(() => describeFilters(filters), [filters])
 
   const plan = useMemo(() => {
@@ -5094,10 +5137,12 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
         demoMode:      demoMode || !isSupabaseConfigured(),
         incidents:     reportData.incidents,
         prevIncidents: reportData.prevIncidents,
+        reviews:       reviewBundle?.reviews,
+        prevReviews:   reviewBundle?.prevReviews,
       },
       { template, sections, appendixLimit, clientLine: 'Network Rail · EMCC', preparedBy: 'EMCC Insight' },
     )
-  }, [reportData, filtersDescriptor, demoMode, template, sections, appendixLimit])
+  }, [reportData, filtersDescriptor, demoMode, template, sections, appendixLimit, reviewBundle])
 
   const html = useMemo(() => plan ? renderReportDocument(plan) : '', [plan])
 
@@ -5110,6 +5155,17 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   const handleDownload = () => {
     if (!plan) return
     downloadHtml(html, reportFilename(plan.meta.template, plan.meta.scopeLabel))
+  }
+  const handleCsv = () => {
+    if (!plan?.controlPmc) return
+    const csv = serialiseControlPmcCsv(plan.controlPmc, plan.meta.scopeLabel, plan.meta.generatedAt)
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href = url
+    a.download = controlPmcCsvFilename(plan.meta.scopeLabel)
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 30_000)
   }
 
   const toggleSection = (id: ReportSectionId) => {
@@ -5136,6 +5192,16 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
         className="tick-corners"
         right={
           <div className="flex items-center gap-2">
+            {template === 'controlPmc' && (
+              <button
+                onClick={handleCsv}
+                className="btn"
+                disabled={!plan?.controlPmc}
+                title="Download the Control PMC report data as a CSV (one row per incident, with topic summary)"
+              >
+                <Download size={12} /> Save CSV
+              </button>
+            )}
             <button
               onClick={handleDownload}
               className="btn"
@@ -5201,7 +5267,7 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
             </button>
           </div>
           <div className="flex flex-wrap gap-2">
-            {(['cover', 'executive', 'kpis', 'trend', 'categoryMix', 'geography', 'patterns', 'safetyRadar', 'assets', 'attribution', 'signals', 'narrative', 'appendix'] as ReportSectionId[]).map(s => {
+            {(template === 'controlPmc' ? CONTROL_PMC_SECTIONS : STANDARD_TEMPLATE_SECTIONS).map(s => {
               const on = sections.includes(s)
               return (
                 <button
@@ -5384,12 +5450,15 @@ function ScopePicker({
     )
   }
 
-  if (template === 'weekly') {
+  if (template === 'weekly' || template === 'controlPmc') {
     const periods = listPeriods(weekSel.railYear)
     const weeks = listWeeks(weekSel.period, weekSel.railYear)
+    const lede = template === 'controlPmc'
+      ? 'Control PMC scope · pick the railway period and week to roll up'
+      : 'Weekly scope · pick a period then a week within it'
     return (
       <div className="rounded-sm p-4" style={{ background: 'var(--bg-card-hi)', border: '1px solid var(--line)' }}>
-        <div className="label-micro mb-3">Weekly scope · pick a period then a week within it</div>
+        <div className="label-micro mb-3">{lede}</div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
             <div className="label-micro mb-1.5">Railway year</div>
