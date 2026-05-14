@@ -18,6 +18,7 @@ import {
 import { effectiveDelay, nonContinuation } from '../queries'
 import {
   ControlPmcPlan, PmcIncidentRow, PmcItsrPlan, PmcLocationRow,
+  PmcRepeatMatch, PmcTopDelayDetail, PmcTopDelayPlan,
   PmcTopicPlan, PmcTopicSummary, ReportKpi,
 } from './types'
 
@@ -25,6 +26,9 @@ const ITSR_THRESHOLD_MINS = 300
 const TRAIN_FAULT_PRIMARY_MINS = 200
 const PAX_TOPN = 10
 const TRAIN_FAULT_SECONDARY_TOPN = 5
+const TOP_DELAY_N = 5
+const TOP_DELAY_MATCHES_CAP = 8
+const HISTORICAL_LOOKBACK_DAYS = 183  // ~6 months
 
 function pctDelta(curr: number, prev: number): number | null {
   if (prev === 0) return curr === 0 ? 0 : null
@@ -306,6 +310,188 @@ function buildItsr(
   }
 }
 
+// ─── Top 5 highest-delay incidents (deep-dive) ───────────────────────────────
+// Filter-blind, category-blind ranking of the worst-disruption incidents in
+// the week. Each entry carries the full incident record plus a list of any
+// matching events from the trailing six months (same fault number, or same
+// location + asset type) to highlight repeat problems.
+
+function isValidFaultNumber(fn: string | null | undefined): fn is string {
+  if (!fn) return false
+  const n = fn.trim().toLowerCase()
+  return n !== '' && n !== 'n/a' && n !== 'na' && n !== 'n-a' && n !== 'nil' && n !== 'none'
+}
+
+function normKey(s: string | null | undefined): string {
+  return (s ?? '').trim().toLowerCase()
+}
+
+function isoMinusDays(iso: string, days: number): string {
+  const ms = new Date(iso + 'T00:00:00Z').getTime() - days * 86_400_000
+  return new Date(ms).toISOString().slice(0, 10)
+}
+
+function findRepeatMatches(target: IncidentRow, history: IncidentRow[]): { matches: PmcRepeatMatch[]; note: string } {
+  const matchedById = new Map<string, PmcRepeatMatch>()
+  const targetFault = isValidFaultNumber(target.fault_number) ? target.fault_number.trim() : null
+  const targetLoc   = normKey(target.location)
+  const targetCode  = normKey(target.incident_type_code)
+  const targetLabel = normKey(target.incident_type_label)
+
+  for (const i of history) {
+    if (i.id === target.id) continue
+    if (i.is_continuation) continue
+    let matchedOn: 'fault' | 'location-type' | null = null
+
+    if (targetFault) {
+      const fn = i.fault_number?.trim()
+      if (fn && fn === targetFault) matchedOn = 'fault'
+    }
+    if (!matchedOn && targetLoc) {
+      const loc = normKey(i.location)
+      if (loc === targetLoc) {
+        const codeMatch  = targetCode  !== '' && normKey(i.incident_type_code)  === targetCode
+        const labelMatch = targetLabel !== '' && normKey(i.incident_type_label) === targetLabel
+        const sameCategory = i.category === target.category
+        // Match on type (preferred) — fall back to same category at the same
+        // location when neither code nor label is captured.
+        if (codeMatch || labelMatch || sameCategory) matchedOn = 'location-type'
+      }
+    }
+    if (!matchedOn) continue
+    matchedById.set(i.id, {
+      id:        i.id,
+      date:      i.report_date,
+      ccil:      i.ccil,
+      title:     i.title,
+      delayMins: effectiveDelay(i),
+      location:  i.location,
+      area:      i.area,
+      matchedOn,
+    })
+  }
+
+  const matches = Array.from(matchedById.values())
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, TOP_DELAY_MATCHES_CAP)
+
+  // Human-readable summary of the search rule used for this incident
+  const parts: string[] = []
+  if (targetFault) parts.push(`fault no. ${targetFault}`)
+  if (targetLoc)   parts.push(`same location ("${target.location}")`)
+  if (targetCode || targetLabel) {
+    const t = target.incident_type_label || target.incident_type_code
+    if (t) parts.push(`same incident type ("${t}")`)
+  }
+  const note = parts.length
+    ? `Searched ${HISTORICAL_LOOKBACK_DAYS} days for: ${parts.join(' OR ')}.`
+    : 'No fault number / location / type captured — repeat lookup limited.'
+
+  return { matches, note }
+}
+
+function toTopDelayDetail(i: IncidentRow, history: IncidentRow[]): PmcTopDelayDetail {
+  const cfg = CATEGORY_CONFIG[i.category]
+  const { matches, note } = findRepeatMatches(i, history)
+  return {
+    id:               i.id,
+    date:             i.report_date,
+    ccil:             i.ccil,
+    tda:              i.tda_ref,
+    category:         i.category,
+    categoryLabel:    cfg.label,
+    categoryShort:    cfg.short,
+    categoryColor:    cfg.color,
+    severity:         i.severity,
+    title:            i.title,
+    location:         i.location,
+    area:             i.area,
+    line:             i.line,
+    delayMins:        effectiveDelay(i),
+    trainsDelayed:    i.trains_delayed,
+    cancelled:        i.cancelled,
+    partCancelled:    i.part_cancelled,
+    incidentStart:    i.incident_start,
+    advisedTime:      i.advised_time,
+    initialRespTime:  i.initial_resp_time,
+    arrivedAtTime:    i.arrived_at_time,
+    nwrTime:          i.nwr_time,
+    minsToAdvised:    i.mins_to_advised,
+    minsToResponse:   i.mins_to_response,
+    minsToArrival:    i.mins_to_arrival,
+    incidentDuration: i.incident_duration,
+    incidentTypeCode: i.incident_type_code,
+    incidentTypeLabel: i.incident_type_label,
+    faultNumber:      i.fault_number,
+    possessionRef:    i.possession_ref,
+    btpRef:           i.btp_ref,
+    thirdPartyRef:    i.third_party_ref,
+    trustRef:         i.trust_ref,
+    tdaRef:           i.tda_ref,
+    trmcCode:         i.trmc_code,
+    actionCode:       i.action_code,
+    responderInitials: i.responder_initials,
+    trainId:          i.train_id,
+    trainCompany:     i.train_company,
+    trainOrigin:      i.train_origin,
+    trainDestination: i.train_destination,
+    unitNumbers:      i.unit_numbers,
+    eventCount:       i.event_count,
+    ftsDivCount:      i.fts_div_count,
+    hasFiles:         i.has_files,
+    hourOfDay:        i.hour_of_day,
+    dayOfWeek:        i.day_of_week,
+    matches,
+    matchNote:        note,
+  }
+}
+
+function buildTopDelay(
+  curr: IncidentRow[],
+  history: IncidentRow[],
+  weekFrom: string,
+  weekTo: string,
+): PmcTopDelayPlan {
+  const ranked = nonContinuation(curr)
+    .map(i => ({ inc: i, delay: effectiveDelay(i) }))
+    .filter(x => x.delay > 0)
+    .sort((a, b) => b.delay - a.delay)
+    .slice(0, TOP_DELAY_N)
+
+  // The history pool covers the lookback window plus the current week — we
+  // exclude the target row's own id when matching so the same incident never
+  // matches itself.
+  const lookbackFrom = isoMinusDays(weekFrom, HISTORICAL_LOOKBACK_DAYS)
+  const pool = history.filter(h => h.report_date >= lookbackFrom && h.report_date <= weekTo)
+
+  const incidents = ranked.map(x => toTopDelayDetail(x.inc, pool))
+
+  const insights: string[] = []
+  if (incidents.length === 0) {
+    insights.push('No delay-incurring incidents in the week — section presented for completeness.')
+  } else {
+    const totalTop = incidents.reduce((s, i) => s + i.delayMins, 0)
+    const weekTotal = nonContinuation(curr).reduce((s, i) => s + effectiveDelay(i), 0)
+    const share = weekTotal > 0 ? Math.round((totalTop / weekTotal) * 100) : 0
+    insights.push(`Top ${incidents.length} incident${incidents.length === 1 ? '' : 's'} account${incidents.length === 1 ? 's' : ''} for ${share}% of the week's total delay (${fmtMinsShort(totalTop)} of ${fmtMinsShort(weekTotal)}).`)
+    const repeats = incidents.filter(i => i.matches.length > 0).length
+    if (repeats > 0) {
+      insights.push(`${repeats} of the top ${incidents.length} match historical incidents in the trailing ${HISTORICAL_LOOKBACK_DAYS} days — flagged as candidate repeat issues.`)
+    }
+    if (history.length === 0) {
+      insights.push('Historical 6-month dataset not loaded — repeat-match lookup is unavailable for this preview.')
+    }
+  }
+
+  return {
+    topic:       'Top 5 delay-incurring incidents',
+    windowFrom:  lookbackFrom,
+    windowTo:    weekTo,
+    incidents,
+    insights,
+  }
+}
+
 // ─── Topic: Passenger satisfaction (placeholder) ──────────────────────────────
 
 function buildSatisfaction(): PmcTopicPlan {
@@ -373,6 +559,9 @@ export function buildControlPmcPlan(
   prev: IncidentRow[],
   reviews: IncidentReview[],
   prevReviews: IncidentReview[],
+  history: IncidentRow[],
+  weekFrom: string,
+  weekTo: string,
 ): ControlPmcPlan {
   const curRev  = new Map(reviews.map(r => [r.incident_id, r]))
   const prevRev = new Map(prevReviews.map(r => [r.incident_id, r]))
@@ -384,9 +573,10 @@ export function buildControlPmcPlan(
   const trainFaults = buildTrainFaults(curr, prev)
   const itsr        = buildItsr(curr, prev, curRev, prevRev)
   const satisfaction = buildSatisfaction()
+  const topDelay    = buildTopDelay(curr, history, weekFrom, weekTo)
 
   const partial: Omit<ControlPmcPlan, 'headline'> = {
-    fatalities, stranded, irregular, pax, trainFaults, itsr, satisfaction,
+    fatalities, stranded, irregular, pax, trainFaults, itsr, satisfaction, topDelay,
   }
   return { ...partial, headline: buildHeadline(partial) }
 }
@@ -428,6 +618,29 @@ export function serialiseControlPmcCsv(plan: ControlPmcPlan, scopeLabel: string,
   if (plan.trainFaults.secondary) push('Train faults', 'Top 5 ≤200m', plan.trainFaults.secondary.incidents)
   push('ITSR adherence',             'ITSR completed', plan.itsr.incidents)
   if (plan.itsr.secondary)        push('ITSR adherence', 'No ITSR / unreviewed', plan.itsr.secondary.incidents)
+  // Top-5 deep-dive — emit each as a regular detail row, then a follow-up row
+  // per matched historical incident so the CSV remains flat / Excel-friendly.
+  for (const t of plan.topDelay.incidents) {
+    rows.push([
+      'Top 5 delay incidents', 'Headline', t.date, t.ccil ?? '', t.tda ?? '',
+      CATEGORY_CONFIG[t.category]?.label ?? t.category,
+      t.title ?? '', t.location ?? '', t.area ?? '',
+      String(t.delayMins), String(t.trainsDelayed),
+      String(t.cancelled), String(t.partCancelled),
+      [t.incidentTypeLabel, t.faultNumber ? `fault ${t.faultNumber}` : null, t.severity].filter(Boolean).join(' · '),
+    ])
+    for (const m of t.matches) {
+      rows.push([
+        'Top 5 delay incidents',
+        `Repeat match (${m.matchedOn}) of ${t.ccil ?? t.date}`,
+        m.date, m.ccil ?? '', '',
+        CATEGORY_CONFIG[t.category]?.label ?? t.category,
+        m.title ?? '', m.location ?? '', m.area ?? '',
+        String(m.delayMins), '', '', '',
+        `Matched on ${m.matchedOn}`,
+      ])
+    }
+  }
 
   // Summary block at the top — one summary row per topic
   const summary: string[][] = []
@@ -456,6 +669,7 @@ export function serialiseControlPmcCsv(plan: ControlPmcPlan, scopeLabel: string,
   lines.push(`# Control PMC weekly report — ${scopeLabel}`)
   lines.push(`# Generated: ${generatedAt}`)
   lines.push(`# ITSR adherence: ${plan.itsr.itsrPct.toFixed(1)}% (${plan.itsr.itsrCompleted}/${plan.itsr.itsrCount} incidents > ${ITSR_THRESHOLD_MINS}m)`)
+  lines.push(`# Top-5 historical lookup window: ${plan.topDelay.windowFrom} → ${plan.topDelay.windowTo}`)
   lines.push('')
   lines.push('## Topic summary')
   lines.push(summaryHeader.map(csvEscape).join(','))

@@ -5018,7 +5018,14 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
 
   const scope: ReportScope = useMemo(() => {
     if (template === 'period') return { kind: 'period', ...periodSel }
-    if (template === 'weekly' || template === 'controlPmc') return { kind: 'weekly', ...weekSel }
+    if (template === 'weekly' || template === 'controlPmc') {
+      // Always derive `to` as `from + 6 days` so a stale weekSel.to (e.g. one
+      // that somehow inherited a 28-day period range) can't widen the window.
+      // The Control PMC report is strictly week-based.
+      const fromMs = new Date(weekSel.from + 'T00:00:00Z').getTime()
+      const to = new Date(fromMs + 6 * 86_400_000).toISOString().slice(0, 10)
+      return { kind: 'weekly', railYear: weekSel.railYear, period: weekSel.period, week: weekSel.week, from: weekSel.from, to }
+    }
     if (template === 'safety') return { kind: 'range', ...safetyRange }
     return { kind: 'range', ...customRange }
   }, [template, periodSel, weekSel, safetyRange, customRange])
@@ -5038,6 +5045,9 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   // adherence figures. Fetched on demand for the chosen week + the previous
   // week (for week-on-week deltas).
   const [reviewBundle, setReviewBundle] = useState<{ reviews: IncidentReview[]; prevReviews: IncidentReview[] } | null>(null)
+  // Trailing 6-month history used by the Control PMC top-5 deep-dive to flag
+  // candidate repeat issues (matching fault numbers / location + asset type).
+  const [historicalIncidents, setHistoricalIncidents] = useState<IncidentRow[]>([])
 
   // Stable signature of the non-date filters so we only re-fetch when
   // something genuinely changes — avoids hammering Supabase on every render.
@@ -5124,6 +5134,39 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [template, scope.from, scope.to, demoMode])
 
+  // Trailing 6-month incident history for the Control PMC top-5 deep-dive.
+  // Unfiltered by category / area / search — the deep-dive is filter-blind so
+  // it can surface true repeat patterns regardless of the dashboard filters.
+  useEffect(() => {
+    if (template !== 'controlPmc') {
+      setHistoricalIncidents([])
+      return
+    }
+    let cancelled = false
+    // 183 days ~= 6 months; matches the lookback used by the builder.
+    const HIST_DAYS = 183
+    const fromHist = isoMinusDays(scope.from, HIST_DAYS)
+    async function run() {
+      try {
+        if (!isSupabaseConfigured() || demoMode) {
+          // Synthesize a 6-month pool ending at the chosen week so the demo
+          // preview can still demonstrate repeat-issue matching.
+          const totalDays = HIST_DAYS + daysBetween(scope.from, scope.to)
+          const synth = generateSyntheticData(totalDays, 42, fromHist, scope.to)
+          if (!cancelled) setHistoricalIncidents([...synth.incidents, ...synth.prevIncidents])
+          return
+        }
+        const rows = await fetchIncidentsForRange(fromHist, scope.to)
+        if (!cancelled) setHistoricalIncidents(rows)
+      } catch {
+        if (!cancelled) setHistoricalIncidents([])
+      }
+    }
+    run()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [template, scope.from, scope.to, demoMode])
+
   const filtersDescriptor = useMemo(() => describeFilters(filters), [filters])
 
   const plan = useMemo(() => {
@@ -5139,10 +5182,11 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
         prevIncidents: reportData.prevIncidents,
         reviews:       reviewBundle?.reviews,
         prevReviews:   reviewBundle?.prevReviews,
+        historicalIncidents,
       },
       { template, sections, appendixLimit, clientLine: 'Network Rail · EMCC', preparedBy: 'EMCC Insight' },
     )
-  }, [reportData, filtersDescriptor, demoMode, template, sections, appendixLimit, reviewBundle])
+  }, [reportData, filtersDescriptor, demoMode, template, sections, appendixLimit, reviewBundle, historicalIncidents])
 
   const html = useMemo(() => plan ? renderReportDocument(plan) : '', [plan])
 

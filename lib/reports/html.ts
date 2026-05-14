@@ -5,7 +5,8 @@
 
 import {
   AppendixRow, AssetRow, AttributionRow, CategoryRow, GeoRow, HeatmapCellPlain,
-  PmcIncidentRow, PmcItsrPlan, PmcLocationRow, PmcTopicPlan,
+  PmcIncidentRow, PmcItsrPlan, PmcLocationRow, PmcRepeatMatch, PmcTopDelayDetail,
+  PmcTopicPlan,
   ReportKpi, ReportPlan, ReportSectionId, SafetyRadarRow, SignalRow, TrendPointPlain,
 } from './types'
 import { donutSvg, hbarSvg, heatmapSvg, safetyRadarSvg, trendAreaSvg, REPORT_COLORS } from './charts'
@@ -471,6 +472,144 @@ function reportStylesheet(): string {
       /* Avoid orphan section headers */
       .section-head, .kpi-grid, .panel { break-inside: avoid; }
       table.data, .signal { break-inside: avoid; }
+
+      /* ── Top-delay deep-dive card ──────────────────────────────────────── */
+      .td-card {
+        border: 0.5pt solid var(--rule-hi);
+        background: var(--paper);
+        padding: 6mm;
+        margin: 4mm 0;
+        break-inside: avoid-page;
+      }
+      .td-card + .td-card { margin-top: 6mm; }
+      .td-head {
+        display: grid;
+        grid-template-columns: auto 1fr 38mm;
+        gap: 8mm;
+        align-items: start;
+        border-bottom: 0.5pt solid var(--rule);
+        padding-bottom: 4mm;
+        margin-bottom: 4mm;
+      }
+      .td-rank {
+        font-family: 'Fraunces', Georgia, serif;
+        font-size: 30pt;
+        line-height: 1;
+        font-weight: 400;
+        color: var(--orange);
+        letter-spacing: -0.02em;
+        padding-top: 1mm;
+      }
+      .td-head-main { min-width: 0; }
+      .td-eyebrow {
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 4pt;
+      }
+      .td-title {
+        font-family: 'Fraunces', Georgia, serif;
+        font-weight: 400;
+        font-size: 16pt;
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        color: var(--ink);
+        margin: 0 0 3pt 0;
+      }
+      .td-sub {
+        font-size: 9.5pt;
+        color: var(--ink-2);
+        display: flex; flex-direction: column; gap: 1pt;
+      }
+      .td-impact { text-align: right; }
+      .td-impact-value {
+        font-family: 'Fraunces', Georgia, serif;
+        font-weight: 400;
+        font-size: 32pt;
+        line-height: 1;
+        letter-spacing: -0.015em;
+        color: var(--ink);
+        font-feature-settings: 'tnum' 1, 'lnum' 1;
+      }
+      .td-impact-unit { font-size: 16pt; color: var(--ink-3); margin-left: 2px; }
+      .td-impact-label {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 7pt; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--ink-3); margin-top: 3pt;
+      }
+      .td-bar {
+        margin-top: 6pt;
+        height: 4pt;
+        background: var(--panel);
+        border: 0.5pt solid var(--rule);
+      }
+      .td-bar-fill { height: 100%; }
+
+      .td-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 3mm 4mm;
+      }
+      .td-cell { min-width: 0; }
+      .td-label {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 7pt;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-3);
+        margin-bottom: 2px;
+        /* Keep long uppercase labels (CANCELLATIONS, FILES ATTACHED) inside
+           their grid column rather than bleeding into the next cell. */
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        white-space: normal;
+      }
+      .td-value {
+        font-size: 9.5pt;
+        color: var(--ink);
+        word-break: break-word;
+        font-feature-settings: 'tnum' 1;
+      }
+
+      .td-timeline {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 2mm;
+        padding: 3mm 0 1mm 0;
+      }
+      .td-step {
+        position: relative;
+        padding-left: 10pt;
+      }
+      .td-step + .td-step::before {
+        content: '';
+        position: absolute;
+        left: -8pt; top: 5pt;
+        width: 8pt; height: 0.75pt;
+        background: var(--rule-hi);
+      }
+      .td-step-dot {
+        position: absolute;
+        left: 0; top: 3pt;
+        width: 6pt; height: 6pt;
+        background: var(--orange);
+        border: 1pt solid var(--paper);
+        box-shadow: 0 0 0 0.5pt var(--orange);
+      }
+      .td-step-label {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 7pt; letter-spacing: 0.14em; text-transform: uppercase;
+        color: var(--ink-3);
+      }
+      .td-step-time {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 9pt;
+        color: var(--ink);
+        margin-top: 1pt;
+      }
+      .td-step-offset {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 8pt;
+        color: var(--ink-3);
+      }
 
       @media screen {
         /* When rendered into the live preview iframe, paint paper-like pages */
@@ -1055,8 +1194,10 @@ function pmcInsights(insights: string[]): string {
 
 function pmcSummaryCard(plan: PmcTopicPlan): string {
   const s = plan.summary
+  // CCIL refs intentionally omitted — every incident carries one CCIL so the
+  // figure was always equal to "Incidents" and offered no extra information.
   return `
-    <div class="kpi-grid" style="grid-template-columns: repeat(5, 1fr);">
+    <div class="kpi-grid" style="grid-template-columns: repeat(4, 1fr);">
       <div class="kpi">
         <div class="kpi-label">Incidents</div>
         <div class="kpi-value">${fmt(s.count)}</div>
@@ -1071,11 +1212,6 @@ function pmcSummaryCard(plan: PmcTopicPlan): string {
         <div class="kpi-label">Locations</div>
         <div class="kpi-value">${fmt(s.uniqueLocations)}</div>
         <div class="kpi-hint">Distinct sites affected</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">CCIL refs</div>
-        <div class="kpi-value">${fmt(s.uniqueCcil)}</div>
-        <div class="kpi-hint">Unique CCIL numbers</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">TDA refs</div>
@@ -1245,6 +1381,172 @@ function renderPmcItsr(plan: ReportPlan, num: number): string {
   `
 }
 
+// ─── Top 5 delay incidents deep-dive ─────────────────────────────────────────
+
+function detailCell(label: string, value: string | null | undefined): string {
+  return `
+    <div class="td-cell">
+      <div class="td-label">${esc(label)}</div>
+      <div class="td-value">${value && value.length ? esc(value) : '<span style="color: var(--ink-4);">—</span>'}</div>
+    </div>
+  `
+}
+
+function tdTimeline(d: PmcTopDelayDetail): string {
+  // Compact ASCII-ish timeline of the key timestamps
+  const items: { label: string; time: string | null; offset: number | null }[] = [
+    { label: 'Incident',     time: d.incidentStart,    offset: 0 },
+    { label: 'Advised',      time: d.advisedTime,      offset: d.minsToAdvised  },
+    { label: 'Initial resp', time: d.initialRespTime,  offset: d.minsToResponse },
+    { label: 'Arrived',      time: d.arrivedAtTime,    offset: d.minsToArrival  },
+    { label: 'NWR (closed)', time: d.nwrTime,          offset: d.incidentDuration },
+  ]
+  return `
+    <div class="td-timeline">
+      ${items.map(t => `
+        <div class="td-step">
+          <div class="td-step-dot"></div>
+          <div class="td-step-label">${esc(t.label)}</div>
+          <div class="td-step-time">${t.time ? esc(t.time) : '—'}</div>
+          <div class="td-step-offset">${t.offset != null ? `+${fmt(t.offset)}m` : '—'}</div>
+        </div>
+      `).join('')}
+    </div>
+  `
+}
+
+function tdMatchTable(matches: PmcRepeatMatch[]): string {
+  if (matches.length === 0) {
+    return `<p style="color: var(--ink-3); font-size: 9.5pt; margin: 4pt 0 0 0;">No matching incidents found in the trailing 6 months.</p>`
+  }
+  return `
+    <table class="data" style="margin-top: 4pt;">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>CCIL</th>
+          <th>Title</th>
+          <th>Location</th>
+          <th class="num">Delay</th>
+          <th>Matched on</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${matches.map(m => `
+          <tr>
+            <td>${esc(shortDate(m.date))}</td>
+            <td><span class="mono" style="font-size: 8.5pt;">${esc(m.ccil ?? '—')}</span></td>
+            <td>${esc(truncate(m.title ?? '—', 42))}</td>
+            <td>${esc(m.location ?? '—')}${m.area ? ` <span class="mono" style="font-size: 7pt; color: var(--ink-3);">· ${esc(m.area)}</span>` : ''}</td>
+            <td class="num">${fmt(m.delayMins)}m</td>
+            <td><span class="pill pill-info">${esc(m.matchedOn === 'fault' ? 'fault number' : 'location · type')}</span></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `
+}
+
+function renderPmcTopDelayCard(d: PmcTopDelayDetail, rank: number, maxDelay: number): string {
+  const barPct = maxDelay > 0 ? Math.max(2, Math.round((d.delayMins / maxDelay) * 100)) : 0
+  const responder = (d.responderInitials ?? []).join(' · ') || '—'
+  const units = (d.unitNumbers ?? []).join(', ') || '—'
+  const dowName = d.dayOfWeek != null ? ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.dayOfWeek] : null
+  const ts = [dowName, d.incidentStart, d.hourOfDay != null ? `hour ${d.hourOfDay}` : null].filter(Boolean).join(' · ')
+  return `
+    <div class="td-card">
+      <div class="td-head">
+        <div class="td-rank">#${rank}</div>
+        <div class="td-head-main">
+          <div class="td-eyebrow">
+            <span class="cat-chip" style="color: ${d.categoryColor}">${esc(d.categoryShort)}</span>
+            <span class="mono" style="font-size: 8pt; color: var(--ink-3);">${esc(d.categoryLabel)}</span>
+            <span class="pill pill-${severityPillClass(d.severity)}" style="margin-left: 6px;">${esc(d.severity)}</span>
+          </div>
+          <h3 class="td-title">${esc(d.title ?? 'Untitled incident')}</h3>
+          <div class="td-sub">
+            <span><strong>${esc(d.location ?? '—')}</strong>${d.area ? ` · ${esc(d.area)}` : ''}${d.line ? ` · ${esc(d.line)}` : ''}</span>
+            <span class="mono" style="font-size: 8.5pt; color: var(--ink-3);">${esc(longDate(d.date))}${ts ? ` · ${esc(ts)}` : ''}</span>
+          </div>
+        </div>
+        <div class="td-impact">
+          <div class="td-impact-value">${fmt(d.delayMins)}<span class="td-impact-unit">m</span></div>
+          <div class="td-impact-label">delay minutes</div>
+          <div class="td-bar"><div class="td-bar-fill" style="width: ${barPct}%; background: ${d.categoryColor};"></div></div>
+        </div>
+      </div>
+
+      <div class="td-grid">
+        ${detailCell('CCIL',           d.ccil)}
+        ${detailCell('TDA',            d.tda)}
+        ${detailCell('TRUST',          d.trustRef)}
+        ${detailCell('TRMC',           d.trmcCode)}
+        ${detailCell('Fault number',   d.faultNumber)}
+        ${detailCell('Possession',     d.possessionRef)}
+        ${detailCell('BTP ref',        d.btpRef)}
+        ${detailCell('3rd-party ref',  d.thirdPartyRef)}
+        ${detailCell('Type code',      d.incidentTypeCode)}
+        ${detailCell('Type label',     d.incidentTypeLabel)}
+        ${detailCell('Action code',    d.actionCode)}
+        ${detailCell('Responders',     responder)}
+      </div>
+
+      <hr class="rule" style="margin: 6pt 0;" />
+
+      <div class="two-col">
+        <div>
+          <div class="panel-title">Impact</div>
+          <div class="td-grid">
+            ${detailCell('Trains',     fmt(d.trainsDelayed))}
+            ${detailCell('Cancelled',  fmt(d.cancelled))}
+            ${detailCell('Part-canc.', fmt(d.partCancelled))}
+            ${detailCell('Events',     d.eventCount != null ? fmt(d.eventCount) : null)}
+            ${detailCell('FTS div',    d.ftsDivCount != null ? fmt(d.ftsDivCount) : null)}
+            ${detailCell('Files',      d.hasFiles == null ? null : d.hasFiles ? 'Yes' : 'No')}
+          </div>
+        </div>
+        <div>
+          <div class="panel-title">Train</div>
+          <div class="td-grid">
+            ${detailCell('Headcode',     d.trainId)}
+            ${detailCell('Operator',     d.trainCompany)}
+            ${detailCell('Origin',       d.trainOrigin)}
+            ${detailCell('Destination',  d.trainDestination)}
+            ${detailCell('Units',        units)}
+          </div>
+        </div>
+      </div>
+
+      <hr class="rule" style="margin: 6pt 0;" />
+
+      <div class="panel-title">Response timeline</div>
+      ${tdTimeline(d)}
+
+      <hr class="rule" style="margin: 6pt 0;" />
+
+      <div class="panel-title">Repeat-issue lookup · last 6 months</div>
+      <p style="color: var(--ink-3); font-size: 9pt; margin: 0 0 4pt 0;">${esc(d.matchNote)}</p>
+      ${tdMatchTable(d.matches)}
+    </div>
+  `
+}
+
+function renderPmcTopDelay(plan: ReportPlan, num: number): string {
+  const td = plan.controlPmc?.topDelay
+  if (!td) return ''
+  const maxDelay = td.incidents.length ? td.incidents[0].delayMins : 0
+  const cards = td.incidents.map((d, i) => renderPmcTopDelayCard(d, i + 1, maxDelay)).join('')
+  return `
+    <section class="page section">
+      ${sectionHead(String(num).padStart(2, '0'), 'Top 5 delay incidents · deep-dive', plan.meta.scopeLabel)}
+      <p class="section-lede">Filter-blind ranking of the week's five highest delay-incurring incidents. Each card surfaces the full operational record plus any matching incidents from ${esc(shortDate(td.windowFrom))} → ${esc(shortDate(td.windowTo))} (same fault number, or same location and asset type) to flag potential repeat issues.</p>
+      ${pmcInsights(td.insights)}
+      ${td.incidents.length === 0 ? '' : cards}
+      ${footer(plan, num)}
+    </section>
+  `
+}
+
 function renderPmcSatisfaction(plan: ReportPlan, num: number): string {
   const sat = plan.controlPmc?.satisfaction
   if (!sat) return ''
@@ -1309,6 +1611,7 @@ const SECTION_RENDERERS: Record<Exclude<ReportSectionId, 'cover'>, (plan: Report
   pmcTrainFaults:  renderPmcTrainFaults,
   pmcItsr:         renderPmcItsr,
   pmcSatisfaction: renderPmcSatisfaction,
+  pmcTopDelay:     renderPmcTopDelay,
 }
 
 export function renderReportDocument(plan: ReportPlan): string {

@@ -323,7 +323,12 @@ export function buildReportPlan(src: ReportSource, options: ReportOptions): Repo
   // We still keep heroKpis / cover working so the rest of the renderer is
   // unchanged.
   const controlPmc = options.template === 'controlPmc'
-    ? buildControlPmcPlan(src.incidents, src.prevIncidents, src.reviews ?? [], src.prevReviews ?? [])
+    ? buildControlPmcPlan(
+        src.incidents, src.prevIncidents,
+        src.reviews ?? [], src.prevReviews ?? [],
+        src.historicalIncidents ?? [],
+        src.windowFrom, src.windowTo,
+      )
     : undefined
 
   return {
@@ -339,7 +344,10 @@ export function buildReportPlan(src: ReportSource, options: ReportOptions): Repo
       demoMode: src.demoMode,
     },
     sections: options.sections,
-    heroKpis: controlPmc ? controlPmc.headline : buildHeroKpis(data),
+    // Control PMC has a dedicated week-summary section as page 2, so we omit
+    // the cover hero tiles for that template to avoid duplicating the same
+    // KPI panel twice in a row.
+    heroKpis: controlPmc ? undefined : buildHeroKpis(data),
     kpis:           want.has('kpis')         ? buildKpis(data) : undefined,
     trend:          want.has('trend')        ? { points: buildTrend(trendPts), changePoints } : undefined,
     categories:     want.has('categoryMix')  ? categories : undefined,
