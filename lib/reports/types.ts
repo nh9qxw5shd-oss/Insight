@@ -53,6 +53,7 @@ export type ReportSectionId =
   | 'pmcTrainFaults'
   | 'pmcItsr'
   | 'pmcSatisfaction'
+  | 'pmcTopDelay'
 
 export const SECTION_LABELS: Record<ReportSectionId, string> = {
   cover:        'Cover page',
@@ -76,6 +77,7 @@ export const SECTION_LABELS: Record<ReportSectionId, string> = {
   pmcTrainFaults:  'Train faults (>200m + top 5)',
   pmcItsr:         'ITSR adherence (>300m)',
   pmcSatisfaction: 'Passenger satisfaction',
+  pmcTopDelay:     'Top 5 delay incidents (deep-dive)',
 }
 
 export const TEMPLATE_DEFAULT_SECTIONS: Record<ReportTemplate, ReportSectionId[]> = {
@@ -83,14 +85,14 @@ export const TEMPLATE_DEFAULT_SECTIONS: Record<ReportTemplate, ReportSectionId[]
   weekly:  ['cover', 'executive', 'kpis', 'trend', 'categoryMix', 'signals', 'narrative'],
   safety:  ['cover', 'executive', 'kpis', 'safetyRadar', 'geography', 'patterns', 'signals', 'narrative', 'appendix'],
   custom:  ['cover', 'executive', 'kpis', 'trend', 'categoryMix', 'geography', 'patterns', 'assets', 'safetyRadar', 'attribution', 'signals', 'narrative', 'appendix'],
-  controlPmc: ['cover', 'pmcSummary', 'pmcFatalities', 'pmcStranded', 'pmcIrregular', 'pmcPax', 'pmcTrainFaults', 'pmcItsr', 'pmcSatisfaction'],
+  controlPmc: ['cover', 'pmcSummary', 'pmcFatalities', 'pmcStranded', 'pmcIrregular', 'pmcPax', 'pmcTrainFaults', 'pmcItsr', 'pmcSatisfaction', 'pmcTopDelay'],
 }
 
 // Sections selectable in the Control PMC builder UI — kept narrow so the
 // section toggle row only shows topics that belong to this template.
 export const CONTROL_PMC_SECTIONS: ReportSectionId[] = [
   'cover', 'pmcSummary', 'pmcFatalities', 'pmcStranded', 'pmcIrregular',
-  'pmcPax', 'pmcTrainFaults', 'pmcItsr', 'pmcSatisfaction',
+  'pmcPax', 'pmcTrainFaults', 'pmcItsr', 'pmcSatisfaction', 'pmcTopDelay',
 ]
 
 // Sections selectable in the legacy templates (period / weekly / safety /
@@ -278,6 +280,89 @@ export interface PmcItsrPlan extends PmcTopicPlan {
   itsrUnreviewed: number               // those with no review at all
 }
 
+// Single matching incident found in the 6-month history alongside one of the
+// top-5 events — kept compact since each top-5 entry can carry several.
+export interface PmcRepeatMatch {
+  id:           string
+  date:         string
+  ccil:         string | null
+  title:        string | null
+  delayMins:    number
+  location:     string | null
+  area:         string | null
+  matchedOn:    'fault' | 'location-type'  // why this row was considered a repeat
+}
+
+// Full data the deep-dive page wants to surface for each top-5 incident —
+// covers operational context, references, response timings and any repeat
+// matches uncovered in the trailing 6 months.
+export interface PmcTopDelayDetail {
+  // Headline / identity
+  id:                string
+  date:              string
+  ccil:              string | null
+  tda:               string | null
+  category:          IncidentCategory
+  categoryLabel:     string
+  categoryShort:     string
+  categoryColor:     string
+  severity:          Severity
+  title:             string | null
+  location:          string | null
+  area:              string | null
+  line:              string | null
+  // Impact
+  delayMins:         number
+  trainsDelayed:     number
+  cancelled:         number
+  partCancelled:     number
+  // Operational context
+  incidentStart:     string | null
+  advisedTime:       string | null
+  initialRespTime:   string | null
+  arrivedAtTime:     string | null
+  nwrTime:           string | null
+  minsToAdvised:     number | null
+  minsToResponse:    number | null
+  minsToArrival:     number | null
+  incidentDuration:  number | null
+  // Asset / reference
+  incidentTypeCode:  string | null
+  incidentTypeLabel: string | null
+  faultNumber:       string | null
+  possessionRef:     string | null
+  btpRef:            string | null
+  thirdPartyRef:     string | null
+  trustRef:          string | null
+  tdaRef:            string | null
+  trmcCode:          string | null
+  actionCode:        string | null
+  responderInitials: string[] | null
+  // Train context
+  trainId:           string | null
+  trainCompany:      string | null
+  trainOrigin:       string | null
+  trainDestination:  string | null
+  unitNumbers:       string[] | null
+  // Misc
+  eventCount:        number | null
+  ftsDivCount:       number | null
+  hasFiles:          boolean | null
+  hourOfDay:         number | null
+  dayOfWeek:         number | null
+  // Repeats in the trailing 6-month window
+  matches:           PmcRepeatMatch[]
+  matchNote:         string           // human summary of what was matched on
+}
+
+export interface PmcTopDelayPlan {
+  topic:        string
+  windowFrom:   string                 // ISO date the historical search starts from
+  windowTo:     string                 // ISO date the historical search ends on
+  incidents:    PmcTopDelayDetail[]    // up to 5 rows, sorted by delay desc
+  insights:     string[]
+}
+
 export interface ControlPmcPlan {
   fatalities:    PmcTopicPlan
   stranded:      PmcTopicPlan
@@ -286,6 +371,7 @@ export interface ControlPmcPlan {
   trainFaults:   PmcTopicPlan          // primary >200m, secondary top 5 below 200m
   itsr:          PmcItsrPlan
   satisfaction:  PmcTopicPlan          // placeholder topic
+  topDelay:      PmcTopDelayPlan       // top 5 highest-delay incidents (deep-dive)
   // Headline KPIs surfaced in the PMC summary section / cover.
   headline:      ReportKpi[]
 }
@@ -346,4 +432,8 @@ export interface ReportSource {
   // (stranded train detection, ITSR adherence). Optional for other templates.
   reviews?:          IncidentReview[]
   prevReviews?:      IncidentReview[]
+  // Trailing-6-month incidents used by the Control PMC top-5 deep-dive to look
+  // up repeat issues at the same location / asset type. May span the current
+  // week too — the builder excludes the target incident itself.
+  historicalIncidents?: IncidentRow[]
 }
