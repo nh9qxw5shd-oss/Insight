@@ -323,7 +323,12 @@ export function buildReportPlan(src: ReportSource, options: ReportOptions): Repo
   // We still keep heroKpis / cover working so the rest of the renderer is
   // unchanged.
   const controlPmc = options.template === 'controlPmc'
-    ? buildControlPmcPlan(src.incidents, src.prevIncidents, src.reviews ?? [], src.prevReviews ?? [])
+    ? buildControlPmcPlan(
+        src.incidents, src.prevIncidents,
+        src.reviews ?? [], src.prevReviews ?? [],
+        src.historicalIncidents ?? [],
+        src.windowFrom, src.windowTo,
+      )
     : undefined
 
   return {
