@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
-  ClipboardCheck, ClipboardList, Clock, Compass, Download, FileText, Filter, FlaskConical, GitBranch, Layers, List, MapPin,
+  ClipboardCheck, ClipboardList, Clock, Compass, Crosshair, Download, FileText, Filter, FlaskConical, GitBranch, Layers, List, MapPin,
   Minus, Moon, RefreshCw, Route, Search, Sun, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -45,8 +45,13 @@ import {
   toggleCategoryFilter, toggleAreaFilter, toggleSeverityFilter,
   removeSearchToken, clearCustomDate, clearDelayFilter, toggleIncidentTypeFilter,
   toggleStaffFilter, clearStaffFilter,
+  removeWeatherCondition, clearWeatherNumeric,
 } from '@/lib/filterActions'
 import { generateSyntheticData } from '@/lib/syntheticData'
+import {
+  WeatherDay, WEATHER_LOCATIONS, CONDITION_GROUPS,
+  fetchWeatherFromDB, syncWeather, conditionGroup,
+} from '@/lib/weather'
 import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
 import { getFiltersFromUrl, setFiltersInUrl, clearFiltersFromUrl } from '@/lib/filterUrl'
 import { exportCSV } from '@/lib/export'
@@ -60,10 +65,11 @@ import { renderReportDocument } from '@/lib/reports/html'
 import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/print'
 import { serialiseControlPmcCsv, controlPmcCsvFilename } from '@/lib/reports/controlPmc'
 import { DistillationTab } from './distillation-tab'
+import { FocusTab } from './focus-tab'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'explore' | 'analytics' | 'review' | 'reports' | 'distillation'
+type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'explore' | 'analytics' | 'focus' | 'review' | 'reports' | 'distillation'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -75,6 +81,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'trends',      label: 'Trends',      icon: GitBranch },
   { id: 'explore',     label: 'Explore',     icon: Compass },
   { id: 'analytics',   label: 'Analytics',   icon: BarChart2 },
+  { id: 'focus',        label: 'Focus',        icon: Crosshair },
   { id: 'review',       label: 'Review',       icon: ClipboardCheck },
   { id: 'reports',      label: 'Reports',      icon: FileText },
   { id: 'distillation', label: 'Distillation', icon: FlaskConical },
@@ -144,6 +151,9 @@ export default function InsightDashboard() {
   const [reviewLoading, setReviewLoading]     = useState(false)
   const [reviewError, setReviewError]         = useState<string | null>(null)
 
+  // Weather data synced from Open-Meteo via Supabase
+  const [weatherData, setWeatherData] = useState<WeatherDay[]>([])
+
   // After hydration, restore any filters saved in the URL. This runs once and
   // must come before the URL-sync effect so a stale DEFAULT_FILTERS write
   // doesn't permanently overwrite saved state.
@@ -167,6 +177,32 @@ export default function InsightDashboard() {
 
   // Keep URL in sync with filters
   useEffect(() => { setFiltersInUrl(filters) }, [filters])
+
+  // Sync weather from Open-Meteo → Supabase → local state whenever the analytics window changes.
+  // Skipped in demo mode (no Supabase) and when data hasn't loaded yet.
+  useEffect(() => {
+    if (!isSupabaseConfigured() || demoMode || !data) return
+    const from  = data.windowFrom
+    const to    = data.windowTo
+    const areas = WEATHER_LOCATIONS.map(l => l.area)
+    let cancelled = false
+    async function run() {
+      try {
+        const existing = await fetchWeatherFromDB(from, to)
+        if (cancelled) return
+        setWeatherData(existing)
+        const newCount = await syncWeather(existing, areas, from, to)
+        if (cancelled || newCount === 0) return
+        const updated = await fetchWeatherFromDB(from, to)
+        if (!cancelled) setWeatherData(updated)
+      } catch {
+        // Non-fatal — weather is supplemental context
+      }
+    }
+    run()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.windowFrom, data?.windowTo, demoMode])
 
   // Fetch on filter change
   useEffect(() => {
@@ -213,24 +249,65 @@ export default function InsightDashboard() {
     return () => { cancelled = true }
   }, [filters])
 
-  // Staff filter — applied client-side on top of server-filtered incidents.
-  // teamMembers are fetched for the full window (no staff filter applied server-side)
-  // so we have all members available for the filter UI and patterns charts.
+  // Client-side filters applied on top of server-filtered incidents:
+  // 1. Staff filter — team members fetched for full window so all names are available.
+  // 2. Weather conditions filter — maps each incident's (area, date) to its weather group.
   const effectiveData = useMemo((): RawData | null => {
     if (!data) return null
-    if (filters.staffNames.length === 0) return data
-    const staffIncidentIds = new Set(
-      data.teamMembers
-        .filter(tm => filters.staffNames.includes(tm.name))
-        .map(tm => tm.incident_id),
-    )
-    return { ...data, incidents: data.incidents.filter(i => staffIncidentIds.has(i.id)) }
-  }, [data, filters.staffNames])
+    let incidents = data.incidents
+
+    if (filters.staffNames.length > 0) {
+      const staffIncidentIds = new Set(
+        data.teamMembers
+          .filter(tm => filters.staffNames.includes(tm.name))
+          .map(tm => tm.incident_id),
+      )
+      incidents = incidents.filter(i => staffIncidentIds.has(i.id))
+    }
+
+    const hasWeatherNumeric =
+      filters.minRainfall != null || filters.maxRainfall != null ||
+      filters.minTempC    != null || filters.maxTempC    != null ||
+      filters.minWindKmh  != null || filters.maxWindKmh  != null
+
+    if ((filters.weatherConditions && filters.weatherConditions.length > 0) || hasWeatherNumeric) {
+      const wxByKey = new Map(weatherData.map(w => [`${w.area}::${w.date}`, w]))
+      incidents = incidents.filter(i => {
+        if (!i.area || !i.report_date) return false
+        const wx = wxByKey.get(`${i.area}::${i.report_date}`)
+        // If any weather filter is active but no record exists for this incident, exclude it
+        if (!wx) return false
+        if (filters.weatherConditions?.length) {
+          if (!filters.weatherConditions.includes(conditionGroup(wx.conditions))) return false
+        }
+        if (filters.minRainfall != null && (wx.rainfall_mm  ?? 0) < filters.minRainfall)  return false
+        if (filters.maxRainfall != null && (wx.rainfall_mm  ?? 0) > filters.maxRainfall)  return false
+        if (filters.minTempC    != null && (wx.max_temp_c   ?? 0) < filters.minTempC)     return false
+        if (filters.maxTempC    != null && (wx.max_temp_c   ?? 0) > filters.maxTempC)     return false
+        if (filters.minWindKmh  != null && (wx.max_wind_kmh ?? 0) < filters.minWindKmh)   return false
+        if (filters.maxWindKmh  != null && (wx.max_wind_kmh ?? 0) > filters.maxWindKmh)   return false
+        return true
+      })
+    }
+
+    if (incidents === data.incidents) return data
+    return { ...data, incidents }
+  }, [data, filters.staffNames, filters.weatherConditions,
+      filters.minRainfall, filters.maxRainfall,
+      filters.minTempC, filters.maxTempC,
+      filters.minWindKmh, filters.maxWindKmh,
+      weatherData])
 
   const availableStaff = useMemo(() => {
     if (!data) return []
     return Array.from(new Set(data.teamMembers.map(tm => tm.name))).sort()
   }, [data])
+
+  const availableWeatherConditionGroups = useMemo(() => {
+    if (!weatherData.length) return []
+    const present = new Set(weatherData.map(w => conditionGroup(w.conditions)))
+    return CONDITION_GROUPS.map(g => g.label).filter(l => present.has(l))
+  }, [weatherData])
 
   // Derived — use effectiveData so all analytics respect the staff filter
   const kpis         = useMemo(() => effectiveData ? deriveKPIs(effectiveData) : null, [effectiveData])
@@ -413,7 +490,11 @@ export default function InsightDashboard() {
           filters.severities.length + filters.searches.length +
           filters.incidentTypes.length + filters.staffNames.length +
           (filters.minDelay != null || filters.maxDelay != null ? 1 : 0) +
-          (filters.metricFocus === 'cancellations' ? 1 : 0)
+          (filters.metricFocus === 'cancellations' ? 1 : 0) +
+          (filters.weatherConditions?.length ?? 0) +
+          (filters.minRainfall != null || filters.maxRainfall != null ? 1 : 0) +
+          (filters.minTempC    != null || filters.maxTempC    != null ? 1 : 0) +
+          (filters.minWindKmh  != null || filters.maxWindKmh  != null ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
         onExport={effectiveData ? () => exportCSV(effectiveData.incidents, effectiveData.windowFrom, effectiveData.windowTo) : undefined}
@@ -431,6 +512,8 @@ export default function InsightDashboard() {
         onRemoveStaff={handleToggleStaffFilter}
         onClearDate={() => setFilters(f => clearCustomDate(f))}
         onClearDelay={() => setFilters(f => clearDelayFilter(f))}
+        onRemoveWeatherCondition={(g: string) => setFilters(f => removeWeatherCondition(f, g))}
+        onClearWeatherNumeric={() => setFilters(f => clearWeatherNumeric(f))}
         onClearAll={handleResetFilters}
       />
 
@@ -465,6 +548,7 @@ export default function InsightDashboard() {
             {tab === 'trends'      && <TrendsTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowDays={effectiveData.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'explore'     && <ExploreTab incidents={effectiveData.incidents} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} />}
+            {tab === 'focus'       && <FocusTab incidents={effectiveData.incidents} weatherData={weatherData} />}
             {tab === 'review'      && (
               reviewLoading && !reviewIncidents
                 ? <div className="flex items-center justify-center py-24"><RefreshCw size={16} className="animate-spin" style={{ color: 'var(--ink-400)' }} /></div>
@@ -505,6 +589,8 @@ export default function InsightDashboard() {
         availableAreas={areas.map(a => a.area)}
         availableIncidentTypes={incidentTypeList}
         availableStaff={availableStaff}
+        availableWeatherConditions={availableWeatherConditionGroups}
+        weatherLocations={WEATHER_LOCATIONS}
         savedViews={savedViews}
         onSaveView={handleSaveView}
         onDeleteView={handleDeleteView}
@@ -2423,7 +2509,7 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
 // dimension below the header. Drives the cross-filter drill-down loop —
 // click anything in a chart, see it land here, click the X to remove.
 
-function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onRemoveIncidentType, onRemoveStaff, onClearDate, onClearDelay, onClearAll }: {
+function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onRemoveIncidentType, onRemoveStaff, onClearDate, onClearDelay, onRemoveWeatherCondition, onClearWeatherNumeric, onClearAll }: {
   filters: AnalyticsFilters
   onRemoveCategory: (c: IncidentCategory) => void
   onRemoveArea: (a: string) => void
@@ -2433,14 +2519,21 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
   onRemoveStaff: (name: string) => void
   onClearDate: () => void
   onClearDelay: () => void
+  onRemoveWeatherCondition: (group: string) => void
+  onClearWeatherNumeric: () => void
   onClearAll: () => void
 }) {
-  const hasCustomDate = !!filters.startDate
-  const hasDelay = filters.minDelay != null || filters.maxDelay != null
+  const hasCustomDate    = !!filters.startDate
+  const hasDelay         = filters.minDelay    != null || filters.maxDelay    != null
+  const hasWxRain        = filters.minRainfall != null || filters.maxRainfall != null
+  const hasWxTemp        = filters.minTempC    != null || filters.maxTempC    != null
+  const hasWxWind        = filters.minWindKmh  != null || filters.maxWindKmh  != null
+  const weatherCondCount = filters.weatherConditions?.length ?? 0
   const total =
     filters.categories.length + filters.areas.length + filters.severities.length +
     filters.searches.length + filters.incidentTypes.length + filters.staffNames.length +
-    (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0)
+    (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0) +
+    weatherCondCount + (hasWxRain ? 1 : 0) + (hasWxTemp ? 1 : 0) + (hasWxWind ? 1 : 0)
   if (total === 0) return null
 
   const chip = (key: string, label: string, onRemove: () => void, color?: string, title?: string) => (
@@ -2497,6 +2590,33 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
           {filters.incidentTypes.map(t => chip(`itype-${t}`, t, () => onRemoveIncidentType(t), 'var(--nr-orange)'))}
           {filters.staffNames.map(n => chip(`staff-${n}`, n, () => onRemoveStaff(n), 'var(--nr-blue)'))}
           {filters.searches.map(t => chip(`q-${t}`, `"${t}"`, () => onRemoveSearch(t), 'var(--ink-300)'))}
+          {(filters.weatherConditions ?? []).map(g => chip(
+            `wx-cond-${g}`, `☁ ${g}`,
+            () => onRemoveWeatherCondition(g),
+            '#5B9EA0',
+            `Remove weather condition: ${g}`,
+          ))}
+          {hasWxRain && chip(
+            'wx-rain',
+            filters.minRainfall != null && filters.maxRainfall != null
+              ? `Rain ${filters.minRainfall}–${filters.maxRainfall} mm`
+              : filters.minRainfall != null ? `Rain ≥${filters.minRainfall} mm` : `Rain ≤${filters.maxRainfall} mm`,
+            onClearWeatherNumeric, '#5B9EA0', 'Clear weather numeric filters',
+          )}
+          {hasWxTemp && chip(
+            'wx-temp',
+            filters.minTempC != null && filters.maxTempC != null
+              ? `Temp ${filters.minTempC}–${filters.maxTempC}°C`
+              : filters.minTempC != null ? `Temp ≥${filters.minTempC}°C` : `Temp ≤${filters.maxTempC}°C`,
+            onClearWeatherNumeric, '#5B9EA0', 'Clear weather numeric filters',
+          )}
+          {hasWxWind && chip(
+            'wx-wind',
+            filters.minWindKmh != null && filters.maxWindKmh != null
+              ? `Wind ${filters.minWindKmh}–${filters.maxWindKmh} km/h`
+              : filters.minWindKmh != null ? `Wind ≥${filters.minWindKmh} km/h` : `Wind ≤${filters.maxWindKmh} km/h`,
+            onClearWeatherNumeric, '#5B9EA0', 'Clear weather numeric filters',
+          )}
         </div>
         <button onClick={onClearAll} className="ml-auto btn !py-1 !px-2 !text-[10px] shrink-0">Clear all</button>
       </div>
@@ -3506,7 +3626,8 @@ function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
   )
 }
 
-function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, availableIncidentTypes, availableStaff, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
+function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, availableIncidentTypes, availableStaff, availableWeatherConditions, weatherLocations, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
+  const [showWxLocations, setShowWxLocations] = useState(false)
   const [draft, setDraft]               = useState<AnalyticsFilters>(filters)
   const [saveName, setSaveName]         = useState('')
   const [showSaveInput, setShowSaveInput] = useState(false)
@@ -3736,6 +3857,144 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
                 />
               ))}
             </div>
+          </FilterGroup>
+
+          <FilterGroup label="Weather">
+            {/* Location mapping info */}
+            <div className="mb-3">
+              <button
+                onClick={() => setShowWxLocations(s => !s)}
+                className="flex items-center gap-1.5 text-[10px] w-full text-left"
+                style={{ color: 'var(--ink-400)' }}
+              >
+                <span style={{ color: showWxLocations ? 'var(--nr-orange)' : 'var(--ink-500)' }}>
+                  {showWxLocations ? '▾' : '▸'}
+                </span>
+                How weather is matched to incidents
+              </button>
+              {showWxLocations && weatherLocations && (
+                <div
+                  className="mt-2 rounded border p-3 space-y-1.5 text-[10px]"
+                  style={{ background: 'var(--bg-card)', borderColor: 'var(--line)' }}
+                >
+                  <p style={{ color: 'var(--ink-400)' }} className="mb-2">
+                    Each EMCC area uses one representative measurement point. Daily weather is fetched
+                    from Open-Meteo for that point and matched to incidents by <strong>area name</strong> and <strong>report date</strong>.
+                    Incidents with no matching weather record are excluded when any weather filter is active.
+                  </p>
+                  <div className="font-mono space-y-1">
+                    {weatherLocations.map((loc: any) => (
+                      <div key={loc.area} className="flex items-baseline gap-2">
+                        <span className="shrink-0" style={{ color: 'var(--ink-500)', minWidth: '14ch' }}>{loc.name}</span>
+                        <span className="text-[9px]" style={{ color: 'var(--ink-600)' }}>{loc.lat}°N {Math.abs(loc.lon)}°{loc.lon < 0 ? 'W' : 'E'}</span>
+                        <span className="truncate" style={{ color: 'var(--ink-600)' }}>→ {loc.area}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Condition groups */}
+            {availableWeatherConditions && availableWeatherConditions.length > 0 && (
+              <div className="mb-3">
+                <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>CONDITIONS</div>
+                <div className="flex flex-wrap gap-2">
+                  {availableWeatherConditions.map((group: string) => (
+                    <Chip
+                      key={group}
+                      label={group}
+                      active={(draft.weatherConditions ?? []).includes(group)}
+                      onToggle={() => {
+                        const current = draft.weatherConditions ?? []
+                        setDraft({
+                          ...draft,
+                          weatherConditions: current.includes(group)
+                            ? current.filter((x: string) => x !== group)
+                            : [...current, group],
+                        })
+                      }}
+                    />
+                  ))}
+                </div>
+                {(draft.weatherConditions ?? []).length > 0 && (
+                  <button onClick={() => setDraft({ ...draft, weatherConditions: [] })} className="text-xs mt-1.5" style={{ color: 'var(--ink-400)' }}>
+                    Clear conditions
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Rainfall range */}
+            <div className="mb-3">
+              <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>RAINFALL (mm)</div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1">
+                  <label className="label-micro mb-1 block text-[9px]">Min</label>
+                  <input type="number" min={0} className="input w-full" placeholder="e.g. 5"
+                    value={draft.minRainfall ?? ''}
+                    onChange={(e) => setDraft({ ...draft, minRainfall: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                </div>
+                <div className="flex-1">
+                  <label className="label-micro mb-1 block text-[9px]">Max</label>
+                  <input type="number" min={0} className="input w-full" placeholder="no limit"
+                    value={draft.maxRainfall ?? ''}
+                    onChange={(e) => setDraft({ ...draft, maxRainfall: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                </div>
+              </div>
+            </div>
+
+            {/* Temperature range (daily high) */}
+            <div className="mb-3">
+              <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>DAILY HIGH TEMPERATURE (°C)</div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1">
+                  <label className="label-micro mb-1 block text-[9px]">Min</label>
+                  <input type="number" className="input w-full" placeholder="e.g. -5"
+                    value={draft.minTempC ?? ''}
+                    onChange={(e) => setDraft({ ...draft, minTempC: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                </div>
+                <div className="flex-1">
+                  <label className="label-micro mb-1 block text-[9px]">Max</label>
+                  <input type="number" className="input w-full" placeholder="no limit"
+                    value={draft.maxTempC ?? ''}
+                    onChange={(e) => setDraft({ ...draft, maxTempC: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                </div>
+              </div>
+            </div>
+
+            {/* Wind speed range */}
+            <div>
+              <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>MAX WIND SPEED (km/h)</div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1">
+                  <label className="label-micro mb-1 block text-[9px]">Min</label>
+                  <input type="number" min={0} className="input w-full" placeholder="e.g. 50"
+                    value={draft.minWindKmh ?? ''}
+                    onChange={(e) => setDraft({ ...draft, minWindKmh: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                </div>
+                <div className="flex-1">
+                  <label className="label-micro mb-1 block text-[9px]">Max</label>
+                  <input type="number" min={0} className="input w-full" placeholder="no limit"
+                    value={draft.maxWindKmh ?? ''}
+                    onChange={(e) => setDraft({ ...draft, maxWindKmh: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                </div>
+              </div>
+            </div>
+
+            {/* Clear all weather */}
+            {((draft.weatherConditions ?? []).length > 0 ||
+              draft.minRainfall != null || draft.maxRainfall != null ||
+              draft.minTempC != null || draft.maxTempC != null ||
+              draft.minWindKmh != null || draft.maxWindKmh != null) && (
+              <button
+                onClick={() => setDraft({ ...draft, weatherConditions: [], minRainfall: undefined, maxRainfall: undefined, minTempC: undefined, maxTempC: undefined, minWindKmh: undefined, maxWindKmh: undefined })}
+                className="text-xs mt-3"
+                style={{ color: 'var(--ink-400)' }}
+              >
+                Clear all weather filters
+              </button>
+            )}
           </FilterGroup>
 
           <FilterGroup label="Delay Range (minutes)">
@@ -4616,9 +4875,13 @@ function ReviewForm({
           <Field label="Conference Held?">
             <YesNoNaSelect value={form.technical_conference_outcome} onChange={v => set('technical_conference_outcome', v)} />
           </Field>
-          {(form.technical_conference_outcome === 'YES' || form.technical_conference_outcome === 'NO') && (
+          {form.technical_conference_outcome && (
             <div className="sm:col-span-2 lg:col-span-3">
-              <Field label={form.technical_conference_outcome === 'YES' ? 'Commentary (statement supporting the YES decision)' : 'Commentary (statement supporting the NO decision)'}>
+              <Field label={
+                form.technical_conference_outcome === 'YES' ? 'Commentary (statement supporting the YES decision)' :
+                form.technical_conference_outcome === 'NO'  ? 'Commentary (statement supporting the NO decision)' :
+                                                              'Commentary (statement supporting the N/A decision)'
+              }>
                 <textarea
                   className="input"
                   rows={2}
@@ -4667,13 +4930,26 @@ function ReviewForm({
 
         {/* Row 4 — ITSR */}
         <FieldGroup label="ITSR">
-          <Field label="ITSR Required?">
+          <Field label="ITSR Implemented">
             <YesNoNaSelect value={form.itsr_required} onChange={v => set('itsr_required', v)} />
           </Field>
           {form.itsr_required === 'YES' && (
             <Field label="Time Huddle Held">
               <input className="input" type="time" value={form.time_huddle_held ?? ''} onChange={e => set('time_huddle_held', e.target.value || null)} />
             </Field>
+          )}
+          {(form.itsr_required === 'NO' || form.itsr_required === 'NA') && (
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Field label={form.itsr_required === 'NO' ? 'Commentary (statement supporting the NO decision)' : 'Commentary (statement supporting the N/A decision)'}>
+                <textarea
+                  className="input"
+                  rows={2}
+                  value={form.itsr_commentary ?? ''}
+                  onChange={e => set('itsr_commentary', e.target.value)}
+                  placeholder="Record the statement against the decision…"
+                />
+              </Field>
+            </div>
           )}
         </FieldGroup>
 
