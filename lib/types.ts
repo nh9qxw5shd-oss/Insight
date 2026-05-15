@@ -202,6 +202,12 @@ export interface AnalyticsFilters {
   maxDelay?: number               // inclusive upper bound on per-incident delay minutes
   metricFocus: 'delay' | 'cancellations'  // which primary metric drives charts & tables
   weatherConditions?: string[]    // condition group labels (Clear / Dry, Rain, Snow, …); empty = all
+  minRainfall?: number            // rainfall_mm >= this (mm); incident day must have ≥ this rainfall
+  maxRainfall?: number            // rainfall_mm <= this (mm)
+  minTempC?: number               // max_temp_c >= this (°C); incident day daily high at least X
+  maxTempC?: number               // max_temp_c <= this (°C); incident day daily high at most X
+  minWindKmh?: number             // max_wind_kmh >= this (km/h)
+  maxWindKmh?: number             // max_wind_kmh <= this (km/h)
 }
 
 export const DEFAULT_FILTERS: AnalyticsFilters = {

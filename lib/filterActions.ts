@@ -69,3 +69,12 @@ export function toggleStaffFilter(f: AnalyticsFilters, name: string): AnalyticsF
 export function clearStaffFilter(f: AnalyticsFilters): AnalyticsFilters {
   return { ...f, staffNames: [] }
 }
+
+export function removeWeatherCondition(f: AnalyticsFilters, group: string): AnalyticsFilters {
+  return { ...f, weatherConditions: (f.weatherConditions ?? []).filter(x => x !== group) }
+}
+
+export function clearWeatherNumeric(f: AnalyticsFilters): AnalyticsFilters {
+  const { minRainfall: _a, maxRainfall: _b, minTempC: _c, maxTempC: _d, minWindKmh: _e, maxWindKmh: _f, ...rest } = f
+  return { ...rest }
+}
