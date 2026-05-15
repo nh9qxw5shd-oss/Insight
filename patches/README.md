@@ -23,6 +23,16 @@ Apply order:
 Historic rows can be left as-is — Insight gracefully handles NULLs and the
 analytics windows are typically rolling, so historic gaps disappear over time.
 
+## Optional — persist the incident EVENTS block (patch 4)
+
+Patches 1–3 capture structured fields but still discard the per-incident
+**EVENTS** block (the running commentary). To persist it as queryable `jsonb`:
+
+1. Run `supabase/migrations/009_incident_events.sql`.
+2. Apply `patches/04-incident-events.patch.md` — a single line in
+   `lib/supabaseClient.ts` (no parser or types change needed).
+3. Redeploy DLog2.
+
 ## Field reference (what gets captured now)
 
 | Column | Source in raw log | Why analytics needs it |
@@ -40,5 +50,6 @@ analytics windows are typically rolling, so historic gaps disappear over time.
 | `train_id` / `train_company` / `train_origin` / `train_destination` / `unit_numbers` | TRAIN block | Operator analytics, rolling-stock fault tracking |
 | `trust_ref` / `tda_ref` / `trmc_code` / `fts_div_count` | Stats row | Delay attribution linkage |
 | `event_count` | Length of `events[]` | Incident complexity proxy |
+| `events` *(patch 4)* | Full `events[]` block as `jsonb` | Searchable incident commentary / notes |
 | `has_files` | `Incident Has Files` cell | Highlights cases with photographic/document evidence |
 | `hour_of_day` / `day_of_week` | Derived from `incident_start` + `report_date` | Cheap pre-computed pattern keys |
