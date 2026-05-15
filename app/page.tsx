@@ -47,6 +47,10 @@ import {
   toggleStaffFilter, clearStaffFilter,
 } from '@/lib/filterActions'
 import { generateSyntheticData } from '@/lib/syntheticData'
+import {
+  WeatherDay, WEATHER_LOCATIONS, CONDITION_GROUPS,
+  fetchWeatherFromDB, syncWeather, conditionGroup,
+} from '@/lib/weather'
 import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
 import { getFiltersFromUrl, setFiltersInUrl, clearFiltersFromUrl } from '@/lib/filterUrl'
 import { exportCSV } from '@/lib/export'
@@ -146,6 +150,9 @@ export default function InsightDashboard() {
   const [reviewLoading, setReviewLoading]     = useState(false)
   const [reviewError, setReviewError]         = useState<string | null>(null)
 
+  // Weather data synced from Open-Meteo via Supabase
+  const [weatherData, setWeatherData] = useState<WeatherDay[]>([])
+
   // After hydration, restore any filters saved in the URL. This runs once and
   // must come before the URL-sync effect so a stale DEFAULT_FILTERS write
   // doesn't permanently overwrite saved state.
@@ -169,6 +176,32 @@ export default function InsightDashboard() {
 
   // Keep URL in sync with filters
   useEffect(() => { setFiltersInUrl(filters) }, [filters])
+
+  // Sync weather from Open-Meteo → Supabase → local state whenever the analytics window changes.
+  // Skipped in demo mode (no Supabase) and when data hasn't loaded yet.
+  useEffect(() => {
+    if (!isSupabaseConfigured() || demoMode || !data) return
+    const from  = data.windowFrom
+    const to    = data.windowTo
+    const areas = WEATHER_LOCATIONS.map(l => l.area)
+    let cancelled = false
+    async function run() {
+      try {
+        const existing = await fetchWeatherFromDB(from, to)
+        if (cancelled) return
+        setWeatherData(existing)
+        const newCount = await syncWeather(existing, areas, from, to)
+        if (cancelled || newCount === 0) return
+        const updated = await fetchWeatherFromDB(from, to)
+        if (!cancelled) setWeatherData(updated)
+      } catch {
+        // Non-fatal — weather is supplemental context
+      }
+    }
+    run()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.windowFrom, data?.windowTo, demoMode])
 
   // Fetch on filter change
   useEffect(() => {
@@ -215,24 +248,47 @@ export default function InsightDashboard() {
     return () => { cancelled = true }
   }, [filters])
 
-  // Staff filter — applied client-side on top of server-filtered incidents.
-  // teamMembers are fetched for the full window (no staff filter applied server-side)
-  // so we have all members available for the filter UI and patterns charts.
+  // Client-side filters applied on top of server-filtered incidents:
+  // 1. Staff filter — team members fetched for full window so all names are available.
+  // 2. Weather conditions filter — maps each incident's (area, date) to its weather group.
   const effectiveData = useMemo((): RawData | null => {
     if (!data) return null
-    if (filters.staffNames.length === 0) return data
-    const staffIncidentIds = new Set(
-      data.teamMembers
-        .filter(tm => filters.staffNames.includes(tm.name))
-        .map(tm => tm.incident_id),
-    )
-    return { ...data, incidents: data.incidents.filter(i => staffIncidentIds.has(i.id)) }
-  }, [data, filters.staffNames])
+    let incidents = data.incidents
+
+    if (filters.staffNames.length > 0) {
+      const staffIncidentIds = new Set(
+        data.teamMembers
+          .filter(tm => filters.staffNames.includes(tm.name))
+          .map(tm => tm.incident_id),
+      )
+      incidents = incidents.filter(i => staffIncidentIds.has(i.id))
+    }
+
+    if (filters.weatherConditions && filters.weatherConditions.length > 0) {
+      const matchingKeys = new Set(
+        weatherData
+          .filter(w => filters.weatherConditions!.includes(conditionGroup(w.conditions)))
+          .map(w => `${w.area}::${w.date}`),
+      )
+      incidents = incidents.filter(i =>
+        i.area && i.report_date && matchingKeys.has(`${i.area}::${i.report_date}`),
+      )
+    }
+
+    if (incidents === data.incidents) return data
+    return { ...data, incidents }
+  }, [data, filters.staffNames, filters.weatherConditions, weatherData])
 
   const availableStaff = useMemo(() => {
     if (!data) return []
     return Array.from(new Set(data.teamMembers.map(tm => tm.name))).sort()
   }, [data])
+
+  const availableWeatherConditionGroups = useMemo(() => {
+    if (!weatherData.length) return []
+    const present = new Set(weatherData.map(w => conditionGroup(w.conditions)))
+    return CONDITION_GROUPS.map(g => g.label).filter(l => present.has(l))
+  }, [weatherData])
 
   // Derived — use effectiveData so all analytics respect the staff filter
   const kpis         = useMemo(() => effectiveData ? deriveKPIs(effectiveData) : null, [effectiveData])
@@ -415,7 +471,8 @@ export default function InsightDashboard() {
           filters.severities.length + filters.searches.length +
           filters.incidentTypes.length + filters.staffNames.length +
           (filters.minDelay != null || filters.maxDelay != null ? 1 : 0) +
-          (filters.metricFocus === 'cancellations' ? 1 : 0)
+          (filters.metricFocus === 'cancellations' ? 1 : 0) +
+          (filters.weatherConditions?.length ?? 0)
         }
         onRefresh={() => setFilters({ ...filters })}
         onExport={effectiveData ? () => exportCSV(effectiveData.incidents, effectiveData.windowFrom, effectiveData.windowTo) : undefined}
@@ -467,7 +524,7 @@ export default function InsightDashboard() {
             {tab === 'trends'      && <TrendsTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowDays={effectiveData.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'explore'     && <ExploreTab incidents={effectiveData.incidents} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} />}
-            {tab === 'focus'       && <FocusTab incidents={effectiveData.incidents} />}
+            {tab === 'focus'       && <FocusTab incidents={effectiveData.incidents} weatherData={weatherData} />}
             {tab === 'review'      && (
               reviewLoading && !reviewIncidents
                 ? <div className="flex items-center justify-center py-24"><RefreshCw size={16} className="animate-spin" style={{ color: 'var(--ink-400)' }} /></div>
@@ -508,6 +565,7 @@ export default function InsightDashboard() {
         availableAreas={areas.map(a => a.area)}
         availableIncidentTypes={incidentTypeList}
         availableStaff={availableStaff}
+        availableWeatherConditions={availableWeatherConditionGroups}
         savedViews={savedViews}
         onSaveView={handleSaveView}
         onDeleteView={handleDeleteView}
@@ -3509,7 +3567,7 @@ function CalendarPicker({ value, onChange, placeholder = 'Select date' }: {
   )
 }
 
-function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, availableIncidentTypes, availableStaff, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
+function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas, availableIncidentTypes, availableStaff, availableWeatherConditions, savedViews, onSaveView, onDeleteView, onApplyView }: any) {
   const [draft, setDraft]               = useState<AnalyticsFilters>(filters)
   const [saveName, setSaveName]         = useState('')
   const [showSaveInput, setShowSaveInput] = useState(false)
@@ -3740,6 +3798,41 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
               ))}
             </div>
           </FilterGroup>
+
+          {availableWeatherConditions && availableWeatherConditions.length > 0 && (
+            <FilterGroup label="Weather Conditions">
+              <div className="flex flex-wrap gap-2">
+                {availableWeatherConditions.map((group: string) => (
+                  <Chip
+                    key={group}
+                    label={group}
+                    active={(draft.weatherConditions ?? []).includes(group)}
+                    onToggle={() => {
+                      const current = draft.weatherConditions ?? []
+                      setDraft({
+                        ...draft,
+                        weatherConditions: current.includes(group)
+                          ? current.filter((x: string) => x !== group)
+                          : [...current, group],
+                      })
+                    }}
+                  />
+                ))}
+              </div>
+              {(draft.weatherConditions ?? []).length > 0 && (
+                <button
+                  onClick={() => setDraft({ ...draft, weatherConditions: [] })}
+                  className="text-xs mt-2"
+                  style={{ color: 'var(--ink-400)' }}
+                >
+                  Clear weather filter
+                </button>
+              )}
+              <p className="text-[10px] mt-2" style={{ color: 'var(--ink-500)' }}>
+                Filters incidents by the weather condition recorded for their area on the incident date.
+              </p>
+            </FilterGroup>
+          )}
 
           <FilterGroup label="Delay Range (minutes)">
             <div className="flex items-center gap-2">

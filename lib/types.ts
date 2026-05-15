@@ -201,6 +201,7 @@ export interface AnalyticsFilters {
   minDelay?: number               // inclusive lower bound on per-incident delay minutes
   maxDelay?: number               // inclusive upper bound on per-incident delay minutes
   metricFocus: 'delay' | 'cancellations'  // which primary metric drives charts & tables
+  weatherConditions?: string[]    // condition group labels (Clear / Dry, Rain, Snow, …); empty = all
 }
 
 export const DEFAULT_FILTERS: AnalyticsFilters = {
@@ -213,6 +214,7 @@ export const DEFAULT_FILTERS: AnalyticsFilters = {
   searches: [],
   searchMode: 'or',
   metricFocus: 'delay',
+  weatherConditions: [],
 }
 
 // ─── Category visual config (mirrors DLog2 master) ───────────────────────────

@@ -13,6 +13,7 @@ import {
   CATEGORY_CONFIG, SEVERITY_CONFIG,
 } from '@/lib/types'
 import { searchMatch, effectiveDelay, effectiveMinsToArrival } from '@/lib/queries'
+import { WeatherDay, weatherForIncident, decodeWeather } from '@/lib/weather'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -114,7 +115,7 @@ function ScatterTip({ active, payload }: any) {
 
 // ─── FocusTab ────────────────────────────────────────────────────────────────
 
-export function FocusTab({ incidents }: { incidents: IncidentRow[] }) {
+export function FocusTab({ incidents, weatherData = [] }: { incidents: IncidentRow[]; weatherData?: WeatherDay[] }) {
   const [query,       setQuery]       = useState('')
   const [showDrop,    setShowDrop]    = useState(false)
   const [focalId,     setFocalId]     = useState<string | null>(null)
@@ -365,6 +366,45 @@ export function FocusTab({ incidents }: { incidents: IncidentRow[] }) {
                   <div className="numeric-mono text-base font-light mt-0.5" style={{ color: 'var(--ink-100)' }}>{value}</div>
                 </div>
               ))}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Weather context */}
+      {focal && (() => {
+        const wx = weatherForIncident(weatherData, focal.area, focal.report_date)
+        if (!wx) return null
+        const decoded = decodeWeather(wx.weather_code)
+        return (
+          <div className="rounded border px-4 py-3" style={{ background: 'var(--bg-card)', borderColor: 'var(--line)' }}>
+            <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>WEATHER ON INCIDENT DAY</div>
+            <div className="flex flex-wrap items-center gap-5 text-xs">
+              <div className="flex items-center gap-1.5">
+                <span className="text-base leading-none">{decoded.emoji}</span>
+                <span style={{ color: 'var(--ink-200)' }}>{wx.conditions || decoded.label}</span>
+                {wx.is_forecast && (
+                  <span className="text-[9px] px-1 rounded" style={{ background: 'var(--line)', color: 'var(--ink-400)' }}>forecast</span>
+                )}
+              </div>
+              {wx.min_temp_c != null && wx.max_temp_c != null && (
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>Temp</span>
+                  <span className="numeric-mono text-xs" style={{ color: 'var(--ink-200)' }}>{wx.min_temp_c}° – {wx.max_temp_c}°C</span>
+                </div>
+              )}
+              {wx.rainfall_mm != null && (
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>Rain</span>
+                  <span className="numeric-mono text-xs" style={{ color: 'var(--ink-200)' }}>{wx.rainfall_mm} mm</span>
+                </div>
+              )}
+              {wx.max_wind_kmh != null && (
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>Wind</span>
+                  <span className="numeric-mono text-xs" style={{ color: 'var(--ink-200)' }}>{wx.max_wind_kmh} km/h</span>
+                </div>
+              )}
             </div>
           </div>
         )
