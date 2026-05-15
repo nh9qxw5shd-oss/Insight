@@ -324,7 +324,10 @@ the incident has been classified.
 2. The top of the panel shows **CCIL Captured Detail** — read-only: reference,
    times, category, train, delay, responders, TRUST/TDA refs and so on. **Team
    on Duty** for that incident appears next if recorded.
-3. Below that is the **SNDM Review** form. **Every field is optional** — saving
+3. The **Incident Events Log** sits just below — a collapsed bar that does not
+   take up space until you open it. Expand it to read the full CCIL commentary
+   for the incident (time, company, description per line). See 3.5.
+4. Below that is the **SNDM Review** form. **Every field is optional** — saving
    a review simply means "an SNDM has touched this incident". Fill in only what
    applies:
 
@@ -335,16 +338,39 @@ the incident has been classified.
 | **Stranded Trains** | Did trains strand? Selecting **Yes** opens a repeatable list — add each train with **headcode, location, time stranded, time moved**. Use **+ Add Train** for more. |
 | **ITSR** | Was ITSR implemented? **Yes** reveals **Time Huddle Held**; **No / N/A** reveals a commentary box for the supporting statement. |
 | **Incident Classification** | Pick one: **Green / Amber / Red / Black**. Click the active one again to clear it. |
-| **MOM Response** | Did a MOM respond? **Yes** reveals **Depot**, **Response Time**, and the **First 50 — 30-minute target** outcome. |
+| **MOM Response** | Did a MOM respond? **Yes** reveals **Depot**, **MOM Dispatched**, **MOM Arrived On Site**, **Response Time**, and the **First 50 — 30-minute target** outcome. |
 | **Recovery** | Enter **Target** and **Actual** recovery times. **Time to Recover** is calculated automatically from incident start → actual recovery. |
 | **Additional Notes** | Free text for anything else. |
 | **Reviewed By** | Your initials. |
 
-4. Click **Save Review** (or **Save Changes** if a review already exists). It
+5. Click **Save Review** (or **Save Changes** if a review already exists). It
    saves immediately to the `incident_reviews` table. The incident's badge flips
    to the green **Reviewed** state and the progress bars update.
 
-### 3.5 Refining CCIL capture
+### 3.5 The events log and auto-filled fields
+
+DLog2 stores the **events block** — the running commentary captured against
+each incident. The Review tab uses it two ways:
+
+- **Reading it** — the **Incident Events Log** bar (collapsed by default) lists
+  every event with its time, company and description. It only occupies space
+  once you open it.
+- **Auto-filling the form** — when an incident has *no review yet*, Insight
+  scans the events and pre-fills these fields:
+  - the **first ITSR mention** → `ITSR Implemented` = Yes, and that event's
+    time → **Time Huddle Held**;
+  - the **first MOM dispatch reference** → `MOM Responded` = Yes and
+    **MOM Dispatched** time;
+  - the **first MOM on-site / arrived reference** → **MOM Arrived On Site** time.
+
+Any auto-filled field carries a small amber **"auto · from events"** tag, and
+the matching lines in the events log are tagged **ITSR**, **MOM dispatch** or
+**MOM on site**. Auto-fill is a **starting point, not a decision** — edit any
+field to override it (the tag clears as soon as you do), and nothing is stored
+until you click **Save Review**. Auto-fill never touches a value you have
+already saved.
+
+### 3.6 Refining CCIL capture
 
 Sometimes CCIL captured a value wrong. Expand **"Refine CCIL Capture"** inside
 the form to override **title, location, area, delay minutes, trains delayed,
@@ -358,13 +384,13 @@ cancelled and part-cancelled**.
 - An override to **delay** can move an incident above the 400-minute threshold,
   changing whether it counts as reviewable.
 
-### 3.6 Removing a review
+### 3.7 Removing a review
 
 Open a reviewed incident and click **Remove Review**. After you confirm, the
 review record is deleted and the incident returns to **Pending** — the CCIL row
 is, again, untouched.
 
-### 3.7 How reviews feed the rest of Insight
+### 3.8 How reviews feed the rest of Insight
 
 SNDM reviews are not just record-keeping — they drive reporting:
 
@@ -377,7 +403,7 @@ SNDM reviews are not just record-keeping — they drive reporting:
 Keeping the Review tab's progress bars green means downstream reports are
 trustworthy.
 
-### 3.8 When you cannot save
+### 3.9 When you cannot save
 
 Saving requires a **live Supabase connection** and **real data**:
 

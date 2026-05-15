@@ -65,6 +65,19 @@ export interface IncidentRow {
   has_files: boolean | null
   hour_of_day: number | null
   day_of_week: number | null
+
+  // Per-incident CCIL events log (running commentary) — jsonb, optional for
+  // legacy rows captured before DLog2 began persisting the events block.
+  events?: IncidentEvent[] | null
+}
+
+// One row of the CCIL EVENTS block — the chronological commentary on an
+// incident. Stored as a jsonb array on incidents.events.
+export interface IncidentEvent {
+  date: string | null
+  time: string | null
+  company: string | null
+  description: string | null
 }
 
 // ─── SNDM incident review (side-table, optional) ─────────────────────────────
@@ -122,6 +135,8 @@ export interface IncidentReview {
   mom_responded: YesNoNa | null
   mom_depot: MomDepot | null
   mom_response_time: string | null
+  mom_dispatched_time: string | null
+  mom_arrived_time: string | null
   first_50_30min_target_met: First50Outcome | null
 
   target_recovery_time: string | null
