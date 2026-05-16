@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
+  Activity, AlertTriangle, BarChart2, Bell, BookOpen, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, ClipboardList, Clock, Compass, Crosshair, Download, FileText, Filter, FlaskConical, GitBranch, Layers, List, MapPin,
   Minus, Moon, RefreshCw, Route, Search, Sun, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
@@ -686,6 +686,15 @@ function Header(props: {
                 {props.activeFilterCount}
               </span>
             )}
+          </button>
+
+          <button
+            onClick={() => window.open('/user-guide.html', '_blank', 'noopener,noreferrer')}
+            className="btn"
+            title="Open the Insight user guide"
+          >
+            <BookOpen size={12} />
+            Guide
           </button>
 
           {props.onExport && (
