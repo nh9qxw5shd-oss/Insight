@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EMCC Insight — User Guide</title>
+<style>
+  :root {
+    --bg: #0a0e1a; --panel: #0f1424; --card: #141a2e; --line: #232b42;
+    --ink-100: #f2ede0; --ink-300: #c3c8d4; --ink-400: #9aa1b3; --ink-500: #6b7286;
+    --orange: #E05206; --amber: #F39C12; --green: #27AE60;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink-300);
+    font-family: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px; line-height: 1.65;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 24px 96px; }
+  header.doc {
+    border-bottom: 1px solid var(--line); padding-bottom: 28px; margin-bottom: 36px;
+  }
+  .eyebrow {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--orange);
+  }
+  h1 {
+    font-family: Fraunces, Georgia, "Times New Roman", serif;
+    font-weight: 400; font-size: 42px; line-height: 1.1; margin: 10px 0 6px; color: var(--ink-100);
+  }
+  h1 .dot { color: var(--orange); }
+  h2 {
+    font-family: Fraunces, Georgia, serif; font-weight: 400; font-size: 27px;
+    color: var(--ink-100); margin: 52px 0 14px; padding-top: 14px; border-top: 1px solid var(--line);
+  }
+  h3 {
+    font-size: 17px; font-weight: 600; color: var(--ink-100); margin: 30px 0 8px;
+  }
+  h4 {
+    font-family: "JetBrains Mono", monospace; font-size: 12px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--ink-400); margin: 22px 0 6px;
+  }
+  p { margin: 10px 0; }
+  a { color: var(--orange); }
+  strong { color: var(--ink-100); font-weight: 600; }
+  em { color: var(--ink-100); font-style: italic; }
+  ul, ol { margin: 10px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  code {
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12.5px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 3px;
+    padding: 1px 5px; color: var(--ink-100);
+  }
+  pre {
+    background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+    padding: 14px 16px; overflow-x: auto; margin: 14px 0;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: 12.5px; color: var(--ink-300); }
+  blockquote {
+    margin: 14px 0; padding: 12px 16px; border-left: 3px solid var(--orange);
+    background: rgba(224,82,6,.06); border-radius: 0 4px 4px 0; color: var(--ink-300);
+  }
+  blockquote p { margin: 4px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th {
+    font-family: "JetBrains Mono", monospace; font-size: 10.5px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--ink-400); border-bottom: 1px solid var(--line);
+  }
+  td:first-child { color: var(--ink-100); white-space: nowrap; }
+  td:first-child.wrap-cell { white-space: normal; }
+  .toc {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 18px 22px; margin: 24px 0 8px;
+  }
+  .toc ol { margin: 6px 0; }
+  .toc a { color: var(--ink-300); text-decoration: none; }
+  .toc a:hover { color: var(--orange); }
+  .pill {
+    font-family: "JetBrains Mono", monospace; font-size: 10px; padding: 2px 7px;
+    border-radius: 3px; border: 1px solid; white-space: nowrap;
+  }
+  .pill-amber { background: rgba(243,156,18,.14); color: var(--amber); border-color: rgba(243,156,18,.4); }
+  footer.doc {
+    margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line);
+    font-size: 12.5px; color: var(--ink-500);
+  }
+  .back {
+    display: inline-block; margin-bottom: 22px; font-family: "JetBrains Mono", monospace;
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--ink-400); text-decoration: none;
+  }
+  .back:hover { color: var(--orange); }
+  @media print {
+    body { background: #fff; color: #1a1a1a; }
+    .wrap { max-width: none; }
+    h1, h2, h3, strong, em, td:first-child { color: #000; }
+    .toc, blockquote, pre, code { background: #f4f4f4; }
+    .back { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <a class="back" href="/">‹ Back to Insight</a>
+
+  <header class="doc">
+    <div class="eyebrow">Network Rail · East Midlands Control Centre · Strategic Operations</div>
+    <h1>Insight<span class="dot">.</span> User Guide</h1>
+    <p>How to get value out of Insight day to day — focused on the three things
+    senior managers and SNDMs ask about most.</p>
+  </header>
+
+  <div class="toc">
+    <h4 style="margin-top:0">Contents</h4>
+    <ol>
+      <li><a href="#orientation">Orientation</a></li>
+      <li><a href="#filters">Using the data filters</a></li>
+      <li><a href="#trends">Identifying trends and links</a></li>
+      <li><a href="#review">Using the Review section (for SNDMs)</a></li>
+      <li><a href="#quickref">Quick reference</a></li>
+    </ol>
+  </div>
+
+  <h2 id="orientation">Orientation</h2>
+  <p>Insight is a read-only strategic dashboard. It reads the same incident data
+  that DLog2 captures from the daily CCIL log and presents it as long-view trend,
+  pattern and performance intelligence. <strong>Insight never changes incident
+  data</strong> — the one exception is the Review section, which writes optional
+  review records to a separate side-table (it still leaves the original CCIL row
+  untouched).</p>
+
+  <h3>The screen layout</h3>
+  <ul>
+    <li><strong>Header</strong> (top) — the title, the <strong>time-window
+    selector</strong>, the <strong>Filters</strong> button, <strong>Guide</strong>,
+    <strong>Export</strong>, <strong>Refresh</strong>, light/dark toggle, and a
+    <strong>Live / Demo Data</strong> indicator.</li>
+    <li><strong>Tab bar</strong> — fourteen views. Every analytics tab is driven by
+    the <em>same</em> shared filter set, so a filter you set once applies everywhere.</li>
+    <li><strong>Content area</strong> — the active tab.</li>
+  </ul>
+
+  <h3>Live vs Demo Data</h3>
+  <p>Look at the indicator on the top right:</p>
+  <ul>
+    <li><strong>Live</strong> (green dot) — you are looking at real incident data
+    from Supabase.</li>
+    <li><strong>Demo Data</strong> (amber dot) — Insight could not reach Supabase,
+    or the query returned nothing, so it has generated a synthetic dataset so the
+    screen is not blank. <strong>Demo data is not real and Review edits will not
+    save.</strong> If you expect live data and see Demo, press <strong>Refresh</strong>,
+    and widen the time window.</li>
+  </ul>
+
+  <h2 id="filters">1. Using the data filters</h2>
+  <p>Filters are the core of Insight. Every chart, KPI and table on every analytics
+  tab responds to the same filter set, so once you have framed the question with
+  filters, all fourteen views answer it consistently.</p>
+  <p>There are two places filters live: the <strong>header</strong> (time window)
+  and the <strong>Filters drawer</strong> (everything else).</p>
+
+  <h3>1.1 The time window — set <em>when</em></h3>
+  <p>In the header, between the <code>‹</code> and <code>›</code> arrows:</p>
+  <ul>
+    <li><strong>Preset windows</strong> — <code>7d</code>, <code>30d</code>,
+    <code>90d</code>, <code>6m</code>, <code>1y</code>. These are <em>rolling</em>
+    windows ending today. 30 days is the default.</li>
+    <li><strong><code>‹</code> / <code>›</code> arrows</strong> — step backwards or
+    forwards one whole window at a time. On a 30-day window, <code>‹</code> jumps to
+    the previous 30 days. <code>›</code> is disabled once you reach today.</li>
+    <li><strong>Custom date range</strong> — set an exact <strong>From</strong> /
+    <strong>To</strong> in the Filters drawer (see 1.3). When a custom range is
+    active it shows in small text under the window buttons.</li>
+  </ul>
+  <blockquote><p><strong>KPI deltas:</strong> KPI cards show a <code>%</code> change
+  "vs the previous equivalent window". On a 30-day window that means the 30 days
+  <em>before</em> the current one. Changing the window changes the comparison
+  baseline too.</p></blockquote>
+
+  <h3>1.2 Opening the Filters drawer</h3>
+  <p>Click <strong>Filters</strong> in the header. A badge on the button shows how
+  many filters are currently active. The drawer slides in from the right. Filters
+  you set in the drawer are <strong>staged as a draft</strong> — they apply when you
+  click <strong>Apply</strong>. <strong>Reset</strong> clears everything back to
+  defaults.</p>
+
+  <h3>1.3 The filter types</h3>
+  <p>All multi-select filters follow the rule <strong>empty = all</strong> —
+  selecting nothing means "don't filter on this".</p>
+  <table>
+    <thead><tr><th>Filter</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>Primary Metric</td><td>Switch between <strong>Delay (mins)</strong> and <strong>Cancellations</strong>. Changes which metric drives trend charts, operator tables and KPI emphasis across the Performance view.</td></tr>
+      <tr><td>Search</td><td>Free-text tokens matched across title, location, fault number, train ID and CCIL reference. Add several tokens; use the <strong>AND / OR</strong> toggle — <em>OR</em> = any token matches, <em>AND</em> = every token must match.</td></tr>
+      <tr><td>Areas</td><td>Restrict to one or more EMCC areas (Derby, Leicester, Lincoln, Bedford, …). Only areas present in the current window are listed.</td></tr>
+      <tr><td>Staff on Duty</td><td>Restrict to incidents where a named team member was recorded on shift. Only shown when staff data exists in the window.</td></tr>
+      <tr><td>Categories</td><td>Multi-select across the 21 incident classes (SPAD, TPWS, Near Miss, Infrastructure, …). Chips are colour-coded.</td></tr>
+      <tr><td>CCIL Incident Type</td><td>The finer-grained CCIL type label (e.g. "Points Failure"). Search the box to find a type; the count shows how many incidents carry it in the window.</td></tr>
+      <tr><td>Severity</td><td>CRITICAL / HIGH / MEDIUM / LOW / INFO.</td></tr>
+      <tr><td>Weather</td><td>Filter incidents by the weather on their report date — see 1.4.</td></tr>
+      <tr><td>Delay Range (minutes)</td><td>Keep only incidents whose per-incident delay is at/above <strong>Min</strong> and/or at/below <strong>Max</strong>. Good for isolating the big-hitters (e.g. Min = 1000).</td></tr>
+      <tr><td>Custom Date Range</td><td>Exact <strong>From / To</strong> dates. Overrides the rolling window. Use "Clear → use rolling window" to go back to presets.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>1.4 Weather filters</h3>
+  <p>Weather is supplemental context fetched from Open-Meteo. Each EMCC area is
+  matched to one representative measurement point, and weather is joined to
+  incidents <strong>by area name and report date</strong>.</p>
+  <ul>
+    <li><strong>Conditions</strong> — condition groups (Clear / Dry, Rain, Snow, …).</li>
+    <li><strong>Rainfall (mm)</strong>, <strong>Daily High Temperature (°C)</strong>,
+    <strong>Max Wind Speed (km/h)</strong> — each has a Min/Max pair.</li>
+    <li>Expand <strong>"How weather is matched to incidents"</strong> to see which
+    town represents each area.</li>
+  </ul>
+  <blockquote><p><strong>Important:</strong> when <em>any</em> weather filter is
+  active, incidents that have no matching weather record are <strong>excluded</strong>.
+  Use "Clear all weather filters" to remove them in one click.</p></blockquote>
+
+  <h3>1.5 Active filter chips, saving and sharing</h3>
+  <ul>
+    <li><strong>Active filter chips</strong> appear below the header. Click the
+    <code>×</code> on any chip to remove just that filter, or "Clear all" to drop
+    them all.</li>
+    <li><strong>Saved Views</strong> — at the bottom of the drawer, <strong>"Save
+    current view…"</strong> stores the whole filter set under a name for one-click
+    recall (e.g. "Derby SPADs — 90d").</li>
+    <li><strong>Shareable URL</strong> — the current filter set is encoded into the
+    page URL. Copy the address bar and send it to a colleague; they open Insight
+    with the exact same filters applied.</li>
+  </ul>
+
+  <h3>1.6 A practical filter workflow</h3>
+  <ol>
+    <li>Set the <strong>time window</strong> to frame the period.</li>
+    <li>Open <strong>Filters</strong>, set <strong>Primary Metric</strong>, pick
+    <strong>Categories</strong> / <strong>Areas</strong> / <strong>Severity</strong>
+    as needed, then <strong>Apply</strong>.</li>
+    <li>Read the result across <strong>Overview → Performance → Geography</strong>.</li>
+    <li>Narrow with <strong>Search</strong> or <strong>Delay Range</strong> to isolate
+    a specific question.</li>
+    <li><strong>Save the view</strong> if you will return to it; otherwise copy the URL.</li>
+  </ol>
+  <blockquote><p><strong>Note:</strong> the <strong>Review</strong>,
+  <strong>Trends</strong>, <strong>Explore</strong> and <strong>Distillation</strong>
+  tabs deliberately use <em>their own</em> controls rather than the global filter bar.</p></blockquote>
+
+  <h2 id="trends">2. Identifying trends and links</h2>
+  <p>A "trend" is movement over time; a "link" is a relationship between things
+  (co-occurrence, recurrence, correlation). Insight separates these into
+  purpose-built tools. The most important rule: <strong>Insight surfaces
+  correlations, never causes</strong> — every "link" is a prompt to investigate,
+  not a conclusion.</p>
+
+  <h3>2.1 Trend charts on Overview &amp; Performance</h3>
+  <p>The trend chart on the <strong>Overview</strong> and <strong>Performance</strong>
+  tabs is the headline view of movement. It carries several decision aids:</p>
+  <ul>
+    <li><strong>Chart-type toggle</strong> — swap line / area / bar in the card's top-right.</li>
+    <li><strong>Rolling average</strong> — a smoothed 7-day line cuts through daily noise.</li>
+    <li><strong>Stability band</strong> — a shaded band is the rolling 14-day baseline
+    ± 2σ. Days where the value pushes <strong>outside the band are flagged as
+    anomalous</strong> — your "something happened here" days.</li>
+    <li><strong>Change-points</strong> — markers where the series shifts to a new
+    sustained level, not just a one-day spike. A change-point means the
+    <em>baseline itself</em> moved.</li>
+  </ul>
+  <p>Click a point/day on these charts to <strong>drill down</strong> into the
+  incidents behind it.</p>
+
+  <h3>2.2 The Trends tab — Trend Composer</h3>
+  <p>The <strong>Trends</strong> tab is the dedicated tool for <em>comparing</em>
+  trend lines and seeing where they interact.</p>
+  <ul>
+    <li><strong>Add series</strong> — build up to 8 series. Each is its own filtered
+    slice: pick a <strong>metric</strong> and optionally narrow by categories /
+    severities / areas.</li>
+    <li><strong>7d avg</strong> — overlay a rolling average on every series.</li>
+    <li><strong>Normalise</strong> — rescale every series to a common 0–100% so you
+    can compare the <em>shape</em> of trends at very different magnitudes.</li>
+    <li><strong>Trend badges</strong> — each series chip shows direction and slope.</li>
+    <li><strong>Trend crossings</strong> — when two series swap order, Insight lists
+    the crossing dates under the chart. A crossing is a classic "link" signal worth
+    investigating.</li>
+  </ul>
+
+  <h3>2.3 The Hypothesis panel — "What stood out"</h3>
+  <p>When the trend chart flags anomalous days or a change-point, the
+  <strong>Hypothesis panel</strong> answers <em>what moved</em>. It ranks dimensions
+  (category, area, severity, hour-of-day, line, operator) that were
+  <strong>over-represented</strong> on the flagged days versus a comparable baseline.</p>
+  <ul>
+    <li>Each row shows a <strong>lift</strong> figure — e.g. "Points Failure was 4×
+    more common on the spike days."</li>
+    <li>Rows that map to a real filter (category / area / severity) are
+    <strong>clickable</strong> — clicking pins them as a filter chip.</li>
+    <li>Everything here is explicitly a <strong>correlation</strong>.</li>
+  </ul>
+
+  <h3>2.4 The Signals panel</h3>
+  <p>On the Overview tab, the <strong>Signals panel</strong> is an automated
+  watch-list: delay spikes, incident surges, emerging hotspots, fault acceleration,
+  response degradation, safety clusters, category spikes and SLA-breach-rate
+  signals. Treat it as the "read me first" panel each morning.</p>
+
+  <h3>2.5 Patterns tab — time-of-day and day-of-week links</h3>
+  <ul>
+    <li><strong>Day × hour heatmap</strong> — concentration across the week.</li>
+    <li><strong>Hour-of-day</strong> and <strong>weekday</strong> profiles.</li>
+    <li><strong>Category-by-time</strong> — which categories cluster into which time bands.</li>
+  </ul>
+
+  <h3>2.6 Assets tab — recurrence links</h3>
+  <ul>
+    <li><strong>Repeat-Fault Assets</strong> — the same equipment failing repeatedly,
+    ranked by cumulative impact. The engineering-review priority list.</li>
+    <li><strong>Multi-Day Escalations (chains)</strong> — incidents that share a CCIL
+    reference across multiple days are grouped into a <em>chain</em>. A chain is a
+    direct "these events are the same problem" link. Click to drill in.</li>
+  </ul>
+
+  <h3>2.7 Explore tab — cohort links</h3>
+  <p>The <strong>Explore</strong> tab slices a filtered segment into
+  <strong>cohorts</strong> (e.g. by arrival-time band) and surfaces
+  <strong>insights</strong> comparing each cohort to the whole segment.</p>
+
+  <h3>2.8 Analytics tab — location × type links</h3>
+  <p>Pick a <strong>location</strong> and an <strong>incident type</strong> and the
+  tab returns the average arrival and resolution times for that exact combination.</p>
+
+  <h3>2.9 Focus tab — single-incident links</h3>
+  <p>The <strong>Focus</strong> tab investigates one incident and compares it against
+  a <strong>cohort</strong> of similar incidents, with weather context. Answers "was
+  this one unusual, or typical for its kind?"</p>
+
+  <h3>2.10 Distillation tab — precision filtering</h3>
+  <p>A heavy-duty filter workbench with its own much finer filter set — duration,
+  mins-to-advised/response/arrival, trains-delayed, time-of-day, and tri-state flags
+  (<em>any / only / exclude</em>). Use it when the global filter bar is not granular
+  enough.</p>
+
+  <h3>Reading trends and links responsibly</h3>
+  <ul>
+    <li>A <strong>change-point</strong> beats a one-day spike — the new level is holding.</li>
+    <li><strong>Normalise</strong> before comparing trends of different sizes.</li>
+    <li>A crossing, a chain, a lift figure and a cohort insight are all links —
+    investigate them, do not report them as causes.</li>
+    <li>Always click through to the <strong>drill-down</strong> incident list to
+    confirm the story before acting.</li>
+  </ul>
+
+  <h2 id="review">3. Using the Review section (for SNDMs)</h2>
+  <p>The <strong>Review</strong> tab is the SNDM workspace. It lets a Senior Network
+  Duty Manager work through every incident in a period and attach an optional review
+  record: classification, technical-conference outcome, stranded-train detail, ITSR,
+  MOM response, recovery times, and corrections to anything CCIL mis-captured.</p>
+  <blockquote><p><strong>Review writes data.</strong> Unlike the rest of Insight,
+  saving a review writes a row to the <code>incident_reviews</code> side-table. The
+  <strong>original CCIL incident row is never changed</strong> — overrides are stored
+  separately and layered on top.</p></blockquote>
+
+  <h3>3.1 What the Review tab shows</h3>
+  <p>The Review tab <strong>ignores the global category / severity / search
+  filters</strong> on purpose — an SNDM must see <em>every</em> incident in the
+  period. It is driven only by the date window. Three KPI cards sit at the top:</p>
+  <ul>
+    <li><strong>Open Log Periods</strong> — how many railway log periods fall in the window.</li>
+    <li><strong>Incidents in Window</strong> — total, with a note of how many are auto-N/A.</li>
+    <li><strong>Reviewed</strong> — progress, e.g. <code>12 / 18</code> and a % complete figure.</li>
+  </ul>
+  <p>Below that, <strong>Team on Duty</strong> lists who was recorded on shift, then
+  the <strong>Log Periods</strong> list.</p>
+
+  <h3>3.2 The drill-down structure</h3>
+  <pre><code>Log Period  (railway period · year · date span · reviewed progress bar)
+  └─ Day    (date · week label · incident count · delay · reviewed count)
+       └─ Incident  (severity · CCIL ref · time · category · area · status)</code></pre>
+  <p>Click any level to expand it. Each level shows a reviewed count / progress bar.
+  A period bar turns <strong>green</strong> when every reviewable incident is done.</p>
+
+  <h3>3.3 Incident status badges</h3>
+  <ul>
+    <li><strong>Pending</strong> — reviewable, no review saved yet.</li>
+    <li><strong>Reviewed</strong> (green tick) — a review record exists.</li>
+    <li><strong>Auto N/A</strong> — the incident's delay is <strong>below 400
+    minutes</strong>, so it is auto-classified Not Applicable and excluded from the
+    review progress counter. Dimmed, but you can still open one and review it.</li>
+  </ul>
+  <p>A coloured <strong>classification pill</strong> (Green / Amber / Red / Black)
+  means the incident has been classified.</p>
+
+  <h3>3.4 Reviewing an incident — step by step</h3>
+  <ol>
+    <li>Expand a <strong>Log Period</strong>, then a <strong>Day</strong>, then click
+    the <strong>incident</strong> row.</li>
+    <li>The top of the panel shows <strong>CCIL Captured Detail</strong> — read-only.
+    <strong>Team on Duty</strong> for that incident appears next if recorded.</li>
+    <li>The <strong>Incident Events Log</strong> sits just below — a collapsed bar
+    that does not take up space until you open it. See 3.5.</li>
+    <li>Below that is the <strong>SNDM Review</strong> form. <strong>Every field is
+    optional.</strong> Fill in only what applies:</li>
+  </ol>
+  <table>
+    <thead><tr><th>Section</th><th>What to record</th></tr></thead>
+    <tbody>
+      <tr><td>Period / Week</td><td>Read-only — derived from the railway calendar.</td></tr>
+      <tr><td>Technical Conference</td><td>Was a conference held? (Yes / No / N/A.) Choosing any value reveals a <strong>Commentary</strong> box.</td></tr>
+      <tr><td>Stranded Trains</td><td>Did trains strand? <strong>Yes</strong> opens a repeatable list — headcode, location, time stranded, time moved.</td></tr>
+      <tr><td>ITSR</td><td>Was ITSR implemented? <strong>Yes</strong> reveals <strong>Time Huddle Held</strong>; <strong>No / N/A</strong> reveals a commentary box.</td></tr>
+      <tr><td>Incident Classification</td><td>Pick one: Green / Amber / Red / Black. Click the active one again to clear it.</td></tr>
+      <tr><td>MOM Response</td><td>Did a MOM respond? <strong>Yes</strong> reveals <strong>Depot</strong>, <strong>MOM Dispatched</strong>, <strong>MOM Arrived On Site</strong>, <strong>Response Time</strong>, and the <strong>First 50 — 30-minute target</strong>.</td></tr>
+      <tr><td>Recovery</td><td>Enter <strong>Target</strong> and <strong>Actual</strong> recovery times. <strong>Time to Recover</strong> is calculated automatically.</td></tr>
+      <tr><td>Additional Notes</td><td>Free text for anything else.</td></tr>
+      <tr><td>Reviewed By</td><td>Your initials.</td></tr>
+    </tbody>
+  </table>
+  <ol start="5">
+    <li>Click <strong>Save Review</strong> (or <strong>Save Changes</strong>). It
+    saves immediately to the <code>incident_reviews</code> table; the badge flips to
+    green <strong>Reviewed</strong> and the progress bars update.</li>
+  </ol>
+
+  <h3>3.5 The events log and auto-filled fields</h3>
+  <p>DLog2 stores the <strong>events block</strong> — the running commentary captured
+  against each incident. The Review tab uses it two ways:</p>
+  <ul>
+    <li><strong>Reading it</strong> — the <strong>Incident Events Log</strong> bar
+    (collapsed by default) lists every event with its time, company and description.
+    It only occupies space once you open it.</li>
+    <li><strong>Auto-filling the form</strong> — when an incident has <em>no review
+    yet</em>, Insight scans the events and pre-fills:
+      <ul>
+        <li>the <strong>first ITSR mention</strong> → <code>ITSR Implemented</code> =
+        Yes, and that event's time → <strong>Time Huddle Held</strong>;</li>
+        <li>the <strong>first MOM dispatch reference</strong> → <code>MOM Responded</code>
+        = Yes and <strong>MOM Dispatched</strong> time;</li>
+        <li>the <strong>first MOM on-site / arrived reference</strong> →
+        <strong>MOM Arrived On Site</strong> time.</li>
+      </ul>
+    </li>
+  </ul>
+  <p>Any auto-filled field carries a small amber
+  <span class="pill pill-amber">auto · from events</span> tag, and matching log lines
+  are tagged ITSR, MOM dispatch or MOM on site. Auto-fill is a <strong>starting
+  point, not a decision</strong> — edit any field to override it (the tag clears as
+  soon as you do), and nothing is stored until you click <strong>Save Review</strong>.
+  Auto-fill never touches a value you have already saved.</p>
+
+  <h3>3.6 Refining CCIL capture</h3>
+  <p>Expand <strong>"Refine CCIL Capture"</strong> inside the form to override title,
+  location, area, delay minutes, trains delayed, cancelled and part-cancelled.</p>
+  <ul>
+    <li>The CCIL-captured value is shown in each field label.</li>
+    <li>Overrides are stored on the review record only — <strong>the original CCIL
+    row is left intact</strong>. The rest of the dashboard reads the refined values
+    transparently.</li>
+    <li>An override to <strong>delay</strong> can move an incident above the
+    400-minute threshold, changing whether it counts as reviewable.</li>
+  </ul>
+
+  <h3>3.7 Removing a review</h3>
+  <p>Open a reviewed incident and click <strong>Remove Review</strong>. After you
+  confirm, the review record is deleted and the incident returns to
+  <strong>Pending</strong> — the CCIL row is, again, untouched.</p>
+
+  <h3>3.8 How reviews feed the rest of Insight</h3>
+  <ul>
+    <li><strong>Stranded-train</strong> figures and the stranded-train detail list in
+    reports are built from reviewed incidents.</li>
+    <li><strong>ITSR adherence</strong> counts incidents <em>without</em> an SNDM
+    review on file against adherence — so completing reviews directly improves the
+    accuracy of the Control PMC and other reports.</li>
+  </ul>
+
+  <h3>3.9 When you cannot save</h3>
+  <ul>
+    <li>If Supabase environment variables are missing, the tab shows a "Demo mode"
+    banner; the form is explorable but <strong>Save</strong> is disabled.</li>
+    <li>If there are no incidents in the window, Insight shows demo data and saves
+    are disabled — <strong>widen the date window</strong> to reach real incidents.</li>
+  </ul>
+
+  <h2 id="quickref">Quick reference</h2>
+  <table>
+    <thead><tr><th>I want to…</th><th>Go to</th></tr></thead>
+    <tbody>
+      <tr><td class="wrap-cell">Change the period under review</td><td>Header — time window / <code>‹</code> <code>›</code> arrows</td></tr>
+      <tr><td class="wrap-cell">Narrow to a category / area / severity</td><td><strong>Filters</strong> drawer</td></tr>
+      <tr><td class="wrap-cell">Isolate the big delay incidents</td><td>Filters → <strong>Delay Range</strong> (Min)</td></tr>
+      <tr><td class="wrap-cell">Re-use a filter set</td><td>Filters → <strong>Save current view</strong></td></tr>
+      <tr><td class="wrap-cell">Share exactly what I see</td><td>Copy the page <strong>URL</strong></td></tr>
+      <tr><td class="wrap-cell">See what moved and what is anomalous</td><td><strong>Overview</strong> trend chart + Hypothesis &amp; Signals panels</td></tr>
+      <tr><td class="wrap-cell">Compare two or more trends</td><td><strong>Trends</strong> tab (Trend Composer)</td></tr>
+      <tr><td class="wrap-cell">Find recurring equipment / multi-day chains</td><td><strong>Assets</strong> tab</td></tr>
+      <tr><td class="wrap-cell">Find time-of-day / day-of-week patterns</td><td><strong>Patterns</strong> tab</td></tr>
+      <tr><td class="wrap-cell">Compare one incident to similar ones</td><td><strong>Focus</strong> tab</td></tr>
+      <tr><td class="wrap-cell">Do precision multi-criteria filtering</td><td><strong>Distillation</strong> tab</td></tr>
+      <tr><td class="wrap-cell">Review incidents as an SNDM</td><td><strong>Review</strong> tab</td></tr>
+      <tr><td class="wrap-cell">Produce a formatted report</td><td><strong>Reports</strong> tab</td></tr>
+    </tbody>
+  </table>
+
+  <footer class="doc">
+    Insight is OFFICIAL-SENSITIVE. Do not share screenshots, exported CSVs or filter
+    URLs outside authorised recipients.
+  </footer>
+
+</div>
+</body>
+</html>

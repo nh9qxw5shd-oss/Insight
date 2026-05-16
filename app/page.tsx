@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Activity, AlertTriangle, BarChart2, Bell, ChevronDown, ChevronLeft, ChevronRight,
+  Activity, AlertTriangle, BarChart2, Bell, BookOpen, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, ClipboardList, Clock, Compass, Crosshair, Download, FileText, Filter, FlaskConical, GitBranch, Layers, List, MapPin,
   Minus, Moon, RefreshCw, Route, Search, Sun, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
@@ -20,8 +20,9 @@ import {
   DeltaMetric, DeltaDecomposition, HypothesisCluster, Hypothesis,
   IncidentReview, IncidentReviewInput, IncidentClassification, First50Outcome,
   CLASSIFICATION_CONFIG, YesNoNa, MomDepot, MOM_DEPOT_LABELS, StrandedTrainEntry,
-  IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
+  IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum, IncidentEvent,
 } from '@/lib/types'
+import { parseEventSignals, EventSignals } from '@/lib/eventParser'
 import {
   railwayPeriodWeek, listPeriods, listWeeks, listRailYears,
   railwayPeriodBounds, railwayWeekBounds,
@@ -685,6 +686,15 @@ function Header(props: {
                 {props.activeFilterCount}
               </span>
             )}
+          </button>
+
+          <button
+            onClick={() => window.open('/user-guide.html', '_blank', 'noopener,noreferrer')}
+            className="btn"
+            title="Open the Insight user guide"
+          >
+            <BookOpen size={12} />
+            Guide
           </button>
 
           {props.onExport && (
@@ -4714,17 +4724,24 @@ function ReviewForm({
 }) {
   type FormState = Omit<IncidentReviewInput, 'incident_id' | 'report_date'>
 
+  // Signals auto-parsed from the CCIL events log. Used to pre-fill empty
+  // ITSR / MOM fields below and to tag the matched events in the log view.
+  const eventSignals = useMemo(() => parseEventSignals(incident.events), [incident.events])
+  const momDetected  = !!(eventSignals.momDispatch || eventSignals.momArrival)
+
   const initial: FormState = useMemo(() => ({
     technical_conference_outcome: review?.technical_conference_outcome ?? null,
     commentary: review?.commentary ?? null,
     stranded_trains_occurred: review?.stranded_trains_occurred ?? null,
     stranded_trains: review?.stranded_trains ?? null,
-    itsr_required: review?.itsr_required ?? null,
-    time_huddle_held: review?.time_huddle_held ?? null,
+    itsr_required: review?.itsr_required ?? (eventSignals.itsr ? 'YES' : null),
+    time_huddle_held: review?.time_huddle_held ?? eventSignals.itsr?.time ?? null,
     incident_classification: review?.incident_classification ?? null,
-    mom_responded: review?.mom_responded ?? null,
+    mom_responded: review?.mom_responded ?? (momDetected ? 'YES' : null),
     mom_depot: review?.mom_depot ?? null,
     mom_response_time: review?.mom_response_time ?? null,
+    mom_dispatched_time: review?.mom_dispatched_time ?? eventSignals.momDispatch?.time ?? null,
+    mom_arrived_time: review?.mom_arrived_time ?? eventSignals.momArrival?.time ?? null,
     first_50_30min_target_met: review?.first_50_30min_target_met ?? null,
     target_recovery_time: review?.target_recovery_time ?? null,
     actual_recovery_time: review?.actual_recovery_time ?? null,
@@ -4737,7 +4754,7 @@ function ReviewForm({
     part_cancelled_override: review?.part_cancelled_override ?? null,
     notes: review?.notes ?? null,
     reviewed_by: review?.reviewed_by ?? null,
-  }), [review])
+  }), [review, eventSignals, momDetected])
 
   const [form, setForm] = useState<FormState>(initial)
   const [saving, setSaving] = useState(false)
@@ -4747,6 +4764,15 @@ function ReviewForm({
   useEffect(() => { setForm(initial); setError(null) }, [initial])
 
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm(prev => ({ ...prev, [k]: v }))
+
+  // A field shows the "auto · from events" tag while it still holds the value
+  // derived from the events log and the SNDM has no saved value for it. Any
+  // manual edit (or a previously saved review) clears the tag.
+  const autoITSR    = !review?.itsr_required        && eventSignals.itsr != null               && form.itsr_required === 'YES'
+  const autoHuddle  = !review?.time_huddle_held     && eventSignals.itsr?.time != null         && form.time_huddle_held === eventSignals.itsr.time
+  const autoMomResp = !review?.mom_responded        && momDetected                             && form.mom_responded === 'YES'
+  const autoMomDisp = !review?.mom_dispatched_time  && eventSignals.momDispatch?.time != null  && form.mom_dispatched_time === eventSignals.momDispatch.time
+  const autoMomArr  = !review?.mom_arrived_time     && eventSignals.momArrival?.time != null   && form.mom_arrived_time === eventSignals.momArrival.time
 
   // Period / week derived from incident.report_date (read-only)
   const railPeriod = useMemo(() => railwayPeriodWeek(incident.report_date), [incident.report_date])
@@ -4825,6 +4851,8 @@ function ReviewForm({
   return (
     <div className="border-t border-[var(--line)] p-4 text-xs space-y-5" style={{ background: 'var(--bg-card-hi)' }}>
       <CcilDetailBlock incident={incident} />
+
+      <IncidentEventsBlock events={incident.events ?? []} signals={eventSignals} />
 
       {teamMembers.length > 0 && (
         <div className="border-t border-[var(--line)] pt-4">
@@ -4930,11 +4958,11 @@ function ReviewForm({
 
         {/* Row 4 — ITSR */}
         <FieldGroup label="ITSR">
-          <Field label="ITSR Implemented">
+          <Field label="ITSR Implemented" auto={autoITSR}>
             <YesNoNaSelect value={form.itsr_required} onChange={v => set('itsr_required', v)} />
           </Field>
           {form.itsr_required === 'YES' && (
-            <Field label="Time Huddle Held">
+            <Field label="Time Huddle Held" auto={autoHuddle}>
               <input className="input" type="time" value={form.time_huddle_held ?? ''} onChange={e => set('time_huddle_held', e.target.value || null)} />
             </Field>
           )}
@@ -4982,7 +5010,7 @@ function ReviewForm({
 
         {/* Row 6 — MOM response */}
         <FieldGroup label="MOM Response">
-          <Field label="MOM Responded?">
+          <Field label="MOM Responded?" auto={autoMomResp}>
             <YesNoNaSelect value={form.mom_responded} onChange={v => set('mom_responded', v)} />
           </Field>
           {form.mom_responded === 'YES' && (
@@ -4998,6 +5026,12 @@ function ReviewForm({
                     <option key={code} value={code}>{MOM_DEPOT_LABELS[code]}</option>
                   ))}
                 </select>
+              </Field>
+              <Field label="MOM Dispatched" auto={autoMomDisp}>
+                <input className="input" type="time" value={form.mom_dispatched_time ?? ''} onChange={e => set('mom_dispatched_time', e.target.value || null)} />
+              </Field>
+              <Field label="MOM Arrived On Site" auto={autoMomArr}>
+                <input className="input" type="time" value={form.mom_arrived_time ?? ''} onChange={e => set('mom_arrived_time', e.target.value || null)} />
               </Field>
               <Field label="Response Time">
                 <input className="input" type="time" value={form.mom_response_time ?? ''} onChange={e => set('mom_response_time', e.target.value || null)} />
@@ -5172,10 +5206,91 @@ function CcilDetailBlock({ incident }: { incident: IncidentRow }) {
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+// Collapsible CCIL events-log viewer for the review form. Collapsed by default
+// so it costs no vertical space until the SNDM opens it. Events the parser
+// used to derive the ITSR / MOM fields are tagged inline.
+function IncidentEventsBlock({ events, signals }: { events: IncidentEvent[]; signals: EventSignals }) {
+  const [open, setOpen] = useState(false)
+  if (events.length === 0) return null
+
+  const tagFor = (i: number): { label: string; color: string } | null => {
+    if (signals.itsr?.eventIndex === i)        return { label: 'ITSR',         color: 'var(--nr-orange)' }
+    if (signals.momArrival?.eventIndex === i)  return { label: 'MOM on site',  color: 'var(--nr-green)' }
+    if (signals.momDispatch?.eventIndex === i) return { label: 'MOM dispatch', color: 'var(--nr-blue)' }
+    return null
+  }
+  const matchCount = [signals.itsr, signals.momDispatch, signals.momArrival].filter(Boolean).length
+
+  return (
+    <div className="border border-[var(--line)] rounded-sm">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left"
+      >
+        <span className="label-micro flex items-center gap-2">
+          Incident Events Log
+          <span className="numeric-mono text-[9px]" style={{ color: 'var(--ink-500)' }}>{events.length}</span>
+        </span>
+        <span className="flex items-center gap-2">
+          {matchCount > 0 && (
+            <span className="pill text-[8px]" style={{ background: 'rgba(243,156,18,0.14)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.4)' }}>
+              {matchCount} auto-tag{matchCount !== 1 ? 's' : ''}
+            </span>
+          )}
+          <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL commentary</span>
+          <ChevronDown size={12} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 pt-1 border-t border-[var(--line)] space-y-1">
+          {events.map((e, i) => {
+            const tag = tagFor(i)
+            return (
+              <div
+                key={i}
+                className="flex items-start gap-2 text-[11px] rounded-sm px-2 py-1"
+                style={tag ? { background: 'var(--bg-card)', border: '1px solid var(--line)' } : undefined}
+              >
+                <span className="numeric-mono text-[10px] shrink-0 pt-0.5" style={{ color: 'var(--ink-400)', minWidth: '4ch' }}>
+                  {e.time || '—'}
+                </span>
+                {e.company && (
+                  <span className="label-micro text-[8px] shrink-0 pt-0.5" style={{ color: 'var(--ink-500)' }}>{e.company}</span>
+                )}
+                <span className="flex-1 break-words" style={{ color: 'var(--ink-200)' }}>{e.description || '—'}</span>
+                {tag && (
+                  <span
+                    className="pill text-[8px] shrink-0"
+                    style={{ background: `${tag.color}20`, color: tag.color, borderColor: `${tag.color}60` }}
+                  >
+                    {tag.label}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Field({ label, children, auto }: { label: string; children: React.ReactNode; auto?: boolean }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="label-micro text-[9px]">{label}</span>
+      <span className="label-micro text-[9px] flex items-center gap-1.5 flex-wrap">
+        {label}
+        {auto && (
+          <span
+            className="pill text-[8px]"
+            style={{ background: 'rgba(243,156,18,0.14)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.4)' }}
+            title="Pre-filled from the incident events log — edit to override"
+          >
+            auto · from events
+          </span>
+        )}
+      </span>
       {children}
     </label>
   )

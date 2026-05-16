@@ -1387,7 +1387,8 @@ const REVIEW_COLS =
   'technical_conference_outcome, commentary, ' +
   'stranded_trains_occurred, stranded_trains, ' +
   'itsr_required, itsr_commentary, time_huddle_held, incident_classification, ' +
-  'mom_responded, mom_depot, mom_response_time, first_50_30min_target_met, ' +
+  'mom_responded, mom_depot, mom_response_time, mom_dispatched_time, mom_arrived_time, ' +
+  'first_50_30min_target_met, ' +
   'target_recovery_time, actual_recovery_time, time_to_recover_mins, ' +
   'title_override, location_override, area_override, ' +
   'minutes_delay_override, trains_delayed_override, cancelled_override, part_cancelled_override, ' +
@@ -1397,13 +1398,17 @@ const REPORT_COLS =
   'id, report_date, period, control_centre, created_by, ' +
   'total_delay, total_cancelled, total_part_cancelled, incident_count'
 
+// Review-tab fetch pulls the events log too; the heavy analytics path
+// (fetchAnalytics) deliberately omits it to keep that query lean.
+const INCIDENT_COLS_WITH_EVENTS = INCIDENT_COLS + ', events'
+
 // All incidents in [from, to], regardless of analytics filters — the Review
 // tab works off raw dates so SNDMs always see the full day's incidents.
 export async function fetchIncidentsForRange(from: string, to: string): Promise<IncidentRow[]> {
   const sb = getSupabase()
   if (!sb) return []
   const rows = await fetchAllRows<IncidentRow>(() =>
-    sb!.from('incidents').select(INCIDENT_COLS)
+    sb!.from('incidents').select(INCIDENT_COLS_WITH_EVENTS)
       .gte('report_date', from)
       .lte('report_date', to)
       .order('report_date', { ascending: true })
