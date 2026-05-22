@@ -107,7 +107,7 @@ export interface RawData {
 const INCIDENT_COLS =
   'id, report_date, report_id, ccil, category, severity, title, location, area, ' +
   'incident_start, minutes_delay, trains_delayed, cancelled, part_cancelled, ' +
-  'is_highlight, is_continuation, delay_delta, ' +
+  'is_highlight, is_continuation, delay_delta, is_off_route, ' +
   'incident_type_code, incident_type_label, line, fault_number, possession_ref, ' +
   'btp_ref, third_party_ref, action_code, responder_initials, ' +
   'advised_time, initial_resp_time, arrived_at_time, nwr_time, ' +
@@ -182,9 +182,22 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       })
     : searched
 
+  // Apply off-route visibility filter client-side
+  const offRoute = f.offRouteFilter ?? 'include'
+  const visibilityFiltered =
+    offRoute === 'only'    ? filtered.filter(i => !!i.is_off_route) :
+    offRoute === 'exclude' ? filtered.filter(i => !i.is_off_route) :
+    filtered  // 'include': show all
+
+  // Apply the same off-route visibility to the previous window for accurate deltas
+  const prevFiltered =
+    offRoute === 'only'    ? prevRows.filter(i => !!i.is_off_route) :
+    offRoute === 'exclude' ? prevRows.filter(i => !i.is_off_route) :
+    prevRows
+
   return {
-    incidents: normaliseCats(filtered),
-    prevIncidents: normaliseCats(prevRows),
+    incidents: normaliseCats(visibilityFiltered),
+    prevIncidents: normaliseCats(prevFiltered),
     reports: reportRows,
     teamMembers: memberRows,
     windowFrom: cur.from,
@@ -213,7 +226,11 @@ export function searchMatch(i: IncidentRow, q: string): boolean {
 // Continuation-aware: a CCIL that re-appears day-by-day is a single event, so
 // it's counted once and only its incremental delay (delay_delta) is summed.
 
+// Returns the delay minutes that count toward aggregate totals. Off-route
+// incidents are excluded from all delay sums — their delay is still visible
+// on individual incident cards via i.minutes_delay directly.
 export function effectiveDelay(i: IncidentRow): number {
+  if (i.is_off_route) return 0
   return i.is_continuation ? (i.delay_delta ?? 0) : (i.minutes_delay ?? 0)
 }
 

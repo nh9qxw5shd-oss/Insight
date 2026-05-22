@@ -66,6 +66,11 @@ export interface IncidentRow {
   hour_of_day: number | null
   day_of_week: number | null
 
+  // Off-route flag — set by DLog2 to mark incidents that occurred outside the
+  // route boundary. These remain visible for information but their delay is
+  // excluded from all aggregate totals and KPI figures.
+  is_off_route: boolean | null
+
   // Per-incident CCIL events log (running commentary) — jsonb, optional for
   // legacy rows captured before DLog2 began persisting the events block.
   events?: IncidentEvent[] | null
@@ -223,6 +228,11 @@ export interface AnalyticsFilters {
   maxTempC?: number               // max_temp_c <= this (°C); incident day daily high at most X
   minWindKmh?: number             // max_wind_kmh >= this (km/h)
   maxWindKmh?: number             // max_wind_kmh <= this (km/h)
+  // Controls visibility of off-route incidents:
+  //   'include' (default) — show all; off-route delays excluded from totals
+  //   'only'              — show only off-route incidents
+  //   'exclude'           — hide off-route incidents entirely
+  offRouteFilter: 'include' | 'only' | 'exclude'
 }
 
 export const DEFAULT_FILTERS: AnalyticsFilters = {
@@ -236,6 +246,7 @@ export const DEFAULT_FILTERS: AnalyticsFilters = {
   searchMode: 'or',
   metricFocus: 'delay',
   weatherConditions: [],
+  offRouteFilter: 'include',
 }
 
 // ─── Category visual config (mirrors DLog2 master) ───────────────────────────

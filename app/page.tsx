@@ -47,6 +47,7 @@ import {
   removeSearchToken, clearCustomDate, clearDelayFilter, toggleIncidentTypeFilter,
   toggleStaffFilter, clearStaffFilter,
   removeWeatherCondition, clearWeatherNumeric,
+  setOffRouteFilter,
 } from '@/lib/filterActions'
 import { generateSyntheticData } from '@/lib/syntheticData'
 import {
@@ -495,7 +496,8 @@ export default function InsightDashboard() {
           (filters.weatherConditions?.length ?? 0) +
           (filters.minRainfall != null || filters.maxRainfall != null ? 1 : 0) +
           (filters.minTempC    != null || filters.maxTempC    != null ? 1 : 0) +
-          (filters.minWindKmh  != null || filters.maxWindKmh  != null ? 1 : 0)
+          (filters.minWindKmh  != null || filters.maxWindKmh  != null ? 1 : 0) +
+          ((filters.offRouteFilter ?? 'include') !== 'include' ? 1 : 0)
         }
         onRefresh={() => setFilters({ ...filters })}
         onExport={effectiveData ? () => exportCSV(effectiveData.incidents, effectiveData.windowFrom, effectiveData.windowTo) : undefined}
@@ -515,6 +517,7 @@ export default function InsightDashboard() {
         onClearDelay={() => setFilters(f => clearDelayFilter(f))}
         onRemoveWeatherCondition={(g: string) => setFilters(f => removeWeatherCondition(f, g))}
         onClearWeatherNumeric={() => setFilters(f => clearWeatherNumeric(f))}
+        onClearOffRoute={() => setFilters(f => setOffRouteFilter(f, 'include'))}
         onClearAll={handleResetFilters}
       />
 
@@ -2519,7 +2522,7 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
 // dimension below the header. Drives the cross-filter drill-down loop —
 // click anything in a chart, see it land here, click the X to remove.
 
-function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onRemoveIncidentType, onRemoveStaff, onClearDate, onClearDelay, onRemoveWeatherCondition, onClearWeatherNumeric, onClearAll }: {
+function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onRemoveIncidentType, onRemoveStaff, onClearDate, onClearDelay, onRemoveWeatherCondition, onClearWeatherNumeric, onClearOffRoute, onClearAll }: {
   filters: AnalyticsFilters
   onRemoveCategory: (c: IncidentCategory) => void
   onRemoveArea: (a: string) => void
@@ -2531,6 +2534,7 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
   onClearDelay: () => void
   onRemoveWeatherCondition: (group: string) => void
   onClearWeatherNumeric: () => void
+  onClearOffRoute: () => void
   onClearAll: () => void
 }) {
   const hasCustomDate    = !!filters.startDate
@@ -2539,11 +2543,13 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
   const hasWxTemp        = filters.minTempC    != null || filters.maxTempC    != null
   const hasWxWind        = filters.minWindKmh  != null || filters.maxWindKmh  != null
   const weatherCondCount = filters.weatherConditions?.length ?? 0
+  const offRouteActive   = (filters.offRouteFilter ?? 'include') !== 'include'
   const total =
     filters.categories.length + filters.areas.length + filters.severities.length +
     filters.searches.length + filters.incidentTypes.length + filters.staffNames.length +
     (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0) +
-    weatherCondCount + (hasWxRain ? 1 : 0) + (hasWxTemp ? 1 : 0) + (hasWxWind ? 1 : 0)
+    weatherCondCount + (hasWxRain ? 1 : 0) + (hasWxTemp ? 1 : 0) + (hasWxWind ? 1 : 0) +
+    (offRouteActive ? 1 : 0)
   if (total === 0) return null
 
   const chip = (key: string, label: string, onRemove: () => void, color?: string, title?: string) => (
@@ -2626,6 +2632,11 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
               ? `Wind ${filters.minWindKmh}–${filters.maxWindKmh} km/h`
               : filters.minWindKmh != null ? `Wind ≥${filters.minWindKmh} km/h` : `Wind ≤${filters.maxWindKmh} km/h`,
             onClearWeatherNumeric, '#5B9EA0', 'Clear weather numeric filters',
+          )}
+          {offRouteActive && chip(
+            'off-route',
+            filters.offRouteFilter === 'only' ? 'Off-route only' : 'Off-route removed',
+            onClearOffRoute, '#8B5CF6', 'Reset off-route filter',
           )}
         </div>
         <button onClick={onClearAll} className="ml-auto btn !py-1 !px-2 !text-[10px] shrink-0">Clear all</button>
@@ -3703,6 +3714,26 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
             </div>
             <p className="text-[10px] mt-2" style={{ color: 'var(--ink-500)' }}>
               Switches the primary metric used in trend charts, operator tables, and KPI emphasis across the performance view.
+            </p>
+          </FilterGroup>
+
+          <FilterGroup label="Off-Route Incidents">
+            <div className="flex gap-2">
+              {(['include', 'only', 'exclude'] as const).map(option => (
+                <button
+                  key={option}
+                  onClick={() => setDraft({ ...draft, offRouteFilter: option })}
+                  className={`btn flex-1 justify-center text-[10px] ${(draft.offRouteFilter ?? 'include') === option ? 'btn-active' : ''}`}
+                  style={(draft.offRouteFilter ?? 'include') === option ? { borderColor: '#8B5CF6', color: '#8B5CF6', background: '#8B5CF620' } : {}}
+                >
+                  {option === 'include' ? 'Included' : option === 'only' ? 'Only' : 'Removed'}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] mt-2" style={{ color: 'var(--ink-500)' }}>
+              <strong style={{ color: 'var(--ink-300)' }}>Included</strong> — all incidents shown; off-route delays excluded from totals.{' '}
+              <strong style={{ color: 'var(--ink-300)' }}>Only</strong> — show off-route incidents only.{' '}
+              <strong style={{ color: 'var(--ink-300)' }}>Removed</strong> — hide off-route incidents entirely.
             </p>
           </FilterGroup>
 

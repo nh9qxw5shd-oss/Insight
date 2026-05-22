@@ -201,6 +201,7 @@ function buildIncident(rng: () => number, dateStr: string, idx: number, faultPoo
     is_highlight: isHighlight,
     is_continuation: isContinuation,
     delay_delta: null,
+    is_off_route: null,
     incident_type_code: code,
     incident_type_label: TYPE_LABELS[code] || cw.cat.replace(/_/g, ' '),
     line: pick(LINES, rng),
