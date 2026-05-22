@@ -78,3 +78,7 @@ export function clearWeatherNumeric(f: AnalyticsFilters): AnalyticsFilters {
   const { minRainfall: _a, maxRainfall: _b, minTempC: _c, maxTempC: _d, minWindKmh: _e, maxWindKmh: _f, ...rest } = f
   return { ...rest }
 }
+
+export function setOffRouteFilter(f: AnalyticsFilters, value: 'include' | 'only' | 'exclude'): AnalyticsFilters {
+  return { ...f, offRouteFilter: value }
+}
