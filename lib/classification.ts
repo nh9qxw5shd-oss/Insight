@@ -1,24 +1,26 @@
 // ─── Trusted incident classification ─────────────────────────────────────────
 // DLog2 (the upstream CCIL parser) sets the `category` column on every
-// incident row using a two-stage rule: (1) lookup by CCIL type code, then
-// (2) regex fallback on the concatenated title + label + description. When
-// the CCIL row is missing a type code, that fallback fires aggressively and
-// produces false positives — administrative log roll-ups, passenger
-// disorder events, and operations-setup entries get tagged as PERSON_STRUCK
-// because the substring matches.
+// incident row. Its rules occasionally mis-classify — administrative log
+// roll-ups, passenger-disorder events ("aggressive male"), and staff
+// accidents have all been observed tagged as PERSON_STRUCK in production.
+// Sometimes the CCIL type code itself is set wrong by the operator entering
+// the log, so the upstream "gospel" can still mislead us.
 //
-// Insight cannot edit DLog2's rows, so we re-derive the category at the
-// query boundary using the rule the safety team has agreed on:
+// Insight re-derives the category at the query boundary using the rule the
+// safety team has agreed on:
 //
-//   1. incident_type_code is gospel — if it maps to a known category, use it
-//   2. otherwise consult incident_type_label
-//   3. otherwise fall back to title pattern matching
-//   4. always run an exclusion sweep — known admin / disorder titles never
-//      count as operational safety events, regardless of what DLog2 said
+//   1. CCIL type code is gospel — if it maps to a known category, use it
+//   2. but ALWAYS cross-check the title: if the title clearly indicates a
+//      different category (assault, refusal-to-alight, staff accident,
+//      etc.), don't silently propagate the code — downgrade to LOW
+//      confidence so the row goes to "Needs review" instead of the count
+//   3. when no code is present, the title's contradiction patterns become
+//      the authoritative signal
+//   4. otherwise fall back to the type label, then to title patterns
 //
 // Every row receives a confidence tag (HIGH / MEDIUM / LOW) and a short
-// reason string. LOW-confidence rows are surfaced under a "Needs review"
-// subsection in the Control PMC report rather than counted in the headline.
+// reason string. LOW-confidence rows surface under "Needs review" in the
+// Control PMC report rather than counting toward the headline.
 
 import { IncidentCategory, IncidentRow } from './types'
 
@@ -67,54 +69,89 @@ const TYPE_CODE_LOOKUP: Map<string, IncidentCategory> = new Map(
 // canonical list (e.g. an admin "type code coverage" panel).
 export const KNOWN_TYPE_CODES: ReadonlyMap<string, IncidentCategory> = TYPE_CODE_LOOKUP
 
-// Disqualifying title patterns — administrative roll-up entries (logs,
-// summaries) and well-known false positives (passenger refusing to alight).
-// Each carries an explicit reclass target so the row still appears in the
-// dataset under a sensible category for audit purposes.
-interface ExclusionRule {
+// Contradiction patterns — titles that clearly describe a specific kind of
+// event. Used in two ways:
+//
+//   • When a CCIL type code IS present but the title says something
+//     completely different, we keep the code-driven category but tag the
+//     row LOW confidence so it lands in "Needs review" rather than the
+//     headline count. (We never silently overrule the gospel.)
+//
+//   • When no CCIL code is present, the title becomes the authoritative
+//     signal: a matching contradiction pattern returns its target with
+//     HIGH confidence.
+interface ContradictionRule {
   pattern: RegExp
   target:  IncidentCategory
   reason:  string
 }
 
-const EXCLUSION_PATTERNS: ExclusionRule[] = [
-  {
-    pattern: /\bTSM\s+TL\b.*\blog\b/i,
-    target:  'GENERAL',
-    reason:  'TSM TL log roll-up entry — not an operational incident',
-  },
-  {
-    pattern: /\bASM\s+TL\b.*\blog\b/i,
-    target:  'GENERAL',
-    reason:  'ASM TL log roll-up entry — not an operational incident',
-  },
-  {
-    pattern: /\b(daily|shift)\b.*\b(log|summary|roll[- ]?up|handover)\b/i,
-    target:  'GENERAL',
-    reason:  'Daily / shift log entry — not an operational incident',
-  },
-  {
-    pattern: /\brefus(?:ing|ed|al)\s+to\s+alight\b/i,
-    target:  'PASSENGER_INJURY',
-    reason:  'Passenger refusal to alight — disorder / passenger event, not person struck',
-  },
-  {
-    pattern: /\b(?:fire\s+)?drill\b|\btraining exercise\b|\btabletop\b/i,
-    target:  'GENERAL',
-    reason:  'Drill / training exercise — not an operational incident',
-  },
+const CONTRADICTION_PATTERNS: ContradictionRule[] = [
+  // ── Administrative / log roll-ups ──────────────────────────────────────
+  { pattern: /\bTSM\s+TL\b.*\blog\b/i,
+    target:  'GENERAL', reason: 'TSM TL log roll-up — not an operational incident' },
+  { pattern: /\bASM\s+TL\b.*\blog\b/i,
+    target:  'GENERAL', reason: 'ASM TL log roll-up — not an operational incident' },
+  { pattern: /\b(?:daily|shift)\b.*\b(?:log|summary|roll[- ]?up|handover)\b/i,
+    target:  'GENERAL', reason: 'Daily / shift log entry — not an operational incident' },
+  { pattern: /\b(?:fire\s+)?drill\b|\btraining\s+exercise\b|\btabletop\b/i,
+    target:  'GENERAL', reason: 'Drill / training exercise — not an operational incident' },
+
+  // ── Disorder / crime (frequently mis-tagged as PST upstream) ──────────
+  { pattern: /\bverbal\s+assault\b/i,
+    target:  'CRIME', reason: 'Verbal assault — disorder, not person struck' },
+  { pattern: /\bphysical\s+assault\b/i,
+    target:  'CRIME', reason: 'Physical assault — disorder, not person struck' },
+  { pattern: /\bassault\s+(?:on\s+(?:staff|driver|passenger|guard|conductor)|of\s+staff)\b/i,
+    target:  'CRIME', reason: 'Assault on staff/driver/passenger — disorder, not person struck' },
+  { pattern: /\bstaff\b[^a-z]{1,8}\bassault(?:ed)?\b/i,
+    target:  'CRIME', reason: 'Staff assault — disorder, not person struck' },
+  { pattern: /\b(?:aggressive|abusive|threatening|hostile)\s+(?:male|female|person|persons|passenger|individual|customer|youth|youths|group|behaviour)\b/i,
+    target:  'CRIME', reason: 'Aggressive / abusive person — disorder' },
+  { pattern: /\banti[- ]?social\b/i,
+    target:  'CRIME', reason: 'Anti-social behaviour — disorder' },
+  { pattern: /\bharassment\b/i,
+    target:  'CRIME', reason: 'Harassment — disorder' },
+  { pattern: /\bvandalism\b|\bgraffiti\b/i,
+    target:  'CRIME', reason: 'Vandalism — crime, not person struck' },
+  { pattern: /\btrespass(?:er|ing)?\b/i,
+    target:  'CRIME', reason: 'Trespass — crime, not person struck' },
+
+  // ── Passenger / staff event (not struck by train) ─────────────────────
+  { pattern: /\brefus(?:ing|ed|al)\s+to\s+alight\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Refusing to alight — passenger event, not person struck' },
+  { pattern: /\bstaff\s+accident\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Staff accident — not person struck' },
+  { pattern: /\bstaff\s+(?:injury|injured)\b|\binjured\s+staff\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Staff injury — not person struck' },
+  { pattern: /\bpassenger\s+(?:fell|fall|slipped|tripped|ill|unwell|taken\s+ill|injured)\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Passenger fell / ill / injured — not person struck' },
+  { pattern: /\b(?:slip|trip|fall|fell)\b.*\b(?:platform|stairs|step|carriage|gap)\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Slip / trip / fall — passenger event, not person struck' },
+  { pattern: /\begress\s+(?:pulled|activated|operated|alarm|handle)\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Egress activation — passenger event, not person struck' },
+  { pattern: /\bemergency\s+egress\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Emergency egress — passenger event, not person struck' },
+  { pattern: /\bpasscom\b|\bpassenger\s+communication\s+(?:cord|alarm)\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Passcom activation — passenger event, not person struck' },
+  { pattern: /\bperson\s+(?:ill|unwell|taken\s+ill|collapsed|on\s+train)\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Person ill / collapsed — not person struck' },
+  { pattern: /\bill\s+(?:passenger|customer|traveller|person)\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Ill passenger — not person struck' },
+  { pattern: /\bmedical\s+(?:emergency|incident|attention)\b/i,
+    target:  'PASSENGER_INJURY', reason: 'Medical emergency — not person struck' },
 ]
 
-// Title confirmation patterns — used as a last resort when the CCIL type
-// code is missing. Most specific patterns come first. Each pattern only
-// confirms a category; it never overrides a present-and-valid type code.
+// Title confirmation patterns — used as a last resort when both CCIL type
+// code and label are absent. Each pattern only confirms a category; it
+// never overrides a present-and-valid type code. Most specific first.
 interface TitlePattern {
   category: IncidentCategory
   pattern:  RegExp
 }
 
 const TITLE_CONFIRMATION: TitlePattern[] = [
-  { category: 'PERSON_STRUCK',     pattern: /\bperson\s+struck\b|\bstruck\s+by\s+(?:a\s+|the\s+)?train\b|\bfatality\b|\bfatal\s+(?:incident|injury)\b/i },
+  { category: 'PERSON_STRUCK',     pattern: /\bperson\s+struck\b|\bstruck\s+by\s+(?:a\s+|the\s+)?train\b|\bfatality\b|\bfatal\s+(?:incident|injury|collision)\b/i },
   { category: 'BRIDGE_STRIKE',     pattern: /\bbridge\s+strike\b|\bover[- ]?height\s+vehicle\b/i },
   { category: 'NEAR_MISS',         pattern: /\bnear[- ]?miss\b/i },
   { category: 'SPAD',              pattern: /\bSPAD\b|\bsignal\s+passed\s+(?:at\s+)?danger\b/i },
@@ -123,7 +160,6 @@ const TITLE_CONFIRMATION: TitlePattern[] = [
   { category: 'FIRE',              pattern: /\blineside\s+fire\b|\btrain\s+fire\b|\bcarriage\s+fire\b/i },
   { category: 'IRREGULAR_WORKING', pattern: /\birregular\s+working\b/i },
   { category: 'HABD_WILD',         pattern: /\bHABD\b|\bWILD\b/i },
-  { category: 'PASSENGER_INJURY',  pattern: /\bpassenger\s+(?:injury|injured|fell|slip|trip)\b/i },
 ]
 
 function lookupCode(raw: string | null | undefined): IncidentCategory | null {
@@ -154,24 +190,37 @@ function looksAdministrative(i: IncidentRow): boolean {
   return noRefs && noImpact
 }
 
+function findContradiction(title: string, label: string): ContradictionRule | null {
+  for (const ex of CONTRADICTION_PATTERNS) {
+    if ((title && ex.pattern.test(title)) || (label && ex.pattern.test(label))) {
+      return ex
+    }
+  }
+  return null
+}
+
 export function classifyTrusted(i: IncidentRow): TrustedClassification {
   const title  = (i.title || '').trim()
   const label  = (i.incident_type_label || '').trim()
   const stored: IncidentCategory =
     i.category === 'FATALITY' ? 'PERSON_STRUCK' : i.category
 
-  // Step 1 — exclusion sweep. Admin / disorder titles never count as
-  // operational safety events even if DLog2 thought they did.
-  for (const ex of EXCLUSION_PATTERNS) {
-    if (ex.pattern.test(title) || ex.pattern.test(label)) {
-      return { category: ex.target, confidence: 'HIGH', reason: ex.reason }
-    }
-  }
+  const contradiction = findContradiction(title, label)
 
-  // Step 2 — CCIL type code (the gospel path). If present and recognised,
-  // it overrides whatever DLog2 stored.
+  // Step 1 — CCIL type code is gospel for the code → category mapping, but
+  // we still cross-check the title. If the text clearly describes a
+  // different kind of event, we keep the code-driven category but tag the
+  // row LOW confidence so it lands in "Needs review" instead of the
+  // headline count. The reviewer can then confirm or correct.
   const codeCat = lookupCode(i.incident_type_code)
   if (codeCat) {
+    if (contradiction && contradiction.target !== codeCat) {
+      return {
+        category:   codeCat,
+        confidence: 'LOW',
+        reason:     `CCIL code ${i.incident_type_code} (${codeCat}) but title indicates ${contradiction.target} — ${contradiction.reason}`,
+      }
+    }
     if (codeCat !== stored) {
       return {
         category:   codeCat,
@@ -186,7 +235,19 @@ export function classifyTrusted(i: IncidentRow): TrustedClassification {
     }
   }
 
-  // Step 3 — type code missing or unrecognised. Fall back to type label.
+  // Step 2 — no CCIL code. The title is now the strongest signal; if it
+  // matches a contradiction pattern, use the target directly. This is
+  // where DLog2's regex fallback usually goes wrong (no code →
+  // substring-matches its way into PERSON_STRUCK) and where we correct it.
+  if (contradiction) {
+    return {
+      category:   contradiction.target,
+      confidence: 'HIGH',
+      reason:     contradiction.reason,
+    }
+  }
+
+  // Step 3 — type label fallback when title gave no contradiction signal.
   if (label) {
     for (const conf of TITLE_CONFIRMATION) {
       if (conf.pattern.test(label)) {
@@ -199,9 +260,9 @@ export function classifyTrusted(i: IncidentRow): TrustedClassification {
     }
   }
 
-  // Step 4 — title-only fallback. LOW confidence because we have no
-  // CCIL-side signal at all. Demote to GENERAL outright if the row also
-  // looks administrative (no refs, no impact).
+  // Step 4 — title-only fallback. LOW confidence because we have no CCIL-
+  // side signal at all. Demote to GENERAL outright if the row also looks
+  // administrative.
   if (title) {
     for (const conf of TITLE_CONFIRMATION) {
       if (conf.pattern.test(title)) {
