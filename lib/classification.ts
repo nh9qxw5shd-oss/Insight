@@ -38,79 +38,203 @@ export interface TrustedClassification {
 
 const LABEL_CATEGORY_RAW: Record<string, IncidentCategory> = {
   // ── Person struck by train (PSBT) — exactly two labels ────────────────
-  'person struck by train': 'PERSON_STRUCK',
-  'fatality':               'PERSON_STRUCK',
+  'person struck by train':                'PERSON_STRUCK',
+  'fatality':                              'PERSON_STRUCK',
 
   // ── Disorder / crime / trespass ───────────────────────────────────────
   'trespass':                              'CRIME',
-  'concern for welfare':                   'CRIME',   // CONFIRM: passenger in distress / suicide concern — CRIME or PASSENGER_INJURY?
-  'crime':                                 'CRIME',
-  'security issue':                        'CRIME',
-  'security alert':                        'CRIME',
+  'concern for welfare':                   'CRIME',
+  'cable crime':                           'CRIME',
+  'railway crime':                         'CRIME',
+  'criminal damage / vandalism':           'CRIME',
+  'graffiti':                              'CRIME',
+  'flytipping':                            'CRIME',
+  'security issues':                       'CRIME',
 
   // ── Passenger / public events ─────────────────────────────────────────
   'passenger / public injuries / assaults': 'PASSENGER_INJURY',
-  'passenger injury':                       'PASSENGER_INJURY',
+  'staff / contractor injuries / assaults': 'PASSENGER_INJURY',
+  'passenger illness':                      'PASSENGER_INJURY',
+  'egress activation':                      'PASSENGER_INJURY',
+  'passcomm activation':                    'PASSENGER_INJURY',
+  'call for aid':                           'PASSENGER_INJURY',
 
-  // ── Train faults ──────────────────────────────────────────────────────
+  // ── Train faults / rolling-stock defects ──────────────────────────────
   'on train defect - non group standard':   'TRAIN_FAULT',
-  'on train defect - group standard':       'TRAIN_FAULT',
   'on train defect - rb tw5':               'TRAIN_FAULT',
-
-  // ── Infrastructure ────────────────────────────────────────────────────
-  'signal failure':              'INFRASTRUCTURE',
-  'signalling failure':          'INFRASTRUCTURE',
-  'points failure':              'INFRASTRUCTURE',
-  'track circuit failure':       'INFRASTRUCTURE',
-  'axle counter failure':        'INFRASTRUCTURE',
-  'broken rail':                 'INFRASTRUCTURE',
-  'track defect':                'INFRASTRUCTURE',
-  'rail defect':                 'INFRASTRUCTURE',
+  'train door incidents':                   'TRAIN_FAULT',
+  'train failure on depot':                 'TRAIN_FAULT',
+  'train stop & examine':                   'TRAIN_FAULT',
+  'unsolicited brake application':          'TRAIN_FAULT',
+  'add operation':                          'TRAIN_FAULT',
+  'aws brake demand':                       'TRAIN_FAULT',
+  'depot operating issues':                 'TRAIN_FAULT',
+  'fleet performance':                      'TRAIN_FAULT',
+  'rolling stock traction hire':            'TRAIN_FAULT',
 
   // ── Traction / OHL ────────────────────────────────────────────────────
-  'traction failure':            'TRACTION_FAILURE',
-  'ohl failure':                 'TRACTION_FAILURE',
-  'ole failure':                 'TRACTION_FAILURE',
-  'overhead line failure':       'TRACTION_FAILURE',
-  'third rail failure':          'TRACTION_FAILURE',
+  'traction failure non-passenger':         'TRACTION_FAILURE',
+  'traction failure passenger':             'TRACTION_FAILURE',
+  'traction current problem':               'TRACTION_FAILURE',
+  'ohl dewirement':                         'TRACTION_FAILURE',
+  'object/plastic on ohl':                  'TRACTION_FAILURE',
+  'power failure':                          'TRACTION_FAILURE',
+
+  // ── Infrastructure ────────────────────────────────────────────────────
+  'axle counter failure':                   'INFRASTRUCTURE',
+  'broken rail / track defect':             'INFRASTRUCTURE',
+  'earthworks':                             'INFRASTRUCTURE',
+  'geometry failure':                       'INFRASTRUCTURE',
+  'gsm-r':                                  'INFRASTRUCTURE',
+  'lineside fencing and foliage':           'INFRASTRUCTURE',
+  'points failure':                         'INFRASTRUCTURE',
+  'retb':                                   'INFRASTRUCTURE',
+  'rough ride report by mop via control':   'INFRASTRUCTURE',
+  'signalling incident':                    'INFRASTRUCTURE',
+  'signals / signalling system failure':    'INFRASTRUCTURE',
+  'speed restriction issues':               'INFRASTRUCTURE',
+  'track circuit failure':                  'INFRASTRUCTURE',
+  'train struck an object':                 'INFRASTRUCTURE',
+  'unsecured access gate':                  'INFRASTRUCTURE',
+  'circuit breaker tripping':               'INFRASTRUCTURE',
+  'emergency switch off':                   'INFRASTRUCTURE',
+  'outage nr/3rd party':                    'INFRASTRUCTURE',
+  'outstation alarm':                       'INFRASTRUCTURE',
+  'animals on the line':                    'INFRASTRUCTURE',
+  'tree or branch on the line':             'INFRASTRUCTURE',
+  'signal obscured by foliage':             'INFRASTRUCTURE',
+  'signal obscured by light':               'INFRASTRUCTURE',
+  'etcs incident':                          'INFRASTRUCTURE',
+  'temporary speed restriction (tsr)':      'INFRASTRUCTURE',
+  'emergency speed restrictions':           'INFRASTRUCTURE',
+  'item dropped on track':                  'INFRASTRUCTURE',
+  'station infrastructure':                 'INFRASTRUCTURE',
+  'track circuit failure (leaf fall)':      'INFRASTRUCTURE',
 
   // ── Level crossing ────────────────────────────────────────────────────
-  'level crossing failure':           'LEVEL_CROSSING',
-  'level crossing misuse':            'LEVEL_CROSSING',
-  'level crossing deliberate misuse': 'LEVEL_CROSSING',
+  'level crossing failure':                 'LEVEL_CROSSING',
+  'level crossing failure - telephones':    'LEVEL_CROSSING',
+  'level crossing deliberate misuse':       'LEVEL_CROSSING',
+  'level crossing incident':                'LEVEL_CROSSING',
+
+  // ── Bridge / vehicle incursion ────────────────────────────────────────
+  'bridge strike':                                              'BRIDGE_STRIKE',
+  'bridge/structural defects or incidents (ex. bridge strikes)':'BRIDGE_STRIKE',
+  'road vehicle incursion (non level crossing)':                'BRIDGE_STRIKE',
 
   // ── Safety event types ────────────────────────────────────────────────
-  'spad':              'SPAD',
-  'spad cat a':        'SPAD',
-  'spad cat b':        'SPAD',
-  'spad cat c':        'SPAD',
-  'tpws activation':   'TPWS',
-  'tpws':              'TPWS',
-  'near miss':         'NEAR_MISS',
-  'irregular working': 'IRREGULAR_WORKING',
-  'bridge strike':     'BRIDGE_STRIKE',
-  'habd activation':   'HABD_WILD',
-  'wild activation':   'HABD_WILD',
-  'habd / wild':       'HABD_WILD',
+  'signals passed at danger (category a)':                  'SPAD',
+  'signals passed at danger (category a) (weather related)':'SPAD',
+  'tpws activation':                                        'TPWS',
+  'near miss':                                              'NEAR_MISS',
+  'wheelchex / wild activation and confirmed hot axle boxes':'HABD_WILD',
 
-  // ── Other ─────────────────────────────────────────────────────────────
-  'fire':             'FIRE',
-  'lineside fire':    'FIRE',
-  'train fire':       'FIRE',
-  'derailment':       'DERAILMENT',
-  'collision':        'DERAILMENT',
+  // ── Irregular working — all four institutional flavours plus the
+  //    operational rule-compliance labels that fit the same bucket. ─────
+  'irregular working : network rail infrastructure':          'IRREGULAR_WORKING',
+  'irregular working : network rail infrastructure projects': 'IRREGULAR_WORKING',
+  'irregular working : network rail operations':              'IRREGULAR_WORKING',
+  'irregular working : toc':                                  'IRREGULAR_WORKING',
+  'group standard ge/rt3350':                                 'IRREGULAR_WORKING',
+  'group standard ge/rt8250':                                 'IRREGULAR_WORKING',
+  'divided train':                                            'IRREGULAR_WORKING',
+  'incorrect door release':                                   'IRREGULAR_WORKING',
+  'speeding':                                                 'IRREGULAR_WORKING',
+  'freight trains over length':                               'IRREGULAR_WORKING',
+  'management of early running train':                        'IRREGULAR_WORKING',
+  'missed power changeover':                                  'IRREGULAR_WORKING',
+  'passenger on ecs':                                         'IRREGULAR_WORKING',
+  'staff on ecs':                                             'IRREGULAR_WORKING',
+  'planning errors':                                          'IRREGULAR_WORKING',
 
-  // ── Operational ───────────────────────────────────────────────────────
-  'station overrun':         'STATION_OVERRUN',
-  'stranded train':          'STRANDED_TRAIN',
-  'possession overrun':      'POSSESSION',
-  'possession late handback':'POSSESSION',
-  'possession monitoring':   'POSSESSION',
+  // ── Fire ──────────────────────────────────────────────────────────────
+  'fires':                          'FIRE',
+  'lineside fire':                  'FIRE',
+  'smouldering sleepers/sleeper fires': 'FIRE',
+
+  // ── Collisions / derailment / runaway ─────────────────────────────────
+  'derailment':                'DERAILMENT',
+  'collision':                 'DERAILMENT',
+  'train or vehicle runaway':  'DERAILMENT',
+
+  // ── Possession ────────────────────────────────────────────────────────
+  'possession overrun':            'POSSESSION',
+  'possession monitoring':         'POSSESSION',
+  'significant possession problem':'POSSESSION',
+  'isolations':                    'POSSESSION',
+
+  // ── Station / overrun ─────────────────────────────────────────────────
+  'station overrun':                 'STATION_OVERRUN',
+  'station overrun (weather related)':'STATION_OVERRUN',
+  'stopping incidents':              'STATION_OVERRUN',
+  'station incident':                'STATION_OVERRUN',
 
   // ── Weather ───────────────────────────────────────────────────────────
-  'weather':       'WEATHER',
-  'weather event': 'WEATHER',
+  'flooding':                                  'WEATHER',
+  'heat speeds':                               'WEATHER',
+  'convective rainfall alert tool (cat tool)': 'WEATHER',
+  'rainfall – landslip risk':                  'WEATHER',
+  'rainfall - landslip risk':                  'WEATHER',  // hyphen variant
+  'freight adhesion issues':                   'WEATHER',
+  'reportable rail head conditions':           'WEATHER',
+  'weather related proactive measures':        'WEATHER',
+  'weather related problems - any other':      'WEATHER',
+
+  // ── Administrative / non-incident roll-ups ────────────────────────────
+  'building entry':                                        'GENERAL',
+  'shift change':                                          'GENERAL',
+  'disturbance to/of a projected site/species':            'GENERAL',
+  'exclusion zone':                                        'GENERAL',
+  'other (environment)':                                   'GENERAL',
+  'spills and leaks':                                      'GENERAL',
+  'spread of an invasive non-native species':              'GENERAL',
+  'statutory nuisance (noise, dust or smoke, light, odour, unsightly conditions)': 'GENERAL',
+  'air traffic incidents':                                 'GENERAL',
+  'coaches locked out of use':                             'GENERAL',
+  'line blockage issues':                                  'GENERAL',
+  'miscellaneous':                                         'GENERAL',
+  'de-registered vehicles / locomotives and overload rejections': 'GENERAL',
+  'real time performance figures':                         'GENERAL',
+  'major incident command decision log':                   'GENERAL',
+  'dangerous goods incident':                              'GENERAL',
+  'i.t. problem':                                          'GENERAL',
+  'it/telecoms issues':                                    'GENERAL',
+  'actions taken to improve performance':                  'GENERAL',
+  'alternative transport issues including rta':            'GENERAL',
+  'catering issues':                                       'GENERAL',
+  'd.o.o. station equipment':                              'GENERAL',
+  'dispatch incidents':                                    'GENERAL',
+  'on train cleaning':                                     'GENERAL',
+  'passenger loadings':                                    'GENERAL',
+  'passenger matters general':                             'GENERAL',
+  'passenger special needs':                               'GENERAL',
+  'special event (e.g. football incident)':                'GENERAL',
+  'staff illness':                                         'GENERAL',
+  'staff issues':                                          'GENERAL',
+  'timetable / diagram / schedule / notice / simplifier error': 'GENERAL',
+  'train crew incident':                                   'GENERAL',
+  'train crew hire':                                       'GENERAL',
+  'train regulation issues':                               'GENERAL',
+  'train service alterations - delay':                     'GENERAL',
 }
+
+// ─── Labels marked GENERAL or otherwise judged best-guess. Confirm with
+//     the safety team and reassign as needed; the comments mark uncertain
+//     calls inline so a code-review pass can sweep them quickly:
+//
+//   • Isolations → POSSESSION    (electrical isolation for engineering work)
+//   • Power Failure → TRACTION_FAILURE (could be lineside power instead)
+//   • Heat Speeds → WEATHER       (heat-related ESR; could be INFRASTRUCTURE)
+//   • Train Struck an Object → INFRASTRUCTURE (could be CRIME if vandalism)
+//   • Unsecured Access Gate → INFRASTRUCTURE (could be CRIME)
+//   • Road Vehicle Incursion → BRIDGE_STRIKE (groups with obstructions)
+//   • Call for Aid → PASSENGER_INJURY (could be CRIME for assistance calls)
+//   • Train or Vehicle Runaway → DERAILMENT
+//   • Concern For Welfare → CRIME (confirmed by user)
+//   • Group Standard GE/RT3350 + GE/RT8250 → IRREGULAR_WORKING
+//   • Dangerous Goods Incident → GENERAL (no dedicated category)
+//   • All Train Door Incidents / Train Stop & Examine etc. → TRAIN_FAULT
+//   • All admin / log / scheduling rows → GENERAL
 
 function normLabel(raw: string | null | undefined): string {
   if (!raw) return ''
