@@ -133,10 +133,13 @@ function lookupCode(raw: string | null | undefined): IncidentCategory | null {
   return TYPE_CODE_LOOKUP.get(k) ?? null
 }
 
-// Strong evidence the row is administrative rather than operational: no TDA
-// ref, no fault number, no responder dispatched, zero delay and zero trains
-// affected. Used to demote LOW-confidence safety classifications and to
-// catch unrecognised log entries the exclusion patterns missed.
+// Strong evidence the row is administrative rather than operational. A row
+// only qualifies when *every* operational signal is absent at once — no
+// reference of any kind AND no impact at all. Not every real incident
+// carries every reference (a PST may have no fault number; a near-miss may
+// have no BTP ref), so requiring joint absence keeps the heuristic safe.
+// Used only as a second-stage check after title-only matching or when no
+// signal at all is available — never overrides a present CCIL type code.
 function looksAdministrative(i: IncidentRow): boolean {
   const noRefs =
     !i.tda_ref &&
