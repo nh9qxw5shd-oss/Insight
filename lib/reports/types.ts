@@ -233,6 +233,11 @@ export interface PmcIncidentRow {
   partCancelled: number
   // Topic-specific notes the renderer can surface inline.
   note?:       string | null
+  // Classification provenance — populated when the row was demoted by the
+  // trusted classifier (lib/classification.ts) or carries a LOW confidence
+  // tag. Used by the renderer to surface a "Needs review" badge.
+  flagReason?:        string | null
+  originalCategory?:  IncidentCategory | null
 }
 
 export interface PmcLocationRow {
@@ -265,6 +270,11 @@ export interface PmcTopicPlan {
     title:     string
     incidents: PmcIncidentRow[]
   }
+  // Rows the trusted classifier (lib/classification.ts) demoted out of this
+  // category, plus any LOW-confidence rows that landed in it. Shown under a
+  // "Needs review" subsection — counted nowhere, so headline figures stay
+  // clean, but kept visible so reviewers can audit the call.
+  flagged?:    PmcIncidentRow[]
   // Topic-level callouts / insights, e.g. "all 3 fatalities were near-miss".
   insights:    string[]
   // Free-text status (e.g. "data not yet captured — implementation pending").

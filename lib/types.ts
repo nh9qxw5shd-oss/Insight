@@ -74,6 +74,16 @@ export interface IncidentRow {
   // Per-incident CCIL events log (running commentary) — jsonb, optional for
   // legacy rows captured before DLog2 began persisting the events block.
   events?: IncidentEvent[] | null
+
+  // ── Insight-side trusted classification (derived client-side) ─────────────
+  // Populated by lib/classification.ts when rows pass through normaliseCats.
+  // Not persisted to the DB; do not include in INCIDENT_COLS.
+  //   • original_category  — the category DLog2 stored, before re-derivation
+  //   • category_confidence — HIGH / MEDIUM / LOW signal that `category` is right
+  //   • category_reason     — short human explanation of why
+  original_category?: IncidentCategory | null
+  category_confidence?: 'HIGH' | 'MEDIUM' | 'LOW' | null
+  category_reason?: string | null
 }
 
 // One row of the CCIL EVENTS block — the chronological commentary on an

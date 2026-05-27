@@ -14,25 +14,50 @@ import {
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
 } from './types'
 import { railwayPeriodWeek } from './railwayCalendar'
+import { classifyTrusted } from './classification'
 
 export const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
 
 // ─── Category normalisation ──────────────────────────────────────────────────
-// FATALITY and PERSON_STRUCK are used interchangeably in DLog2. Normalise all
-// FATALITY incidents to PERSON_STRUCK so the two always appear as a single PST
-// bucket across every chart, table, and filter in Insight.
+// DLog2 sets the category column by CCIL type-code lookup with a regex
+// fallback on the title when the code is absent. That fallback mis-fires for
+// administrative log roll-ups and disorder events ("person refusing to
+// alight"), so we re-derive every row's category at the query boundary
+// using lib/classification.ts. Each row also picks up:
+//   • original_category   — what DLog2 stored, kept for audit trails
+//   • category_confidence — HIGH / MEDIUM / LOW
+//   • category_reason     — short human explanation
+//
+// LOW-confidence rows still appear in queries; the report builders split
+// them out under a "Needs review" subsection so they don't pollute headline
+// counts.
 
 function normaliseCats(rows: IncidentRow[]): IncidentRow[] {
-  return rows.map(i =>
-    i.category === 'FATALITY' ? { ...i, category: 'PERSON_STRUCK' as IncidentCategory } : i,
-  )
+  return rows.map(i => {
+    const t = classifyTrusted(i)
+    const original: IncidentCategory =
+      i.category === 'FATALITY' ? 'PERSON_STRUCK' : i.category
+    return {
+      ...i,
+      category:            t.category,
+      original_category:   original,
+      category_confidence: t.confidence,
+      category_reason:     t.reason,
+    }
+  })
 }
 
-// When the user has selected PERSON_STRUCK in the category filter, we also need
-// to ask the DB for FATALITY rows so nothing is missed before normalisation.
+// When the user has selected PERSON_STRUCK in the category filter, also pull
+// FATALITY (legacy alias) and PASSENGER_INJURY rows from the DB. The
+// trusted classifier frequently re-routes between PST and PAX in both
+// directions when the CCIL type code is missing, so we need both pools
+// in hand before re-deriving.
 function expandCategoryFilter(cats: IncidentCategory[]): IncidentCategory[] {
   if (!cats.includes('PERSON_STRUCK')) return cats
-  return cats.includes('FATALITY') ? cats : [...cats, 'FATALITY']
+  const out = [...cats]
+  if (!out.includes('FATALITY'))         out.push('FATALITY')
+  if (!out.includes('PASSENGER_INJURY')) out.push('PASSENGER_INJURY')
+  return out
 }
 
 // ─── Date helpers ────────────────────────────────────────────────────────────
