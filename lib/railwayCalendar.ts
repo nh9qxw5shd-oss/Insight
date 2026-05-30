@@ -1,20 +1,17 @@
 // Network Rail / GB rail-industry period calendar.
 // 13 periods × 4 weeks per financial year, plus an optional 5th week in
 // Period 13 of 53-week rail years (handled by giving P13 any week remainder).
-// Period 1 Week 1 starts on the Sunday nearest to 1 April; ties (Wednesday
-// 1 April) are broken backwards toward the earlier Sunday. This matches the
-// convention published in the Network Rail Periodic Calendar / RDG industry
-// calendar — verify against the published schedule if a future year edge
-// case looks wrong.
+// Period 1 Week 1 starts on the first Sunday on or after 1 April. Days from
+// 1 April up to (but not including) that first Sunday form a partial stub at
+// the start of the displayed year (they belong to P13 of the prior rail year
+// in the data model). Verify against the published Network Rail / RDG
+// Periodic Calendar schedule if a future year edge case looks wrong.
 
 function railwayP1Start(railYear: number): Date {
   const apr1 = new Date(Date.UTC(railYear, 3, 1))
   const dow = apr1.getUTCDay() // 0 = Sun
-  const prev = dow                  // days back to previous Sunday
-  const next = (7 - dow) % 7        // days forward to next Sunday
-  // On tie (Wednesday), bias backwards
-  const offset = prev <= next ? -prev : next
-  return new Date(apr1.getTime() + offset * 86_400_000)
+  const daysToNextSunday = dow === 0 ? 0 : 7 - dow
+  return new Date(apr1.getTime() + daysToNextSunday * 86_400_000)
 }
 
 export interface RailPeriodWeek {
