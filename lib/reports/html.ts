@@ -9,7 +9,7 @@ import {
   PmcTopicPlan,
   ReportKpi, ReportPlan, ReportSectionId, SafetyRadarRow, SignalRow, TrendPointPlain,
 } from './types'
-import { donutSvg, hbarSvg, heatmapSvg, safetyRadarSvg, trendAreaSvg, REPORT_COLORS } from './charts'
+import { donutSvg, hbarSvg, heatmapSvg, safetyRadarSvg, trendAreaSvg, recoveryTrendSvg, REPORT_COLORS } from './charts'
 
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
@@ -1321,6 +1321,72 @@ function renderPmcStranded(plan: ReportPlan, num: number): string {
     plan.controlPmc?.stranded, { showNote: true })
 }
 
+function renderPmcRecoveryTrend(plan: ReportPlan, num: number): string {
+  const trend = plan.controlPmc?.recoveryTrend
+  if (!trend || trend.length === 0) return ''
+  const hasRecover  = trend.some(p => p.avgTimeToRecoverMins != null)
+  const hasStranded = trend.some(p => p.avgTimeStrandedMins  != null)
+  if (!hasRecover && !hasStranded) return ''
+
+  const chartSvg = recoveryTrendSvg(trend, { width: 680, height: 160 })
+
+  const fmtDur = (v: number | null) => {
+    if (v == null) return '—'
+    if (v >= 60) {
+      const h = Math.floor(v / 60)
+      const m = Math.round(v % 60)
+      return m === 0 ? `${h}h` : `${h}h ${m}m`
+    }
+    return `${Math.round(v)}m`
+  }
+  const lastPt  = trend[trend.length - 1]
+  const prevPt  = trend.length > 1 ? trend[trend.length - 2] : null
+
+  const recoverNote = hasRecover
+    ? `Latest period avg: <strong>${fmtDur(lastPt.avgTimeToRecoverMins)}</strong>${prevPt?.avgTimeToRecoverMins != null && lastPt.avgTimeToRecoverMins != null ? ` (prev ${fmtDur(prevPt.avgTimeToRecoverMins)})` : ''}`
+    : 'No time-to-recover data recorded in this window.'
+  const strandedNote = hasStranded
+    ? `Latest period avg: <strong>${fmtDur(lastPt.avgTimeStrandedMins)}</strong>${prevPt?.avgTimeStrandedMins != null && lastPt.avgTimeStrandedMins != null ? ` (prev ${fmtDur(prevPt.avgTimeStrandedMins)})` : ''}`
+    : 'No stranded-train duration data recorded in this window.'
+
+  return `
+    <section class="page section">
+      ${sectionHead(String(num).padStart(2, '0'), 'Recovery trend · periodic averages', plan.meta.scopeLabel)}
+      <p class="section-lede">Period-by-period averages derived from SNDM incident reviews. Each plot mark represents one complete railway period. Orange line = avg time to recover (incident start → actual recovery). Steel dashed line = avg time trains were stranded (time stranded → time moved, per stranded-train entry).</p>
+      <div style="margin: 8pt 0;">
+        ${chartSvg}
+      </div>
+      <div class="two-col" style="margin-top: 8pt;">
+        <div class="panel">
+          <div class="panel-title">Avg time to recover</div>
+          <p>${recoverNote}. Derived from <span class="mono">time_to_recover_mins</span> on reviewed incidents — only periods with at least one reviewed incident contribute a data point.</p>
+        </div>
+        <div class="panel-light">
+          <div class="panel-title">Avg time stranded</div>
+          <p>${strandedNote}. Derived from <span class="mono">time_stranded → time_moved</span> on individual stranded-train entries — only periods with stranded-train reviews contribute a data point.</p>
+        </div>
+      </div>
+      <div class="panel" style="margin-top: 6pt;">
+        <div class="panel-title">Period breakdown</div>
+        <table class="data" style="margin-top: 4pt;">
+          <thead><tr><th>Period</th><th>Year</th><th class="num">Avg time to recover</th><th class="num">Avg time stranded</th></tr></thead>
+          <tbody>
+            ${trend.map(p => `
+              <tr>
+                <td><span class="mono">${esc(p.periodLabel)}</span></td>
+                <td>${esc(String(p.railYear))}/${esc(String((p.railYear + 1) % 100).padStart(2, '0'))}</td>
+                <td class="num">${esc(fmtDur(p.avgTimeToRecoverMins))}</td>
+                <td class="num">${esc(fmtDur(p.avgTimeStrandedMins))}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${footer(plan, num)}
+    </section>
+  `
+}
+
 function renderPmcIrregular(plan: ReportPlan, num: number): string {
   return renderPmcTopic(plan, num,
     'Irregular working',
@@ -1623,10 +1689,11 @@ const SECTION_RENDERERS: Record<Exclude<ReportSectionId, 'cover'>, (plan: Report
   signals:      renderSignals,
   narrative:    renderNarrative,
   appendix:     renderAppendix,
-  pmcSummary:      renderPmcSummary,
-  pmcFatalities:   renderPmcFatalities,
-  pmcStranded:     renderPmcStranded,
-  pmcIrregular:    renderPmcIrregular,
+  pmcSummary:         renderPmcSummary,
+  pmcFatalities:      renderPmcFatalities,
+  pmcStranded:        renderPmcStranded,
+  pmcRecoveryTrend:   renderPmcRecoveryTrend,
+  pmcIrregular:       renderPmcIrregular,
   pmcPax:          renderPmcPax,
   pmcTrainFaults:  renderPmcTrainFaults,
   pmcItsr:         renderPmcItsr,

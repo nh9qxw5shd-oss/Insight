@@ -272,7 +272,7 @@ function median(nums: number[]): number | null {
 }
 
 // Parse elapsed minutes between two "HH:MM" strings, handling cross-midnight.
-function minsFromTimes(start: string | null, end: string | null): number | null {
+export function minsFromTimes(start: string | null, end: string | null): number | null {
   if (!start || !end) return null
   const toMin = (t: string) => {
     const [h, m] = t.split(':').map(Number)
@@ -1689,4 +1689,63 @@ export function deriveReviewPeriods(
     const bLatest = b.days[0]?.date ?? ''
     return bLatest.localeCompare(aLatest)
   })
+}
+
+// ─── Recovery trend by railway period ────────────────────────────────────────
+// Groups incident reviews by railway period and computes two periodic averages:
+//   avgTimeToRecoverMins – from the stored time_to_recover_mins field
+//   avgTimeStrandedMins  – mean duration across all stranded-train entries
+//                          (time_stranded → time_moved per StrandedTrainEntry)
+
+export interface RecoveryTrendPoint {
+  periodKey:            string         // "2025/26 · P01"
+  periodLabel:          string         // "P01"
+  railYear:             number
+  periodNumber:         number
+  avgTimeToRecoverMins: number | null
+  avgTimeStrandedMins:  number | null
+}
+
+export function deriveRecoveryTrendByPeriod(reviews: IncidentReview[]): RecoveryTrendPoint[] {
+  const byPeriod = new Map<string, {
+    key: string; periodLabel: string; railYear: number; periodNumber: number
+    recoverSamples: number[]; strandedSamples: number[]
+  }>()
+
+  for (const r of reviews) {
+    const pw = railwayPeriodWeek(r.report_date)
+    const periodLabel = `P${String(pw.period).padStart(2, '0')}`
+    const key = `${pw.yearLabel} · ${periodLabel}`
+
+    const g = byPeriod.get(key) ?? {
+      key, periodLabel, railYear: pw.railYear, periodNumber: pw.period,
+      recoverSamples: [], strandedSamples: [],
+    }
+
+    if (r.time_to_recover_mins != null && r.time_to_recover_mins >= 0) {
+      g.recoverSamples.push(r.time_to_recover_mins)
+    }
+
+    if (r.stranded_trains_occurred === 'YES' && r.stranded_trains) {
+      for (const e of r.stranded_trains) {
+        const dur = minsFromTimes(e.time_stranded, e.time_moved)
+        if (dur != null && dur >= 0) g.strandedSamples.push(dur)
+      }
+    }
+
+    byPeriod.set(key, g)
+  }
+
+  const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((s, v) => s + v, 0) / arr.length : null
+
+  return Array.from(byPeriod.values())
+    .sort((a, b) => a.railYear !== b.railYear ? a.railYear - b.railYear : a.periodNumber - b.periodNumber)
+    .map(g => ({
+      periodKey:            g.key,
+      periodLabel:          g.periodLabel,
+      railYear:             g.railYear,
+      periodNumber:         g.periodNumber,
+      avgTimeToRecoverMins: avg(g.recoverSamples),
+      avgTimeStrandedMins:  avg(g.strandedSamples),
+    }))
 }

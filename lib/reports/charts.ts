@@ -313,6 +313,94 @@ export function safetyRadarSvg(rows: SafetyRadarRow[], opts: { size?: number } =
   `
 }
 
+// ─── Recovery trend (two-line chart for PMC report) ──────────────────────────
+// Plots period-averaged time-to-recover (orange) and avg time stranded (steel)
+// as connected line series with per-period dot markers. Period labels on x-axis.
+
+export function recoveryTrendSvg(
+  points: { periodLabel: string; avgTimeToRecoverMins: number | null; avgTimeStrandedMins: number | null }[],
+  opts: { width?: number; height?: number } = {},
+): string {
+  const W = opts.width ?? 720
+  const H = opts.height ?? 180
+  const PAD = { top: 24, right: 18, bottom: 28, left: 44 }
+  const innerW = W - PAD.left - PAD.right
+  const innerH = H - PAD.top - PAD.bottom
+  const n = points.length
+
+  const allVals = points.flatMap(p => [p.avgTimeToRecoverMins, p.avgTimeStrandedMins]).filter((v): v is number => v != null)
+  if (n < 2 || allVals.length === 0) {
+    return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" class="report-chart"><text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="${REPORT_COLORS.ink4}" font-family="'JetBrains Mono', monospace" font-size="11">Insufficient review data for trend</text></svg>`
+  }
+
+  const maxY = niceTickMax(Math.max(1, ...allVals))
+  const xFor = (i: number) => PAD.left + (i / (n - 1)) * innerW
+  const yFor = (v: number) => PAD.top + innerH - (v / maxY) * innerH
+
+  const fmtTick = (v: number): string => {
+    if (v >= 60) return `${Math.floor(v / 60)}h`
+    return `${Math.round(v)}m`
+  }
+
+  const ticks = [0, maxY / 2, maxY]
+  const tickEls = ticks.map(t => {
+    const y = yFor(t)
+    return `<line x1="${PAD.left}" x2="${W - PAD.right}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${REPORT_COLORS.rule}" stroke-width="0.5" />
+      <text x="${PAD.left - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" fill="${REPORT_COLORS.ink4}" font-family="'JetBrains Mono', monospace" font-size="9">${fmtTick(t)}</text>`
+  }).join('')
+
+  const step = n > 8 ? 2 : 1
+  const xLabels = points.map((p, i) => {
+    if (i % step !== 0 && i !== n - 1) return ''
+    const anchor = i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'
+    return `<text x="${xFor(i).toFixed(1)}" y="${H - 8}" text-anchor="${anchor}" fill="${REPORT_COLORS.ink4}" font-family="'JetBrains Mono', monospace" font-size="9">${esc(p.periodLabel)}</text>`
+  }).join('')
+
+  function buildPath(vals: (number | null)[]): string {
+    const parts: string[] = []
+    let pen = false
+    for (let i = 0; i < vals.length; i++) {
+      const v = vals[i]
+      if (v == null) { pen = false; continue }
+      const x = xFor(i).toFixed(1), y = yFor(v).toFixed(1)
+      parts.push(pen ? `L ${x},${y}` : `M ${x},${y}`)
+      pen = true
+    }
+    return parts.join(' ')
+  }
+
+  const recoverPath = buildPath(points.map(p => p.avgTimeToRecoverMins))
+  const strandedPath = buildPath(points.map(p => p.avgTimeStrandedMins))
+
+  const recoverDots = points.map((p, i) => p.avgTimeToRecoverMins != null
+    ? `<circle cx="${xFor(i).toFixed(1)}" cy="${yFor(p.avgTimeToRecoverMins).toFixed(1)}" r="2.5" fill="${REPORT_COLORS.orange}" />`
+    : '').join('')
+  const strandedDots = points.map((p, i) => p.avgTimeStrandedMins != null
+    ? `<circle cx="${xFor(i).toFixed(1)}" cy="${yFor(p.avgTimeStrandedMins).toFixed(1)}" r="2.5" fill="${REPORT_COLORS.steel}" />`
+    : '').join('')
+
+  const lgY = 10
+  const legend = `
+    <circle cx="${PAD.left}" cy="${lgY}" r="3" fill="${REPORT_COLORS.orange}" />
+    <text x="${PAD.left + 7}" y="${lgY + 3}" fill="${REPORT_COLORS.ink2}" font-family="'JetBrains Mono', monospace" font-size="8.5">Avg time to recover</text>
+    <circle cx="${PAD.left + 120}" cy="${lgY}" r="3" fill="${REPORT_COLORS.steel}" />
+    <line x1="${PAD.left + 130}" y1="${lgY}" x2="${PAD.left + 145}" y2="${lgY}" stroke="${REPORT_COLORS.steel}" stroke-width="1.4" stroke-dasharray="4 2" />
+    <text x="${PAD.left + 150}" y="${lgY + 3}" fill="${REPORT_COLORS.ink2}" font-family="'JetBrains Mono', monospace" font-size="8.5">Avg time stranded</text>
+  `
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" class="report-chart">
+      ${tickEls}
+      ${recoverPath ? `<path d="${recoverPath}" fill="none" stroke="${REPORT_COLORS.orange}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />` : ''}
+      ${strandedPath ? `<path d="${strandedPath}" fill="none" stroke="${REPORT_COLORS.steel}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="5 3" />` : ''}
+      ${recoverDots}
+      ${strandedDots}
+      ${xLabels}
+      ${legend}
+    </svg>
+  `
+}
+
 // ─── Sparkline used inside the KPI strip ─────────────────────────────────────
 
 export function sparklineSvg(values: number[], opts: { width?: number; height?: number; color?: string } = {}): string {

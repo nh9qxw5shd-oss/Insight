@@ -40,7 +40,8 @@ import {
   fetchIncidentsForRange, fetchReportsForRange, fetchReviewsForRange,
   fetchTeamMembersForRange, deriveTeamWorkload, deriveStaffPatterns,
   upsertIncidentReview, deleteIncidentReview, deriveReviewPeriods,
-  RawData, ReviewPeriodGroup, ReviewPeriodDay,
+  deriveRecoveryTrendByPeriod,
+  RawData, ReviewPeriodGroup, ReviewPeriodDay, RecoveryTrendPoint,
 } from '@/lib/queries'
 import {
   toggleCategoryFilter, toggleAreaFilter, toggleSeverityFilter,
@@ -458,6 +459,11 @@ export default function InsightDashboard() {
     return deriveTeamWorkload(reviewTeamMembers, delayMap)
   }, [reviewTeamMembers, reviewIncidents])
 
+  const reviewRecoveryTrend = useMemo(
+    () => deriveRecoveryTrendByPeriod(reviewRows),
+    [reviewRows],
+  )
+
   const handleReviewSave = async (input: IncidentReviewInput, incidentStart: string | null) => {
     const saved = await upsertIncidentReview(input, incidentStart)
     if (saved) {
@@ -563,6 +569,7 @@ export default function InsightDashboard() {
                       reviewByIncidentId={reviewByIncidentId}
                       teamMembersByIncidentId={teamMembersByIncidentId}
                       teamWorkload={teamWorkload}
+                      recoveryTrend={reviewRecoveryTrend}
                       onSave={handleReviewSave}
                       onDelete={handleReviewDelete}
                       demoMode={demoMode}
@@ -4346,6 +4353,66 @@ function fmtMins(m: number): string {
   return `${Math.round(m).toLocaleString()} min`
 }
 
+// ─── Review recovery trend charts ────────────────────────────────────────────
+
+function fmtDuration(m: number): string {
+  if (m >= 60) {
+    const h = Math.floor(m / 60)
+    const min = Math.round(m % 60)
+    return min === 0 ? `${h}h` : `${h}h ${min}m`
+  }
+  return `${Math.round(m)}m`
+}
+
+function RecoveryMetricChart({
+  data,
+  dataKey,
+  color,
+}: {
+  data: RecoveryTrendPoint[]
+  dataKey: 'avgTimeToRecoverMins' | 'avgTimeStrandedMins'
+  color: string
+}) {
+  const hasData = data.some(p => p[dataKey] != null)
+  if (!hasData) {
+    return (
+      <div className="flex items-center justify-center py-8 text-xs" style={{ color: 'var(--ink-400)' }}>
+        No data recorded for this period
+      </div>
+    )
+  }
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+        <CartesianGrid strokeDasharray="2 6" stroke="var(--line)" />
+        <XAxis
+          dataKey="periodLabel"
+          tick={{ fontSize: 10, fontFamily: 'JetBrains Mono, monospace', fill: 'var(--ink-400)' }}
+        />
+        <YAxis
+          tickFormatter={v => fmtDuration(v as number)}
+          tick={{ fontSize: 10, fontFamily: 'JetBrains Mono, monospace', fill: 'var(--ink-400)' }}
+          width={44}
+        />
+        <Tooltip
+          formatter={(v: unknown) => [fmtDuration(v as number), dataKey === 'avgTimeToRecoverMins' ? 'Avg time to recover' : 'Avg time stranded']}
+          labelFormatter={(label: string) => `Period ${label}`}
+          contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--line)', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}
+        />
+        <Line
+          type="monotone"
+          dataKey={dataKey}
+          stroke={color}
+          strokeWidth={2}
+          dot={{ r: 3, fill: color, strokeWidth: 0 }}
+          activeDot={{ r: 5 }}
+          connectNulls
+        />
+      </ComposedChart>
+    </ResponsiveContainer>
+  )
+}
+
 // ─── Review Tab ──────────────────────────────────────────────────────────────
 // SNDM workflow: open a log period, drill into individual days, expand each
 // incident to see what CCIL captured, then add the optional review details
@@ -4363,12 +4430,13 @@ function isReviewAutoNA(incident: IncidentRow, review: IncidentReview | undefine
 }
 
 function ReviewTab({
-  periods, reviewByIncidentId, teamMembersByIncidentId, teamWorkload, onSave, onDelete, demoMode, supabaseConfigured,
+  periods, reviewByIncidentId, teamMembersByIncidentId, teamWorkload, recoveryTrend, onSave, onDelete, demoMode, supabaseConfigured,
 }: {
   periods: ReviewPeriodGroup[]
   reviewByIncidentId: Map<string, IncidentReview>
   teamMembersByIncidentId: Map<string, IncidentTeamMember[]>
   teamWorkload: TeamMemberWorkload[]
+  recoveryTrend: RecoveryTrendPoint[]
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
   demoMode: boolean
@@ -4468,6 +4536,31 @@ function ReviewTab({
             </table>
           </div>
         </Card>
+      )}
+
+      {recoveryTrend.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Card
+            title="Avg time to recover"
+            subtitle="Period averages · incident start → actual recovery (reviewed incidents)"
+          >
+            <RecoveryMetricChart
+              data={recoveryTrend}
+              dataKey="avgTimeToRecoverMins"
+              color="var(--nr-orange)"
+            />
+          </Card>
+          <Card
+            title="Avg time stranded"
+            subtitle="Period averages · time stranded → time moved (per stranded-train entry)"
+          >
+            <RecoveryMetricChart
+              data={recoveryTrend}
+              dataKey="avgTimeStrandedMins"
+              color="#4A6FA5"
+            />
+          </Card>
+        </div>
       )}
 
       <Card title="Log Periods" subtitle="Expand a period to drill into its days and incidents" className="tick-corners">
@@ -5470,6 +5563,9 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   // Trailing 6-month history used by the Control PMC top-5 deep-dive to flag
   // candidate repeat issues (matching fault numbers / location + asset type).
   const [historicalIncidents, setHistoricalIncidents] = useState<IncidentRow[]>([])
+  // Trailing 6-month reviews for the recovery trend charts (time to recover +
+  // time stranded by period).
+  const [historicalReviews, setHistoricalReviews] = useState<IncidentReview[]>([])
 
   // Stable signature of the non-date filters so we only re-fetch when
   // something genuinely changes — avoids hammering Supabase on every render.
@@ -5589,6 +5685,32 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [template, scope.from, scope.to, demoMode])
 
+  // Trailing 6-month reviews for the recovery trend charts.
+  useEffect(() => {
+    if (template !== 'controlPmc') {
+      setHistoricalReviews([])
+      return
+    }
+    let cancelled = false
+    const HIST_DAYS = 183
+    const fromHist = isoMinusDays(scope.from, HIST_DAYS)
+    async function run() {
+      try {
+        if (!isSupabaseConfigured() || demoMode) {
+          if (!cancelled) setHistoricalReviews([])
+          return
+        }
+        const rows = await fetchReviewsForRange(fromHist, scope.to)
+        if (!cancelled) setHistoricalReviews(rows)
+      } catch {
+        if (!cancelled) setHistoricalReviews([])
+      }
+    }
+    run()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [template, scope.from, scope.to, demoMode])
+
   const filtersDescriptor = useMemo(() => describeFilters(filters), [filters])
 
   const plan = useMemo(() => {
@@ -5602,13 +5724,14 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
         demoMode:      demoMode || !isSupabaseConfigured(),
         incidents:     reportData.incidents,
         prevIncidents: reportData.prevIncidents,
-        reviews:       reviewBundle?.reviews,
-        prevReviews:   reviewBundle?.prevReviews,
+        reviews:            reviewBundle?.reviews,
+        prevReviews:        reviewBundle?.prevReviews,
         historicalIncidents,
+        historicalReviews,
       },
       { template, sections, appendixLimit, clientLine: 'Network Rail · EMCC', preparedBy: 'EMCC Insight' },
     )
-  }, [reportData, filtersDescriptor, demoMode, template, sections, appendixLimit, reviewBundle, historicalIncidents])
+  }, [reportData, filtersDescriptor, demoMode, template, sections, appendixLimit, reviewBundle, historicalIncidents, historicalReviews])
 
   const html = useMemo(() => plan ? renderReportDocument(plan) : '', [plan])
 
