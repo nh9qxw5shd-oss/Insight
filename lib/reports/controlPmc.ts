@@ -15,7 +15,7 @@
 import {
   CATEGORY_CONFIG, IncidentCategory, IncidentReview, IncidentRow,
 } from '../types'
-import { effectiveDelay, nonContinuation } from '../queries'
+import { deriveRecoveryTrendByPeriod, effectiveDelay, nonContinuation } from '../queries'
 import {
   ControlPmcPlan, PmcIncidentRow, PmcItsrPlan, PmcLocationRow,
   PmcRepeatMatch, PmcTopDelayDetail, PmcTopDelayPlan,
@@ -562,6 +562,7 @@ export function buildControlPmcPlan(
   history: IncidentRow[],
   weekFrom: string,
   weekTo: string,
+  allReviews: IncidentReview[] = [],
 ): ControlPmcPlan {
   const curRev  = new Map(reviews.map(r => [r.incident_id, r]))
   const prevRev = new Map(prevReviews.map(r => [r.incident_id, r]))
@@ -575,8 +576,13 @@ export function buildControlPmcPlan(
   const satisfaction = buildSatisfaction()
   const topDelay    = buildTopDelay(curr, history, weekFrom, weekTo)
 
+  // Recovery trend uses the broadest review pool available. Fall back to
+  // current + previous week when no historical window was provided.
+  const trendPool = allReviews.length > 0 ? allReviews : [...prevReviews, ...reviews]
+  const recoveryTrend = deriveRecoveryTrendByPeriod(trendPool)
+
   const partial: Omit<ControlPmcPlan, 'headline'> = {
-    fatalities, stranded, irregular, pax, trainFaults, itsr, satisfaction, topDelay,
+    fatalities, stranded, irregular, pax, trainFaults, itsr, satisfaction, topDelay, recoveryTrend,
   }
   return { ...partial, headline: buildHeadline(partial) }
 }
