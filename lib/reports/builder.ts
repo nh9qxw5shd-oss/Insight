@@ -328,6 +328,7 @@ export function buildReportPlan(src: ReportSource, options: ReportOptions): Repo
         src.reviews ?? [], src.prevReviews ?? [],
         src.historicalIncidents ?? [],
         src.windowFrom, src.windowTo,
+        src.historicalReviews ?? [],
       )
     : undefined
 

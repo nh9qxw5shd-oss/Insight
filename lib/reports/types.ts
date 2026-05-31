@@ -3,6 +3,8 @@
 // that plan into a fully styled HTML document ready to print as a PDF.
 
 import { IncidentCategory, IncidentReview, IncidentRow, Severity } from '../types'
+import type { RecoveryTrendPoint } from '../queries'
+export type { RecoveryTrendPoint }
 
 export type ReportTemplate =
   | 'period'        // Railway period (P/W) overview — strategic
@@ -48,6 +50,7 @@ export type ReportSectionId =
   | 'pmcSummary'
   | 'pmcFatalities'
   | 'pmcStranded'
+  | 'pmcRecoveryTrend'
   | 'pmcIrregular'
   | 'pmcPax'
   | 'pmcTrainFaults'
@@ -69,10 +72,11 @@ export const SECTION_LABELS: Record<ReportSectionId, string> = {
   signals:      'Anomalies & signals',
   narrative:    'Findings & guidance',
   appendix:     'Incident appendix',
-  pmcSummary:      'PMC week summary',
-  pmcFatalities:   'Fatalities · Person Struck',
-  pmcStranded:     'Stranded train incidents',
-  pmcIrregular:    'Irregular working',
+  pmcSummary:         'PMC week summary',
+  pmcFatalities:      'Fatalities · Person Struck',
+  pmcStranded:        'Stranded train incidents',
+  pmcRecoveryTrend:   'Recovery trend (periodic)',
+  pmcIrregular:       'Irregular working',
   pmcPax:          'PAX incidents (top 10)',
   pmcTrainFaults:  'Train faults (>200m + top 5)',
   pmcItsr:         'ITSR adherence (>300m)',
@@ -85,14 +89,14 @@ export const TEMPLATE_DEFAULT_SECTIONS: Record<ReportTemplate, ReportSectionId[]
   weekly:  ['cover', 'executive', 'kpis', 'trend', 'categoryMix', 'signals', 'narrative'],
   safety:  ['cover', 'executive', 'kpis', 'safetyRadar', 'geography', 'patterns', 'signals', 'narrative', 'appendix'],
   custom:  ['cover', 'executive', 'kpis', 'trend', 'categoryMix', 'geography', 'patterns', 'assets', 'safetyRadar', 'attribution', 'signals', 'narrative', 'appendix'],
-  controlPmc: ['cover', 'pmcSummary', 'pmcFatalities', 'pmcStranded', 'pmcIrregular', 'pmcPax', 'pmcTrainFaults', 'pmcItsr', 'pmcSatisfaction', 'pmcTopDelay'],
+  controlPmc: ['cover', 'pmcSummary', 'pmcFatalities', 'pmcStranded', 'pmcRecoveryTrend', 'pmcIrregular', 'pmcPax', 'pmcTrainFaults', 'pmcItsr', 'pmcSatisfaction', 'pmcTopDelay'],
 }
 
 // Sections selectable in the Control PMC builder UI — kept narrow so the
 // section toggle row only shows topics that belong to this template.
 export const CONTROL_PMC_SECTIONS: ReportSectionId[] = [
-  'cover', 'pmcSummary', 'pmcFatalities', 'pmcStranded', 'pmcIrregular',
-  'pmcPax', 'pmcTrainFaults', 'pmcItsr', 'pmcSatisfaction', 'pmcTopDelay',
+  'cover', 'pmcSummary', 'pmcFatalities', 'pmcStranded', 'pmcRecoveryTrend',
+  'pmcIrregular', 'pmcPax', 'pmcTrainFaults', 'pmcItsr', 'pmcSatisfaction', 'pmcTopDelay',
 ]
 
 // Sections selectable in the legacy templates (period / weekly / safety /
@@ -372,6 +376,8 @@ export interface ControlPmcPlan {
   itsr:          PmcItsrPlan
   satisfaction:  PmcTopicPlan          // placeholder topic
   topDelay:      PmcTopDelayPlan       // top 5 highest-delay incidents (deep-dive)
+  // Periodic recovery trend — avg time to recover and avg time stranded per period.
+  recoveryTrend: RecoveryTrendPoint[]
   // Headline KPIs surfaced in the PMC summary section / cover.
   headline:      ReportKpi[]
 }
@@ -436,4 +442,7 @@ export interface ReportSource {
   // up repeat issues at the same location / asset type. May span the current
   // week too — the builder excludes the target incident itself.
   historicalIncidents?: IncidentRow[]
+  // Trailing-6-month reviews for the recovery trend charts (time to recover +
+  // time stranded by period). Same window as historicalIncidents.
+  historicalReviews?: IncidentReview[]
 }
