@@ -19,39 +19,17 @@ import { classifyTrusted } from './classification'
 export const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
 
 // ─── Category normalisation ──────────────────────────────────────────────────
-// DLog2 sets the category column by CCIL type-code lookup with a regex
-// fallback on the title when the code is absent. That fallback mis-fires for
-// administrative log roll-ups and disorder events ("person refusing to
-// alight"), so we re-derive every row's category at the query boundary
-// using lib/classification.ts. Each row also picks up:
-//   • original_category   — what DLog2 stored, kept for audit trails
-//   • category_confidence — HIGH / MEDIUM / LOW
-//   • category_reason     — short human explanation
-//
-// LOW-confidence rows still appear in queries; the report builders split
-// them out under a "Needs review" subsection so they don't pollute headline
-// counts.
+// Every row is reclassified at the query boundary via lib/classification.ts:
+// the CCIL incident_type_label is the authoritative signal, with the numeric
+// code and title as fallbacks. DLog2's stored category is overwritten.
 
 function normaliseCats(rows: IncidentRow[]): IncidentRow[] {
-  return rows.map(i => {
-    const t = classifyTrusted(i)
-    const original: IncidentCategory =
-      i.category === 'FATALITY' ? 'PERSON_STRUCK' : i.category
-    return {
-      ...i,
-      category:            t.category,
-      original_category:   original,
-      category_confidence: t.confidence,
-      category_reason:     t.reason,
-    }
-  })
+  return rows.map(i => ({ ...i, category: classifyTrusted(i) }))
 }
 
-// When the user has selected PERSON_STRUCK in the category filter, also pull
-// FATALITY (legacy alias) and PASSENGER_INJURY rows from the DB. The
-// trusted classifier frequently re-routes between PST and PAX in both
-// directions when the CCIL type code is missing, so we need both pools
-// in hand before re-deriving.
+// When the user filters by PERSON_STRUCK in the dashboard, also pull
+// FATALITY and PASSENGER_INJURY rows from the DB so the classifier sees
+// any DLog2 mis-categorised rows that should re-route into PST.
 function expandCategoryFilter(cats: IncidentCategory[]): IncidentCategory[] {
   if (!cats.includes('PERSON_STRUCK')) return cats
   const out = [...cats]

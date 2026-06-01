@@ -320,28 +320,15 @@ export function generateSyntheticData(
   const prev = incidents.filter(i => i.report_date < cutoffStr)
 
   // Apply the same trusted-classification pass that fetchAnalytics runs on
-  // real data, so demo rows behave identically — every row picks up
-  // category_confidence / category_reason / original_category fields.
+  // real data, so demo rows behave identically.
+  const stamp = (i: IncidentRow): IncidentRow => ({ ...i, category: classifyTrusted(i) })
   return {
-    incidents:     cur.map(stampTrustedClassification),
-    prevIncidents: prev.map(stampTrustedClassification),
+    incidents:     cur.map(stamp),
+    prevIncidents: prev.map(stamp),
     reports: reports.filter(r => r.report_date >= cutoffStr && r.report_date <= winEndStr),
     teamMembers: [],
     windowFrom: cutoffStr,
     windowTo:   winEndStr,
     windowDays,
-  }
-}
-
-function stampTrustedClassification(i: IncidentRow): IncidentRow {
-  const t = classifyTrusted(i)
-  const original: IncidentCategory =
-    i.category === 'FATALITY' ? 'PERSON_STRUCK' : i.category
-  return {
-    ...i,
-    category:            t.category,
-    original_category:   original,
-    category_confidence: t.confidence,
-    category_reason:     t.reason,
   }
 }

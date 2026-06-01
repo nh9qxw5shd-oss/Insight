@@ -13,7 +13,7 @@
 //   • Passenger satisfaction (placeholder; data not yet held)
 
 import {
-  CATEGORY_CONFIG, IncidentCategory, IncidentReview, IncidentRow,
+  CATEGORY_CONFIG, IncidentReview, IncidentRow,
 } from '../types'
 import { deriveRecoveryTrendByPeriod, effectiveDelay, nonContinuation } from '../queries'
 import {
@@ -68,63 +68,6 @@ function toPmcRow(i: IncidentRow, note?: string | null): PmcIncidentRow {
   }
 }
 
-// Split a category-scoped row set into three buckets: confidently in the
-// category (HIGH/MEDIUM), in-category but LOW-confidence (needs reviewer
-// eyes), and rows that the trusted classifier moved OUT of the category
-// (kept visible for audit). The "moved out" pool is sourced from the full
-// dataset using the original_category field stamped at query time.
-interface ClassifiedSplit {
-  trusted: IncidentRow[]   // counted in summary / locations / headline
-  flagged: IncidentRow[]   // shown under "Needs review" only
-}
-
-function splitByConfidence(
-  curr: IncidentRow[],
-  all: IncidentRow[],
-  category: IncidentCategory,
-): ClassifiedSplit {
-  const trusted: IncidentRow[] = []
-  const flagged: IncidentRow[] = []
-  const seen = new Set<string>()
-
-  for (const i of curr) {
-    if (i.category !== category) continue
-    seen.add(i.id)
-    if (i.category_confidence === 'LOW') flagged.push(i)
-    else trusted.push(i)
-  }
-
-  // Audit trail: rows DLog2 originally tagged as this category but the
-  // trusted classifier moved away. Surfaced under "Needs review" so the
-  // reviewer can confirm the re-route.
-  for (const i of all) {
-    if (seen.has(i.id)) continue
-    if (i.original_category === category && i.category !== category) {
-      flagged.push(i)
-    }
-  }
-
-  return { trusted, flagged }
-}
-
-function flaggedRow(i: IncidentRow): PmcIncidentRow {
-  const row = toPmcRow(i)
-  const conf = i.category_confidence
-  const original = i.original_category ?? null
-  const reasonBits: string[] = []
-  if (original && original !== i.category) {
-    reasonBits.push(`Re-classified ${original} → ${i.category}`)
-  } else if (conf === 'LOW') {
-    reasonBits.push(`Low-confidence ${i.category}`)
-  }
-  if (i.category_reason) reasonBits.push(i.category_reason)
-  return {
-    ...row,
-    flagReason:       reasonBits.length ? reasonBits.join(' · ') : null,
-    originalCategory: original,
-  }
-}
-
 function topLocations(rows: IncidentRow[], limit = 5): PmcLocationRow[] {
   const m = new Map<string, PmcLocationRow>()
   for (const i of rows) {
@@ -161,26 +104,20 @@ function summarise(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicSummary {
 // ─── Topic: Fatalities / Person struck ───────────────────────────────────────
 
 function buildFatalities(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan {
-  const allCur = nonContinuation(curr)
-  const allPre = nonContinuation(prev)
-  const split    = splitByConfidence(allCur, allCur, 'PERSON_STRUCK')
-  const splitPre = splitByConfidence(allPre, allPre, 'PERSON_STRUCK')
-
-  const trusted = split.trusted
-  const trustedPre = splitPre.trusted
-  const summary = summarise(trusted, trustedPre)
+  const f = (rows: IncidentRow[]) => nonContinuation(rows).filter(i => i.category === 'PERSON_STRUCK')
+  const cur = f(curr)
+  const pre = f(prev)
+  const summary = summarise(cur, pre)
 
   const insights: string[] = []
-  if (trusted.length === 0)                insights.push('Zero person-struck or fatality incidents recorded in this week — sustain proactive trespass and lineside safety messaging.')
-  if (trusted.length > trustedPre.length)  insights.push(`Up from ${trustedPre.length} the previous week — review trespass hotspots and BTP coordination.`)
-  if (split.flagged.length > 0)            insights.push(`${split.flagged.length} row${split.flagged.length === 1 ? '' : 's'} held back for review — see panel below. None counted in the headline figure.`)
+  if (cur.length === 0)         insights.push('Zero person-struck or fatality incidents recorded in this week.')
+  if (cur.length > pre.length)  insights.push(`Up from ${pre.length} the previous week.`)
 
   return {
     topic:     'Fatalities · Person Struck',
     summary,
-    locations: topLocations(trusted),
-    incidents: trusted.sort((a, b) => effectiveDelay(b) - effectiveDelay(a)).map(i => toPmcRow(i)),
-    flagged:   split.flagged.sort((a, b) => effectiveDelay(b) - effectiveDelay(a)).map(flaggedRow),
+    locations: topLocations(cur),
+    incidents: cur.sort((a, b) => effectiveDelay(b) - effectiveDelay(a)).map(i => toPmcRow(i)),
     insights,
   }
 }
@@ -230,28 +167,20 @@ function buildStranded(
 // ─── Topic: Irregular working ────────────────────────────────────────────────
 
 function buildIrregular(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan {
-  const allCur = nonContinuation(curr)
-  const allPre = nonContinuation(prev)
-  const split    = splitByConfidence(allCur, allCur, 'IRREGULAR_WORKING')
-  const splitPre = splitByConfidence(allPre, allPre, 'IRREGULAR_WORKING')
-
-  const cur = split.trusted
-  const pre = splitPre.trusted
+  const f = (rows: IncidentRow[]) => nonContinuation(rows).filter(i => i.category === 'IRREGULAR_WORKING')
+  const cur = f(curr)
+  const pre = f(prev)
   const summary = summarise(cur, pre)
   const insights: string[] = []
   if (cur.length === 0) insights.push('No irregular-working events captured this week.')
   if (summary.countDeltaPct != null && summary.countDeltaPct > 50) {
-    insights.push(`Volume up ${Math.round(summary.countDeltaPct)}% on the previous week — consider a brief look at common causes.`)
-  }
-  if (split.flagged.length > 0) {
-    insights.push(`${split.flagged.length} row${split.flagged.length === 1 ? '' : 's'} held back for review — see panel below.`)
+    insights.push(`Volume up ${Math.round(summary.countDeltaPct)}% on the previous week.`)
   }
   return {
     topic:     'Irregular working',
     summary,
     locations: topLocations(cur),
     incidents: cur.sort((a, b) => effectiveDelay(b) - effectiveDelay(a)).map(i => toPmcRow(i)),
-    flagged:   split.flagged.sort((a, b) => effectiveDelay(b) - effectiveDelay(a)).map(flaggedRow),
     insights,
   }
 }
@@ -259,13 +188,9 @@ function buildIrregular(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan 
 // ─── Topic: PAX incidents (top 10 by impact) ─────────────────────────────────
 
 function buildPax(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan {
-  const allCur = nonContinuation(curr)
-  const allPre = nonContinuation(prev)
-  const split    = splitByConfidence(allCur, allCur, 'PASSENGER_INJURY')
-  const splitPre = splitByConfidence(allPre, allPre, 'PASSENGER_INJURY')
-
-  const cur = split.trusted
-  const pre = splitPre.trusted
+  const f = (rows: IncidentRow[]) => nonContinuation(rows).filter(i => i.category === 'PASSENGER_INJURY')
+  const cur = f(curr)
+  const pre = f(prev)
   const summary = summarise(cur, pre)
   const sorted = [...cur].sort((a, b) => effectiveDelay(b) - effectiveDelay(a))
   const capped = sorted.slice(0, PAX_TOPN)
@@ -274,15 +199,11 @@ function buildPax(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan {
     insights.push(`Showing top ${PAX_TOPN} of ${sorted.length} PAX incidents by delay impact — ${sorted.length - PAX_TOPN} lower-impact event${sorted.length - PAX_TOPN === 1 ? '' : 's'} omitted from the table.`)
   }
   if (cur.length === 0) insights.push('No passenger / public injury incidents captured this week.')
-  if (split.flagged.length > 0) {
-    insights.push(`${split.flagged.length} row${split.flagged.length === 1 ? '' : 's'} held back for review — see panel below.`)
-  }
   return {
     topic:     `PAX incidents${cur.length > PAX_TOPN ? ` (top ${PAX_TOPN} of ${cur.length})` : ''}`,
     summary,
     locations: topLocations(cur),
     incidents: capped.map(i => toPmcRow(i)),
-    flagged:   split.flagged.sort((a, b) => effectiveDelay(b) - effectiveDelay(a)).map(flaggedRow),
     insights,
   }
 }
@@ -290,13 +211,9 @@ function buildPax(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan {
 // ─── Topic: Train faults (>200m + top 5 below) ───────────────────────────────
 
 function buildTrainFaults(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan {
-  const allCur = nonContinuation(curr)
-  const allPre = nonContinuation(prev)
-  const split    = splitByConfidence(allCur, allCur, 'TRAIN_FAULT')
-  const splitPre = splitByConfidence(allPre, allPre, 'TRAIN_FAULT')
-
-  const cur = split.trusted
-  const pre = splitPre.trusted
+  const f = (rows: IncidentRow[]) => nonContinuation(rows).filter(i => i.category === 'TRAIN_FAULT')
+  const cur = f(curr)
+  const pre = f(prev)
   const summary = summarise(cur, pre)
 
   const above = cur.filter(i => effectiveDelay(i) > TRAIN_FAULT_PRIMARY_MINS).sort((a, b) => effectiveDelay(b) - effectiveDelay(a))
@@ -305,9 +222,6 @@ function buildTrainFaults(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPla
   const insights: string[] = []
   insights.push(`${above.length} train fault${above.length === 1 ? '' : 's'} above ${TRAIN_FAULT_PRIMARY_MINS} minutes delay; top ${below.length} below the threshold also shown.`)
   if (cur.length === 0) insights.push('No train fault incidents captured this week.')
-  if (split.flagged.length > 0) {
-    insights.push(`${split.flagged.length} row${split.flagged.length === 1 ? '' : 's'} held back for review — see panel below.`)
-  }
 
   return {
     topic:     'Train fault incidents',
@@ -318,7 +232,6 @@ function buildTrainFaults(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPla
       title:     `Top ${below.length} train fault${below.length === 1 ? '' : 's'} below ${TRAIN_FAULT_PRIMARY_MINS}m delay`,
       incidents: below.map(i => toPmcRow(i)),
     } : undefined,
-    flagged:   split.flagged.sort((a, b) => effectiveDelay(b) - effectiveDelay(a)).map(flaggedRow),
     insights,
   }
 }
@@ -695,28 +608,21 @@ export function serialiseControlPmcCsv(plan: ControlPmcPlan, scopeLabel: string,
   const rows: string[][] = []
   const push = (topic: string, section: string, list: PmcIncidentRow[]) => {
     for (const r of list) {
-      // For "Needs review" rows the flagReason is the informative note;
-      // otherwise the topic-specific note (stranded headcodes, ITSR status).
-      const noteText = r.flagReason ? r.flagReason : (r.note ?? '')
       rows.push([
         topic, section, r.date, r.ccil ?? '', r.tda ?? '',
         CATEGORY_CONFIG[r.category]?.label ?? r.category,
         r.title ?? '', r.location ?? '', r.area ?? '',
         String(r.delayMins), String(r.trainsDelayed),
-        String(r.cancelled), String(r.partCancelled), noteText,
+        String(r.cancelled), String(r.partCancelled), r.note ?? '',
       ])
     }
   }
   push('Fatalities · Person Struck', 'Primary',  plan.fatalities.incidents)
-  if (plan.fatalities.flagged) push('Fatalities · Person Struck', 'Needs review', plan.fatalities.flagged)
   push('Stranded trains',            'Primary',  plan.stranded.incidents)
   push('Irregular working',          'Primary',  plan.irregular.incidents)
-  if (plan.irregular.flagged) push('Irregular working', 'Needs review', plan.irregular.flagged)
   push('PAX incidents',              'Top 10',   plan.pax.incidents)
-  if (plan.pax.flagged) push('PAX incidents', 'Needs review', plan.pax.flagged)
   push('Train faults',               '>200m',    plan.trainFaults.incidents)
   if (plan.trainFaults.secondary) push('Train faults', 'Top 5 ≤200m', plan.trainFaults.secondary.incidents)
-  if (plan.trainFaults.flagged)   push('Train faults', 'Needs review', plan.trainFaults.flagged)
   push('ITSR adherence',             'ITSR completed', plan.itsr.incidents)
   if (plan.itsr.secondary)        push('ITSR adherence', 'No ITSR / unreviewed', plan.itsr.secondary.incidents)
   // Top-5 deep-dive — emit each as a regular detail row, then a follow-up row

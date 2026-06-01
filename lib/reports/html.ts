@@ -1121,7 +1121,7 @@ function pmcDeltaSpan(signedPct: number | null, inverted = true): string {
   return `<span class="${cls} mono">${arrow}&nbsp;${fmtPct(signedPct)}</span>`
 }
 
-function pmcIncidentTable(rows: PmcIncidentRow[], opts: { showNote?: boolean; showFlag?: boolean } = {}): string {
+function pmcIncidentTable(rows: PmcIncidentRow[], opts: { showNote?: boolean } = {}): string {
   if (rows.length === 0) {
     return `<p style="color: var(--ink-3); font-size: 9.5pt; margin: 6pt 0;">No incidents in this band for the selected week.</p>`
   }
@@ -1138,7 +1138,7 @@ function pmcIncidentTable(rows: PmcIncidentRow[], opts: { showNote?: boolean; sh
           <th class="num">Delay</th>
           <th class="num">Trains</th>
           <th class="num">Cancel</th>
-          ${opts.showFlag ? '<th>Reason held back</th>' : (opts.showNote ? '<th>Notes</th>' : '')}
+          ${opts.showNote ? '<th>Notes</th>' : ''}
         </tr>
       </thead>
       <tbody>
@@ -1153,30 +1153,11 @@ function pmcIncidentTable(rows: PmcIncidentRow[], opts: { showNote?: boolean; sh
             <td class="num">${fmt(r.delayMins)}m</td>
             <td class="num">${fmt(r.trainsDelayed)}</td>
             <td class="num">${fmt(r.cancelled)}${r.partCancelled ? `+${fmt(r.partCancelled)}p` : ''}</td>
-            ${opts.showFlag
-              ? `<td><span style="font-size: 8.5pt; color: var(--ink-3);">${esc(r.flagReason ?? '')}</span></td>`
-              : (opts.showNote ? `<td><span class="mono" style="font-size: 8.5pt; color: var(--ink-3);">${esc(r.note ?? '')}</span></td>` : '')}
+            ${opts.showNote ? `<td><span class="mono" style="font-size: 8.5pt; color: var(--ink-3);">${esc(r.note ?? '')}</span></td>` : ''}
           </tr>
         `).join('')}
       </tbody>
     </table>
-  `
-}
-
-// "Needs review" subsection — rows the trusted classifier held back from the
-// headline counts, plus rows it moved out of the category (for audit). The
-// subsection only renders when there is at least one row to surface.
-function pmcFlaggedSection(rows: PmcIncidentRow[] | undefined): string {
-  if (!rows || rows.length === 0) return ''
-  return `
-    <hr class="rule" />
-    <div class="panel-title">Needs review · classification flagged ${rows.length} row${rows.length === 1 ? '' : 's'}</div>
-    <p style="color: var(--ink-3); font-size: 9pt; margin: 4pt 0 6pt;">
-      These rows were either re-classified out of this section by the CCIL-code-first
-      classifier, or are missing a CCIL type code and were matched on title only.
-      None are counted in the headline figures above — surfaced here for reviewer audit.
-    </p>
-    ${pmcIncidentTable(rows, { showFlag: true })}
   `
 }
 
@@ -1269,7 +1250,6 @@ function renderPmcTopic(
       <div class="panel-title">Incidents in scope</div>
       ${pmcIncidentTable(topic.incidents, { showNote: opts.showNote })}
       ${secondary}
-      ${pmcFlaggedSection(topic.flagged)}
       ${footer(plan, num)}
     </section>
   `
