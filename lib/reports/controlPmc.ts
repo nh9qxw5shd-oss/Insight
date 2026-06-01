@@ -13,7 +13,7 @@
 //   • Passenger satisfaction (placeholder; data not yet held)
 
 import {
-  CATEGORY_CONFIG, IncidentCategory, IncidentReview, IncidentRow,
+  CATEGORY_CONFIG, IncidentReview, IncidentRow,
 } from '../types'
 import { deriveRecoveryTrendByPeriod, effectiveDelay, nonContinuation } from '../queries'
 import {
@@ -104,14 +104,15 @@ function summarise(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicSummary {
 // ─── Topic: Fatalities / Person struck ───────────────────────────────────────
 
 function buildFatalities(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan {
-  const f = (rows: IncidentRow[]) => nonContinuation(rows).filter(i =>
-    i.category === 'PERSON_STRUCK' || i.category === 'FATALITY')
+  const f = (rows: IncidentRow[]) => nonContinuation(rows).filter(i => i.category === 'PERSON_STRUCK')
   const cur = f(curr)
   const pre = f(prev)
   const summary = summarise(cur, pre)
+
   const insights: string[] = []
-  if (cur.length === 0)        insights.push('Zero person-struck or fatality incidents recorded in this week — sustain proactive trespass and lineside safety messaging.')
-  if (cur.length > pre.length) insights.push(`Up from ${pre.length} the previous week — review trespass hotspots and BTP coordination.`)
+  if (cur.length === 0)         insights.push('Zero person-struck or fatality incidents recorded in this week.')
+  if (cur.length > pre.length)  insights.push(`Up from ${pre.length} the previous week.`)
+
   return {
     topic:     'Fatalities · Person Struck',
     summary,
@@ -171,9 +172,9 @@ function buildIrregular(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan 
   const pre = f(prev)
   const summary = summarise(cur, pre)
   const insights: string[] = []
-  if (cur.length === 0)               insights.push('No irregular-working events captured this week.')
+  if (cur.length === 0) insights.push('No irregular-working events captured this week.')
   if (summary.countDeltaPct != null && summary.countDeltaPct > 50) {
-    insights.push(`Volume up ${Math.round(summary.countDeltaPct)}% on the previous week — consider a brief look at common causes.`)
+    insights.push(`Volume up ${Math.round(summary.countDeltaPct)}% on the previous week.`)
   }
   return {
     topic:     'Irregular working',

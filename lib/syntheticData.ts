@@ -2,6 +2,7 @@
 
 import { IncidentRow, ReportRow, IncidentCategory, Severity, SAFETY_CATEGORIES } from './types'
 import { RawData } from './queries'
+import { classifyTrusted } from './classification'
 
 // Deterministic PRNG so the demo data is stable across reloads
 function mulberry32(seed: number) {
@@ -318,9 +319,12 @@ export function generateSyntheticData(
   const cur  = incidents.filter(i => i.report_date >= cutoffStr && i.report_date <= winEndStr)
   const prev = incidents.filter(i => i.report_date < cutoffStr)
 
+  // Apply the same trusted-classification pass that fetchAnalytics runs on
+  // real data, so demo rows behave identically.
+  const stamp = (i: IncidentRow): IncidentRow => ({ ...i, category: classifyTrusted(i) })
   return {
-    incidents: cur,
-    prevIncidents: prev,
+    incidents:     cur.map(stamp),
+    prevIncidents: prev.map(stamp),
     reports: reports.filter(r => r.report_date >= cutoffStr && r.report_date <= winEndStr),
     teamMembers: [],
     windowFrom: cutoffStr,
