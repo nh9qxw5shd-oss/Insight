@@ -27,14 +27,15 @@ function normaliseCats(rows: IncidentRow[]): IncidentRow[] {
   return rows.map(i => ({ ...i, category: classifyTrusted(i) }))
 }
 
-// When the user filters by PERSON_STRUCK in the dashboard, also pull
-// FATALITY and PASSENGER_INJURY rows from the DB so the classifier sees
-// any DLog2 mis-categorised rows that should re-route into PST.
-function expandCategoryFilter(cats: IncidentCategory[]): IncidentCategory[] {
-  if (!cats.includes('PERSON_STRUCK')) return cats
-  const out = [...cats]
-  if (!out.includes('FATALITY'))         out.push('FATALITY')
-  if (!out.includes('PASSENGER_INJURY')) out.push('PASSENGER_INJURY')
+// FATALITY is a legacy alias of PERSON_STRUCK — every Fatality-labelled row
+// reclassifies to PERSON_STRUCK in normaliseCats. Treat the two as
+// equivalent in the category filter so picking either in the UI matches
+// the same rows.
+function wantedCategorySet(cats: IncidentCategory[]): Set<IncidentCategory> | null {
+  if (cats.length === 0) return null
+  const out = new Set<IncidentCategory>(cats)
+  if (out.has('FATALITY'))      out.add('PERSON_STRUCK')
+  if (out.has('PERSON_STRUCK')) out.add('FATALITY')
   return out
 }
 
@@ -126,7 +127,12 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
   const cur = resolveWindow(f)
   const prev = previousWindow(f)
 
-  const serverCats = expandCategoryFilter(f.categories)
+  // The category filter is intentionally NOT applied at the DB level. Until
+  // DLog2 writes the correct category column for every row, the stored
+  // category can disagree with the CCIL label — so any DB-level filter on
+  // `category` risks dropping rows the label would route into scope. We
+  // fetch by date / area / severity / label, reclassify every row from
+  // its label, then apply the user's category filter on the trusted value.
 
   // Current window — paginate to bypass the PostgREST server-side max-rows cap
   const curRows = await fetchAllRows<IncidentRow>(() => {
@@ -135,7 +141,6 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       .lte('report_date', cur.to)
       .order('report_date', { ascending: true })
     if (f.areas.length)          q = q.in('area', f.areas)
-    if (serverCats.length)       q = q.in('category', serverCats)
     if (f.severities.length)     q = q.in('severity', f.severities)
     if (f.incidentTypes.length)  q = q.in('incident_type_label', f.incidentTypes)
     return q
@@ -148,7 +153,6 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
       .lte('report_date', prev.to)
       .order('report_date', { ascending: true })
     if (f.areas.length)          q = q.in('area', f.areas)
-    if (serverCats.length)       q = q.in('category', serverCats)
     if (f.severities.length)     q = q.in('severity', f.severities)
     if (f.incidentTypes.length)  q = q.in('incident_type_label', f.incidentTypes)
     return q
@@ -198,9 +202,19 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
     offRoute === 'exclude' ? prevRows.filter(i => !i.is_off_route) :
     prevRows
 
+  // Reclassify every row from its CCIL label, then apply the user's
+  // category filter on the trusted category. This is the only place the
+  // category filter is applied — DB-level filtering on the stored
+  // category column would risk dropping rows DLog2 mis-tagged.
+  const wanted = wantedCategorySet(f.categories)
+  const applyCatFilter = (rows: IncidentRow[]): IncidentRow[] => {
+    const normalised = normaliseCats(rows)
+    return wanted ? normalised.filter(i => wanted.has(i.category)) : normalised
+  }
+
   return {
-    incidents: normaliseCats(visibilityFiltered),
-    prevIncidents: normaliseCats(prevFiltered),
+    incidents: applyCatFilter(visibilityFiltered),
+    prevIncidents: applyCatFilter(prevFiltered),
     reports: reportRows,
     teamMembers: memberRows,
     windowFrom: cur.from,
