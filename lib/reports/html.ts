@@ -20,12 +20,9 @@ function fmt(n: number): string {
 }
 
 function fmtMins(n: number): string {
-  if (n >= 60) {
-    const h = Math.floor(n / 60)
-    const m = Math.round(n % 60)
-    return m === 0 ? `${h}h` : `${h}h ${m}m`
-  }
-  return `${Math.round(n)} min`
+  // Delay is always reported in whole minutes — never rolled up into hours —
+  // so every delay figure across the pack reads in the same unit.
+  return `${fmt(Math.round(n))}m`
 }
 
 function fmtPct(n: number | null | undefined): string {
