@@ -1161,7 +1161,7 @@ export function DistillationTab({
               <KPICard
                 label="Total delay"
                 value={`${kpis.totalDly.toLocaleString()} min`}
-                sub={kpis.count > 0 ? `${(kpis.totalDly / 60).toFixed(1)} hours` : undefined}
+                sub={kpis.count > 0 ? `across ${kpis.count.toLocaleString()} incident${kpis.count === 1 ? '' : 's'}` : undefined}
               />
               <KPICard
                 label="Avg delay / incident"
