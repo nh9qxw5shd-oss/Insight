@@ -1309,12 +1309,7 @@ function renderPmcRecoveryTrend(plan: ReportPlan, num: number): string {
 
   const fmtDur = (v: number | null) => {
     if (v == null) return '—'
-    if (v >= 60) {
-      const h = Math.floor(v / 60)
-      const m = Math.round(v % 60)
-      return m === 0 ? `${h}h` : `${h}h ${m}m`
-    }
-    return `${Math.round(v)}m`
+    return `${fmt(Math.round(v))}m`
   }
   const lastPt  = trend[trend.length - 1]
   const prevPt  = trend.length > 1 ? trend[trend.length - 2] : null

@@ -337,10 +337,7 @@ export function recoveryTrendSvg(
   const xFor = (i: number) => PAD.left + (i / (n - 1)) * innerW
   const yFor = (v: number) => PAD.top + innerH - (v / maxY) * innerH
 
-  const fmtTick = (v: number): string => {
-    if (v >= 60) return `${Math.floor(v / 60)}h`
-    return `${Math.round(v)}m`
-  }
+  const fmtTick = (v: number): string => `${Math.round(v)}m`
 
   const ticks = [0, maxY / 2, maxY]
   const tickEls = ticks.map(t => {
