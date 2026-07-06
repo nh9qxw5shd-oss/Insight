@@ -12,8 +12,9 @@ import {
   Hypothesis, HypothesisCluster, HypothesisDimension,
   IncidentReview, IncidentReviewInput,
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
+  PmcFlag, PMC_FLAG_LIMIT,
 } from './types'
-import { railwayPeriodWeek } from './railwayCalendar'
+import { railwayPeriodWeek, railwayWeekBounds } from './railwayCalendar'
 import { classifyTrusted } from './classification'
 
 export const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
@@ -1581,6 +1582,58 @@ export async function deleteIncidentReview(incidentId: string): Promise<void> {
   const sb = getSupabase()
   if (!sb) return
   const { error } = await sb.from('incident_reviews').delete().eq('incident_id', incidentId)
+  if (error) throw new Error(error.message)
+}
+
+// ─── Control PMC incident flags ──────────────────────────────────────────────
+// Manual nominations for the weekly Control PMC report. Max PMC_FLAG_LIMIT
+// flags per railway week — checked here against the live table so the cap
+// holds even when the UI's local view of the week is stale or partial.
+
+const PMC_FLAG_COLS = 'incident_id, report_date, flagged_at'
+
+export async function fetchPmcFlagsForRange(from: string, to: string): Promise<PmcFlag[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<PmcFlag>(() =>
+    sb!.from('incident_pmc_flags').select(PMC_FLAG_COLS)
+      .gte('report_date', from)
+      .lte('report_date', to),
+  )
+}
+
+// Inclusive bounds of the railway week containing the given date.
+function railwayWeekOf(reportDate: string): { from: string; to: string } {
+  const pw = railwayPeriodWeek(reportDate)
+  return railwayWeekBounds(pw.period, pw.week, pw.railYear)
+}
+
+export async function addPmcFlag(incidentId: string, reportDate: string): Promise<PmcFlag | null> {
+  const sb = getSupabase()
+  if (!sb) return null
+
+  const week = railwayWeekOf(reportDate)
+  const existing = await fetchPmcFlagsForRange(week.from, week.to)
+  const already = existing.find(f => f.incident_id === incidentId)
+  if (already) return already
+  if (existing.length >= PMC_FLAG_LIMIT) {
+    const pw = railwayPeriodWeek(reportDate)
+    throw new Error(`Maximum ${PMC_FLAG_LIMIT} incidents can be flagged per railway week (${pw.label} · ${pw.yearLabel} is full — unflag one first).`)
+  }
+
+  const { data, error } = await sb
+    .from('incident_pmc_flags')
+    .insert({ incident_id: incidentId, report_date: reportDate })
+    .select(PMC_FLAG_COLS)
+    .single()
+  if (error) throw new Error(error.message)
+  return data as unknown as PmcFlag
+}
+
+export async function removePmcFlag(incidentId: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('incident_pmc_flags').delete().eq('incident_id', incidentId)
   if (error) throw new Error(error.message)
 }
 

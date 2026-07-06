@@ -172,6 +172,22 @@ export const CLASSIFICATION_CONFIG: Record<IncidentClassification, { label: stri
   BLACK: { label: 'Black', color: '#1A1A1A', textColor: '#F2EDE0' },
 }
 
+// ─── Control PMC incident flags ──────────────────────────────────────────────
+// Manual flags nominating incidents for the weekly Control PMC report. When
+// any incidents in the reporting week carry a flag, the report's "Top 5
+// delay incidents" deep-dive shows the flagged incidents instead (ordered
+// lowest → highest impact). Capped at PMC_FLAG_LIMIT per railway week —
+// enforced in the app layer since railway weeks aren't expressible as a
+// plain DB constraint.
+
+export interface PmcFlag {
+  incident_id: string
+  report_date: string
+  flagged_at: string
+}
+
+export const PMC_FLAG_LIMIT = 5
+
 // ─── Incident team members (captured by Dlog2, read-only in Insight) ─────────
 
 export interface IncidentTeamMember {
@@ -211,6 +227,10 @@ export interface AnalyticsFilters {
   windowDays: number              // 7 | 30 | 90 | 180 | 365 (or custom)
   startDate?: string              // YYYY-MM-DD (overrides windowDays)
   endDate?: string
+  // Railway-calendar window mode. When set, startDate/endDate hold the bounds
+  // of a single railway period or railway week and the header prev/next
+  // arrows step whole periods/weeks instead of rolling day-windows.
+  dateMode?: 'period' | 'week'
   areas: string[]                 // empty = all
   categories: IncidentCategory[]  // empty = all
   severities: Severity[]          // empty = all

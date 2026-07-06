@@ -1592,12 +1592,17 @@ function renderPmcTopDelayCard(d: PmcTopDelayDetail, rank: number, maxDelay: num
 function renderPmcTopDelay(plan: ReportPlan, num: number): string {
   const td = plan.controlPmc?.topDelay
   if (!td) return ''
-  const maxDelay = td.incidents.length ? td.incidents[0].delayMins : 0
+  const flagged = td.mode === 'flagged'
+  const maxDelay = td.incidents.reduce((m, d) => Math.max(m, d.delayMins), 0)
   const cards = td.incidents.map((d, i) => renderPmcTopDelayCard(d, i + 1, maxDelay)).join('')
+  const title = flagged ? 'Flagged incidents · deep-dive' : 'Top 5 delay incidents · deep-dive'
+  const lede = flagged
+    ? `Incidents manually flagged for this reporting week (maximum five per railway week), presented lowest → highest impact — replacing the automatic top-5-by-delay ranking. Each card surfaces the full operational record plus any matching incidents from ${esc(shortDate(td.windowFrom))} → ${esc(shortDate(td.windowTo))} (same fault number, or same location and asset type) to flag potential repeat issues.`
+    : `Filter-blind ranking of the week's five highest delay-incurring incidents. Each card surfaces the full operational record plus any matching incidents from ${esc(shortDate(td.windowFrom))} → ${esc(shortDate(td.windowTo))} (same fault number, or same location and asset type) to flag potential repeat issues.`
   return `
     <section class="page section">
-      ${sectionHead(String(num).padStart(2, '0'), 'Top 5 delay incidents · deep-dive', plan.meta.scopeLabel)}
-      <p class="section-lede">Filter-blind ranking of the week's five highest delay-incurring incidents. Each card surfaces the full operational record plus any matching incidents from ${esc(shortDate(td.windowFrom))} → ${esc(shortDate(td.windowTo))} (same fault number, or same location and asset type) to flag potential repeat issues.</p>
+      ${sectionHead(String(num).padStart(2, '0'), title, plan.meta.scopeLabel)}
+      <p class="section-lede">${lede}</p>
       ${pmcInsights(td.insights)}
       ${td.incidents.length === 0 ? '' : cards}
       ${footer(plan, num)}

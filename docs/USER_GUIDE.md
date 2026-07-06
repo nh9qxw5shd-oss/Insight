@@ -57,6 +57,12 @@ In the header, between the `‹` and `›` arrows:
 
 - **Preset windows** — `7d`, `30d`, `90d`, `6m`, `1y`. These are *rolling*
   windows ending today. 30 days is the default.
+- **Railway windows** — `Wk` (railway week, Sunday → Saturday) and `Pd`
+  (railway period, 4 weeks — 5 in P13 of 53-week years). Selecting one snaps
+  the window to the most recent **complete** week / period, and the `‹` `›`
+  arrows then step one whole railway week / period at a time. The active
+  period-week label (e.g. `2026/27 · P03 W4`) is shown under the window
+  buttons and as a removable chip in the filter bar.
 - **`‹` / `›` arrows** — step backwards or forwards one whole window at a time.
   Example: on a 30-day window, `‹` jumps to the previous 30 days. `›` is
   disabled once you reach today.
@@ -399,6 +405,14 @@ SNDM reviews are not just record-keeping — they drive reporting:
 - **ITSR adherence** counts incidents *without* an SNDM review on file against
   adherence — so completing reviews directly improves the accuracy of the
   Control PMC and other reports.
+- **Control PMC flags** — every expanded incident carries a **Flag for
+  Control PMC** toggle just above the review form. Flagged incidents replace
+  the automatic "Top 5 incidents by delay" deep-dive in that week's Control
+  PMC report, presented **lowest → highest impact**. A maximum of **5
+  incidents per railway week** can be flagged — the toggle shows the week's
+  running count (e.g. `3/5 flagged in P03 W4 · 2026/27`) and disables at
+  capacity until a slot is freed. With no flags in the week, the report falls
+  back to the automatic top-5-by-delay ranking.
 
 Keeping the Review tab's progress bars green means downstream reports are
 trustworthy.

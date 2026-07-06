@@ -329,6 +329,7 @@ export function buildReportPlan(src: ReportSource, options: ReportOptions): Repo
         src.historicalIncidents ?? [],
         src.windowFrom, src.windowTo,
         src.historicalReviews ?? [],
+        src.pmcFlaggedIds ?? [],
       )
     : undefined
 

@@ -168,6 +168,13 @@
     <li><strong>Preset windows</strong> — <code>7d</code>, <code>30d</code>,
     <code>90d</code>, <code>6m</code>, <code>1y</code>. These are <em>rolling</em>
     windows ending today. 30 days is the default.</li>
+    <li><strong>Railway windows</strong> — <code>Wk</code> (railway week, Sunday →
+    Saturday) and <code>Pd</code> (railway period, 4 weeks — 5 in P13 of 53-week
+    years). Selecting one snaps the window to the most recent <strong>complete</strong>
+    week / period, and the <code>‹</code> <code>›</code> arrows then step one whole
+    railway week / period at a time. The active period-week label (e.g.
+    <code>2026/27 · P03 W4</code>) shows under the window buttons and as a removable
+    chip in the filter bar.</li>
     <li><strong><code>‹</code> / <code>›</code> arrows</strong> — step backwards or
     forwards one whole window at a time. On a 30-day window, <code>‹</code> jumps to
     the previous 30 days. <code>›</code> is disabled once you reach today.</li>
@@ -474,6 +481,14 @@
     <li><strong>ITSR adherence</strong> counts incidents <em>without</em> an SNDM
     review on file against adherence — so completing reviews directly improves the
     accuracy of the Control PMC and other reports.</li>
+    <li><strong>Control PMC flags</strong> — every expanded incident carries a
+    <strong>Flag for Control PMC</strong> toggle just above the review form. Flagged
+    incidents replace the automatic "Top 5 incidents by delay" deep-dive in that
+    week's Control PMC report, presented <strong>lowest → highest impact</strong>.
+    A maximum of <strong>5 incidents per railway week</strong> can be flagged — the
+    toggle shows the week's running count (e.g. <code>3/5 flagged in P03 W4 ·
+    2026/27</code>) and disables at capacity until a slot is freed. With no flags in
+    the week, the report falls back to the automatic top-5-by-delay ranking.</li>
   </ul>
 
   <h3>3.9 When you cannot save</h3>
