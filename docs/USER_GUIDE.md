@@ -316,10 +316,20 @@ Each incident row carries one status:
 
 - **Pending** — reviewable, no review saved yet.
 - **Reviewed** (green tick) — a review record exists.
-- **Auto N/A** — the incident's delay is **below 400 minutes**, so it is
-  auto-classified Not Applicable and **excluded from the review progress
-  counter**. These rows are dimmed. You can still open one and fill the form to
-  record a manual review if you judge it warranted.
+- **Auto N/A** — the incident's delay is **below 400 minutes** *and* its log
+  carries **no review trigger**, so it is auto-classified Not Applicable and
+  **excluded from the review progress counter**. These rows are dimmed. You can
+  still open one and fill the form to record a manual review if you judge it
+  warranted.
+
+An incident is flagged as reviewable when **either** gate fires:
+
+- its effective delay is **400 minutes or more**, or
+- its title or CCIL events commentary mentions a **review trigger** — `ITSR`,
+  `service recovery`, `stranded` (train), `refail` / `re-fail`, or
+  `technical conference`. Trigger-flagged incidents carry a blue pill naming
+  what was matched (e.g. `ITSR · Stranded train`), so smaller incidents with
+  review-worthy process events are never silently skipped.
 
 If a coloured **classification pill** (Green / Amber / Red / Black) is present,
 the incident has been classified.

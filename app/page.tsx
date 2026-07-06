@@ -23,7 +23,7 @@ import {
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum, IncidentEvent,
   PmcFlag, PMC_FLAG_LIMIT,
 } from '@/lib/types'
-import { parseEventSignals, EventSignals } from '@/lib/eventParser'
+import { parseEventSignals, detectReviewTriggers, EventSignals } from '@/lib/eventParser'
 import {
   railwayPeriodWeek, listPeriods, listWeeks, listRailYears,
   railwayPeriodBounds, railwayWeekBounds, railwayWeeksInPeriod,
@@ -4560,13 +4560,19 @@ function RecoveryMetricChart({
 // and refine any CCIL-captured values that need correcting. All review fields
 // are optional — a saved row just means an SNDM has touched the incident.
 
-// Incidents with effective delay below this threshold are auto-classified N/A
-// and excluded from the review progress counter. Users can still open them.
+// An incident needs an SNDM review when either gate fires:
+//   • effective delay ≥ NA_DELAY_THRESHOLD minutes, or
+//   • the title / CCIL events log mentions a review trigger — ITSR, service
+//     recovery, stranded train, refail / re-fail, or technical conference
+//     (detectReviewTriggers in lib/eventParser.ts).
+// Everything else is auto-classified N/A and excluded from the review
+// progress counter. Users can still open and manually review N/A rows.
 const NA_DELAY_THRESHOLD = 400
 
 function isReviewAutoNA(incident: IncidentRow, review: IncidentReview | undefined): boolean {
   const delay = review?.minutes_delay_override ?? incident.minutes_delay ?? 0
-  return delay < NA_DELAY_THRESHOLD
+  if (delay >= NA_DELAY_THRESHOLD) return false
+  return detectReviewTriggers(incident).length === 0
 }
 
 function ReviewTab({
@@ -4624,7 +4630,7 @@ function ReviewTab({
         <KPICard
           label="Incidents in Window"
           value={totalIncidents.toLocaleString()}
-          subValue={naCount > 0 ? `${naCount} auto N/A (< ${NA_DELAY_THRESHOLD} min)` : undefined}
+          subValue={naCount > 0 ? `${naCount} auto N/A (< ${NA_DELAY_THRESHOLD} min, no triggers)` : undefined}
           icon={Activity}
         />
         <KPICard
@@ -4905,6 +4911,7 @@ function ReviewIncidentRow({
   const reviewed = !!review
   const cls      = review?.incident_classification ?? null
   const autoNA   = isReviewAutoNA(incident, review)
+  const triggers = detectReviewTriggers(incident)
 
   return (
     <div
@@ -4919,7 +4926,7 @@ function ReviewIncidentRow({
         type="button"
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-start gap-3 px-3 py-2.5 text-left text-xs hover:bg-[var(--bg-card-hi)] transition-colors"
-        title={autoNA ? `Auto N/A — delay below ${NA_DELAY_THRESHOLD} min. Click to open and override.` : undefined}
+        title={autoNA ? `Auto N/A — delay below ${NA_DELAY_THRESHOLD} min and no review triggers (ITSR, service recovery, stranded train, refail, technical conference) in the log. Click to open and override.` : undefined}
       >
         <ChevronDown size={11} className="mt-1" style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
         <span className={`pill pill-${incident.severity.toLowerCase()} shrink-0`} style={autoNA ? { filter: 'grayscale(0.7)' } : undefined}>{incident.severity}</span>
@@ -4942,6 +4949,15 @@ function ReviewIncidentRow({
           )}
         </div>
         <div className="flex items-center gap-3 shrink-0">
+          {triggers.length > 0 && (
+            <span
+              className="pill text-[9px]"
+              style={{ background: 'rgba(74,111,165,0.12)', color: 'var(--nr-blue)', borderColor: 'rgba(74,111,165,0.4)' }}
+              title={`Flagged for review — mentioned in the incident log: ${triggers.join(', ')}`}
+            >
+              {triggers.join(' · ')}
+            </span>
+          )}
           {pmcFlagged && (
             <span className="pill text-[9px]" style={{ background: 'rgba(224,82,6,0.12)', color: 'var(--nr-orange)', borderColor: 'rgba(224,82,6,0.4)' }} title="Flagged for the Control PMC report">
               <Flag size={9} /> PMC
@@ -4977,7 +4993,7 @@ function ReviewIncidentRow({
           {autoNA && !reviewed && (
             <div className="px-3 py-2 text-[11px] flex items-center gap-2 border-t border-[var(--line)]" style={{ background: 'var(--bg-card-hi)', color: 'var(--ink-400)' }}>
               <AlertTriangle size={11} style={{ color: 'var(--ink-500)' }} />
-              This incident is auto-classified N/A (delay below {NA_DELAY_THRESHOLD} min) and excluded from review counts. Fill in the form below to record a manual review.
+              This incident is auto-classified N/A (delay below {NA_DELAY_THRESHOLD} min, and no ITSR / service recovery / stranded train / refail / technical conference mention in the log) and excluded from review counts. Fill in the form below to record a manual review.
             </div>
           )}
           <PmcFlagBar
