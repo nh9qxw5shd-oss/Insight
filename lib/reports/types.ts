@@ -81,7 +81,7 @@ export const SECTION_LABELS: Record<ReportSectionId, string> = {
   pmcTrainFaults:  'Train faults (>200m + top 5)',
   pmcItsr:         'ITSR adherence (>300m)',
   pmcSatisfaction: 'Passenger satisfaction',
-  pmcTopDelay:     'Top 5 delay incidents (deep-dive)',
+  pmcTopDelay:     'Top 5 / flagged incidents (deep-dive)',
 }
 
 export const TEMPLATE_DEFAULT_SECTIONS: Record<ReportTemplate, ReportSectionId[]> = {
@@ -363,7 +363,11 @@ export interface PmcTopDelayPlan {
   topic:        string
   windowFrom:   string                 // ISO date the historical search starts from
   windowTo:     string                 // ISO date the historical search ends on
-  incidents:    PmcTopDelayDetail[]    // up to 5 rows, sorted by delay desc
+  // 'ranked'  — automatic top 5 by delay, sorted highest first (default)
+  // 'flagged' — manually flagged incidents for the week, sorted lowest →
+  //             highest impact (max 5 per railway week)
+  mode:         'ranked' | 'flagged'
+  incidents:    PmcTopDelayDetail[]    // up to 5 rows, ordered per `mode`
   insights:     string[]
 }
 
@@ -445,4 +449,8 @@ export interface ReportSource {
   // Trailing-6-month reviews for the recovery trend charts (time to recover +
   // time stranded by period). Same window as historicalIncidents.
   historicalReviews?: IncidentReview[]
+  // Incident ids manually flagged for the Control PMC report within the
+  // scoped week. When non-empty, the top-5 deep-dive shows these incidents
+  // (lowest → highest impact) instead of the automatic delay ranking.
+  pmcFlaggedIds?:     string[]
 }

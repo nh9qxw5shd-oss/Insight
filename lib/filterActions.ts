@@ -39,7 +39,7 @@ export function removeSearchToken(f: AnalyticsFilters, token: string): Analytics
 }
 
 export function clearCustomDate(f: AnalyticsFilters): AnalyticsFilters {
-  const { startDate: _s, endDate: _e, ...rest } = f
+  const { startDate: _s, endDate: _e, dateMode: _m, ...rest } = f
   return { ...rest }
 }
 

@@ -9,7 +9,7 @@
 // Everything here is best-effort. The Review tab pre-fills empty fields with
 // these values and flags them as auto-derived; the SNDM can always override.
 
-import { IncidentEvent } from './types'
+import { IncidentEvent, IncidentRow } from './types'
 
 export interface EventSignal {
   time: string | null   // HH:MM, normalised; null when the event carried no time
@@ -36,6 +36,41 @@ export function normaliseEventTime(raw: string | null | undefined): string | nul
 const ITSR_RE   = /\bITSR\b/i
 const MOM_RE    = /\bMOMs?\b|mobile operations? managers?/i
 const ARRIVE_RE = /\barrived?\b|\bon[\s-]?site\b|\bon[\s-]?scene\b|\battend(?:ed|ing|ance)\b/i
+
+// ─── Review triggers ─────────────────────────────────────────────────────────
+// Keywords in the incident title or CCIL events commentary that mark an
+// incident as needing an SNDM review regardless of its delay figure. The
+// delay threshold alone misses smaller incidents with review-worthy process
+// events (an ITSR raised, a train stranded, a technical conference held…).
+
+const REVIEW_TRIGGER_PATTERNS: { label: string; re: RegExp }[] = [
+  { label: 'ITSR',                 re: /\bITSR\b/i },
+  { label: 'Service recovery',     re: /service\s+recovery/i },
+  { label: 'Stranded train',       re: /\bstranded\b/i },
+  { label: 'Refail',               re: /\bre-?fail/i },                       // refail / re-fail / refailed…
+  { label: 'Technical conference', re: /\btech(?:nical)?\s+conf(?:erence)?\b/i },
+]
+
+// Cache per incident object — the scan runs inside per-row render paths and
+// the underlying rows are stable across renders.
+const reviewTriggerCache = new WeakMap<object, string[]>()
+
+// Returns the human labels of every review trigger mentioned in the
+// incident's title or events log ([] when none match).
+export function detectReviewTriggers(incident: Pick<IncidentRow, 'title' | 'events'>): string[] {
+  const cached = reviewTriggerCache.get(incident)
+  if (cached) return cached
+
+  const parts: string[] = []
+  if (incident.title) parts.push(incident.title)
+  for (const e of incident.events ?? []) {
+    if (e?.description) parts.push(e.description)
+  }
+  const text = parts.join('\n')
+  const out = text ? REVIEW_TRIGGER_PATTERNS.filter(p => p.re.test(text)).map(p => p.label) : []
+  reviewTriggerCache.set(incident, out)
+  return out
+}
 
 // Scan the events block once and pull out the ITSR / MOM signals. Events are
 // assumed to be in capture (chronological) order. Dispatch is the first MOM

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, BookOpen, ChevronDown, ChevronLeft, ChevronRight,
-  ClipboardCheck, ClipboardList, Clock, Compass, Crosshair, Download, FileText, Filter, FlaskConical, GitBranch, Layers, List, MapPin,
+  ClipboardCheck, ClipboardList, Clock, Compass, Crosshair, Download, FileText, Filter, Flag, FlaskConical, GitBranch, Layers, List, MapPin,
   Minus, Moon, RefreshCw, Route, Search, Sun, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -21,11 +21,12 @@ import {
   IncidentReview, IncidentReviewInput, IncidentClassification, First50Outcome,
   CLASSIFICATION_CONFIG, YesNoNa, MomDepot, MOM_DEPOT_LABELS, StrandedTrainEntry,
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum, IncidentEvent,
+  PmcFlag, PMC_FLAG_LIMIT,
 } from '@/lib/types'
-import { parseEventSignals, EventSignals } from '@/lib/eventParser'
+import { parseEventSignals, detectReviewTriggers, EventSignals } from '@/lib/eventParser'
 import {
   railwayPeriodWeek, listPeriods, listWeeks, listRailYears,
-  railwayPeriodBounds, railwayWeekBounds,
+  railwayPeriodBounds, railwayWeekBounds, railwayWeeksInPeriod,
   defaultPeriodSelection, defaultWeekSelection,
 } from '@/lib/railwayCalendar'
 import {
@@ -41,6 +42,7 @@ import {
   fetchTeamMembersForRange, deriveTeamWorkload, deriveStaffPatterns,
   upsertIncidentReview, deleteIncidentReview, deriveReviewPeriods,
   deriveRecoveryTrendByPeriod,
+  fetchPmcFlagsForRange, addPmcFlag, removePmcFlag,
   RawData, ReviewPeriodGroup, ReviewPeriodDay, RecoveryTrendPoint,
 } from '@/lib/queries'
 import {
@@ -97,7 +99,47 @@ function localISODate(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+// Step a railway-calendar window (single period or week) one bucket at a
+// time, deriving the current bucket from startDate and clamping so we never
+// step into a bucket that starts after the data ceiling (yesterday).
+function shiftRailWindow(f: AnalyticsFilters, dir: -1 | 1): AnalyticsFilters {
+  const yesterdayMs = Date.now() - 86_400_000
+  const pw = railwayPeriodWeek(f.startDate!)
+
+  let bounds: { from: string; to: string }
+  if (f.dateMode === 'period') {
+    let period = pw.period + dir
+    let railYear = pw.railYear
+    if (period < 1)  { period = 13; railYear -= 1 }
+    if (period > 13) { period = 1;  railYear += 1 }
+    bounds = railwayPeriodBounds(period, railYear)
+  } else {
+    let { period, week, railYear } = pw
+    week += dir
+    if (week < 1) {
+      period -= 1
+      if (period < 1) { period = 13; railYear -= 1 }
+      week = railwayWeeksInPeriod(period, railYear)
+    } else if (week > railwayWeeksInPeriod(period, railYear)) {
+      period += 1
+      week = 1
+      if (period > 13) { period = 1; railYear += 1 }
+    }
+    bounds = railwayWeekBounds(period, week, railYear)
+  }
+
+  if (new Date(bounds.from + 'T00:00:00Z').getTime() > yesterdayMs) return f
+  return {
+    ...f,
+    startDate:  bounds.from,
+    endDate:    bounds.to,
+    windowDays: daysBetween(bounds.from, bounds.to),
+  }
+}
+
 function shiftWindow(f: AnalyticsFilters, dir: -1 | 1): AnalyticsFilters {
+  if (f.dateMode && f.startDate) return shiftRailWindow(f, dir)
+
   // Logs cover the previous 24-hour period, so the effective data ceiling is yesterday.
   const yesterdayMs = Date.now() - 86_400_000
   const curEndMs  = f.endDate
@@ -153,6 +195,9 @@ export default function InsightDashboard() {
   const [reviewTeamMembers, setReviewTeamMembers] = useState<IncidentTeamMember[]>([])
   const [reviewLoading, setReviewLoading]     = useState(false)
   const [reviewError, setReviewError]         = useState<string | null>(null)
+  // Control PMC flags covering the review window (expanded to whole railway
+  // weeks so per-week counts are accurate at the window edges).
+  const [pmcFlags, setPmcFlags]               = useState<PmcFlag[]>([])
 
   // Weather data synced from Open-Meteo via Supabase
   const [weatherData, setWeatherData] = useState<WeatherDay[]>([])
@@ -342,7 +387,22 @@ export default function InsightDashboard() {
   )
 
   const handleDateClick = (date: string) => {
-    setFilters(f => ({ ...f, startDate: date, endDate: date, windowDays: 1 }))
+    setFilters(f => ({ ...f, startDate: date, endDate: date, windowDays: 1, dateMode: undefined }))
+  }
+
+  // Switch the header window into railway-calendar mode: snap to the most
+  // recent complete period / week and let the prev/next arrows step whole
+  // railway buckets from there.
+  const handleDateModeSelect = (mode: 'period' | 'week') => {
+    if (mode === 'period') {
+      const d = defaultPeriodSelection()
+      const b = railwayPeriodBounds(d.period, d.railYear)
+      setFilters(f => ({ ...f, dateMode: 'period', startDate: b.from, endDate: b.to, windowDays: daysBetween(b.from, b.to) }))
+    } else {
+      const d = defaultWeekSelection()
+      const b = railwayWeekBounds(d.period, d.week, d.railYear)
+      setFilters(f => ({ ...f, dateMode: 'week', startDate: b.from, endDate: b.to, windowDays: daysBetween(b.from, b.to) }))
+    }
   }
 
   // Cross-filter drill-down: chart elements push their underlying value into
@@ -410,17 +470,26 @@ export default function InsightDashboard() {
           }
           return
         }
-        const [incs, reps, revs, members] = await Promise.all([
+        // Expand the flag fetch to the whole railway weeks containing the
+        // window edges — the 5-per-week cap counts flags across the full
+        // week, including days outside the current dashboard window.
+        const fromPw = railwayPeriodWeek(from)
+        const toPw   = railwayPeriodWeek(to)
+        const flagFrom = railwayWeekBounds(fromPw.period, fromPw.week, fromPw.railYear).from
+        const flagTo   = railwayWeekBounds(toPw.period, toPw.week, toPw.railYear).to
+        const [incs, reps, revs, members, flags] = await Promise.all([
           fetchIncidentsForRange(from, to),
           fetchReportsForRange(from, to),
           fetchReviewsForRange(from, to),
           fetchTeamMembersForRange(from, to),
+          fetchPmcFlagsForRange(flagFrom, flagTo),
         ])
         if (cancelled) return
         setReviewIncidents(incs)
         setReviewReports(reps)
         setReviewRows(revs)
         setReviewTeamMembers(members)
+        setPmcFlags(flags)
       } catch (e: any) {
         if (cancelled) return
         setReviewError(e?.message || 'Failed to load review data')
@@ -479,6 +548,36 @@ export default function InsightDashboard() {
     setReviewRows(prev => prev.filter(r => r.incident_id !== incidentId))
   }
 
+  // ─── Control PMC flag helpers ──────────────────────────────────────────────
+
+  const pmcFlaggedIds = useMemo(() => new Set(pmcFlags.map(f => f.incident_id)), [pmcFlags])
+
+  const pmcFlagWeekCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const f of pmcFlags) {
+      const pw = railwayPeriodWeek(f.report_date)
+      const key = `${pw.railYear}-${pw.period}-${pw.week}`
+      m.set(key, (m.get(key) ?? 0) + 1)
+    }
+    return m
+  }, [pmcFlags])
+
+  // Flags already used in the railway week containing the given report date.
+  const pmcWeekFlagCount = (reportDate: string): number => {
+    const pw = railwayPeriodWeek(reportDate)
+    return pmcFlagWeekCounts.get(`${pw.railYear}-${pw.period}-${pw.week}`) ?? 0
+  }
+
+  const handleTogglePmcFlag = async (incident: IncidentRow) => {
+    if (pmcFlaggedIds.has(incident.id)) {
+      await removePmcFlag(incident.id)
+      setPmcFlags(prev => prev.filter(f => f.incident_id !== incident.id))
+    } else {
+      const flag = await addPmcFlag(incident.id, incident.report_date)
+      if (flag) setPmcFlags(prev => [...prev.filter(f => f.incident_id !== flag.incident_id), flag])
+    }
+  }
+
 
   return (
     <main className="min-h-screen pb-24">
@@ -486,9 +585,11 @@ export default function InsightDashboard() {
         windowDays={filters.windowDays}
         startDate={filters.startDate}
         endDate={filters.endDate}
+        dateMode={filters.dateMode}
         demoMode={demoMode}
         loading={loading}
-        onWindowChange={(d) => setFilters({ ...filters, windowDays: d, startDate: undefined, endDate: undefined })}
+        onWindowChange={(d) => setFilters({ ...filters, windowDays: d, startDate: undefined, endDate: undefined, dateMode: undefined })}
+        onDateModeChange={handleDateModeSelect}
         onPrevWindow={() => setFilters(f => shiftWindow(f, -1))}
         onNextWindow={() => setFilters(f => shiftWindow(f, 1))}
         isAtToday={!filters.endDate || filters.endDate >= new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)}
@@ -572,6 +673,9 @@ export default function InsightDashboard() {
                       recoveryTrend={reviewRecoveryTrend}
                       onSave={handleReviewSave}
                       onDelete={handleReviewDelete}
+                      pmcFlaggedIds={pmcFlaggedIds}
+                      pmcWeekFlagCount={pmcWeekFlagCount}
+                      onTogglePmcFlag={handleTogglePmcFlag}
                       demoMode={demoMode}
                       supabaseConfigured={isSupabaseConfigured()}
                     />
@@ -617,11 +721,13 @@ function Header(props: {
   windowDays: number
   startDate?: string
   endDate?: string
+  dateMode?: 'period' | 'week'
   demoMode: boolean
   loading: boolean
   activeFilterCount: number
   isAtToday: boolean
   onWindowChange: (d: number) => void
+  onDateModeChange: (m: 'period' | 'week') => void
   onPrevWindow: () => void
   onNextWindow: () => void
   onOpenFilters: () => void
@@ -631,6 +737,16 @@ function Header(props: {
   onToggleTheme: () => void
 }) {
   const customRange = !!props.startDate
+
+  // Railway-calendar caption shown under the selector when Period / Week
+  // mode is active — e.g. "2026/27 · P03 W2".
+  const railLabel = props.dateMode && props.startDate ? (() => {
+    const pw = railwayPeriodWeek(props.startDate)
+    const p = `P${String(pw.period).padStart(2, '0')}`
+    return props.dateMode === 'period'
+      ? `${pw.yearLabel} · ${p}`
+      : `${pw.yearLabel} · ${p} W${pw.week}`
+  })() : null
 
   return (
     <header className="border-b border-[var(--line)] header-gradient">
@@ -671,6 +787,21 @@ function Header(props: {
                     {w.label}
                   </button>
                 ))}
+                <span className="w-px h-4 mx-1 shrink-0" style={{ background: 'var(--line)' }} />
+                <button
+                  onClick={() => props.onDateModeChange('week')}
+                  className={`btn !py-1 !px-3 !border-none ${props.dateMode === 'week' ? 'btn-active' : ''}`}
+                  title="Railway week (Sun → Sat) — arrows step week by week"
+                >
+                  Wk
+                </button>
+                <button
+                  onClick={() => props.onDateModeChange('period')}
+                  className={`btn !py-1 !px-3 !border-none ${props.dateMode === 'period' ? 'btn-active' : ''}`}
+                  title="Railway period (4 weeks, 5 in 53-week years) — arrows step period by period"
+                >
+                  Pd
+                </button>
               </div>
               <button
                 onClick={props.onNextWindow}
@@ -683,6 +814,7 @@ function Header(props: {
             </div>
             {customRange && (
               <div className="label-micro text-[9px]" style={{ color: 'var(--ink-400)' }}>
+                {railLabel ? <span style={{ color: 'var(--nr-orange)' }}>{railLabel} · </span> : null}
                 {props.startDate}{props.endDate && props.endDate !== props.startDate ? ` → ${props.endDate}` : ''}
               </div>
             )}
@@ -2585,10 +2717,18 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
         <div className="flex items-center gap-1.5 flex-wrap">
           {hasCustomDate && chip(
             'date',
-            `${filters.startDate}${filters.endDate && filters.endDate !== filters.startDate ? ` → ${filters.endDate}` : ''}`,
+            filters.dateMode && filters.startDate
+              ? (() => {
+                  const pw = railwayPeriodWeek(filters.startDate)
+                  const p = `P${String(pw.period).padStart(2, '0')}`
+                  return filters.dateMode === 'period'
+                    ? `${pw.yearLabel} · ${p}`
+                    : `${pw.yearLabel} · ${p} W${pw.week}`
+                })()
+              : `${filters.startDate}${filters.endDate && filters.endDate !== filters.startDate ? ` → ${filters.endDate}` : ''}`,
             onClearDate,
             'var(--nr-orange)',
-            'Clear custom date range',
+            filters.dateMode ? `Clear railway ${filters.dateMode} window` : 'Clear custom date range',
           )}
           {hasDelay && chip(
             'delay',
@@ -4087,7 +4227,7 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
                 <label className="label-micro mb-1 block">From</label>
                 <CalendarPicker
                   value={draft.startDate}
-                  onChange={(v) => setDraft({ ...draft, startDate: v })}
+                  onChange={(v) => setDraft({ ...draft, startDate: v, dateMode: undefined })}
                   placeholder="Start date"
                 />
               </div>
@@ -4095,13 +4235,13 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
                 <label className="label-micro mb-1 block">To</label>
                 <CalendarPicker
                   value={draft.endDate}
-                  onChange={(v) => setDraft({ ...draft, endDate: v })}
+                  onChange={(v) => setDraft({ ...draft, endDate: v, dateMode: undefined })}
                   placeholder="End date"
                 />
               </div>
             </div>
             <button
-              onClick={() => setDraft({ ...draft, startDate: undefined, endDate: undefined })}
+              onClick={() => setDraft({ ...draft, startDate: undefined, endDate: undefined, dateMode: undefined })}
               className="text-xs mt-2"
               style={{ color: 'var(--ink-400)' }}
             >
@@ -4420,17 +4560,24 @@ function RecoveryMetricChart({
 // and refine any CCIL-captured values that need correcting. All review fields
 // are optional — a saved row just means an SNDM has touched the incident.
 
-// Incidents with effective delay below this threshold are auto-classified N/A
-// and excluded from the review progress counter. Users can still open them.
+// An incident needs an SNDM review when either gate fires:
+//   • effective delay ≥ NA_DELAY_THRESHOLD minutes, or
+//   • the title / CCIL events log mentions a review trigger — ITSR, service
+//     recovery, stranded train, refail / re-fail, or technical conference
+//     (detectReviewTriggers in lib/eventParser.ts).
+// Everything else is auto-classified N/A and excluded from the review
+// progress counter. Users can still open and manually review N/A rows.
 const NA_DELAY_THRESHOLD = 400
 
 function isReviewAutoNA(incident: IncidentRow, review: IncidentReview | undefined): boolean {
   const delay = review?.minutes_delay_override ?? incident.minutes_delay ?? 0
-  return delay < NA_DELAY_THRESHOLD
+  if (delay >= NA_DELAY_THRESHOLD) return false
+  return detectReviewTriggers(incident).length === 0
 }
 
 function ReviewTab({
-  periods, reviewByIncidentId, teamMembersByIncidentId, teamWorkload, recoveryTrend, onSave, onDelete, demoMode, supabaseConfigured,
+  periods, reviewByIncidentId, teamMembersByIncidentId, teamWorkload, recoveryTrend, onSave, onDelete,
+  pmcFlaggedIds, pmcWeekFlagCount, onTogglePmcFlag, demoMode, supabaseConfigured,
 }: {
   periods: ReviewPeriodGroup[]
   reviewByIncidentId: Map<string, IncidentReview>
@@ -4439,6 +4586,9 @@ function ReviewTab({
   recoveryTrend: RecoveryTrendPoint[]
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
+  pmcFlaggedIds: Set<string>
+  pmcWeekFlagCount: (reportDate: string) => number
+  onTogglePmcFlag: (incident: IncidentRow) => Promise<void>
   demoMode: boolean
   supabaseConfigured: boolean
 }) {
@@ -4480,7 +4630,7 @@ function ReviewTab({
         <KPICard
           label="Incidents in Window"
           value={totalIncidents.toLocaleString()}
-          subValue={naCount > 0 ? `${naCount} auto N/A (< ${NA_DELAY_THRESHOLD} min)` : undefined}
+          subValue={naCount > 0 ? `${naCount} auto N/A (< ${NA_DELAY_THRESHOLD} min, no triggers)` : undefined}
           icon={Activity}
         />
         <KPICard
@@ -4576,6 +4726,9 @@ function ReviewTab({
                 teamMembersByIncidentId={teamMembersByIncidentId}
                 onSave={onSave}
                 onDelete={onDelete}
+                pmcFlaggedIds={pmcFlaggedIds}
+                pmcWeekFlagCount={pmcWeekFlagCount}
+                onTogglePmcFlag={onTogglePmcFlag}
                 canSave={supabaseConfigured && !demoMode}
               />
             ))}
@@ -4587,13 +4740,17 @@ function ReviewTab({
 }
 
 function PeriodGroupRow({
-  group, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete, canSave,
+  group, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete,
+  pmcFlaggedIds, pmcWeekFlagCount, onTogglePmcFlag, canSave,
 }: {
   group: ReviewPeriodGroup
   reviewByIncidentId: Map<string, IncidentReview>
   teamMembersByIncidentId: Map<string, IncidentTeamMember[]>
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
+  pmcFlaggedIds: Set<string>
+  pmcWeekFlagCount: (reportDate: string) => number
+  onTogglePmcFlag: (incident: IncidentRow) => Promise<void>
   canSave: boolean
 }) {
   const [open, setOpen] = useState(false)
@@ -4657,6 +4814,9 @@ function PeriodGroupRow({
               teamMembersByIncidentId={teamMembersByIncidentId}
               onSave={onSave}
               onDelete={onDelete}
+              pmcFlaggedIds={pmcFlaggedIds}
+              pmcWeekFlagCount={pmcWeekFlagCount}
+              onTogglePmcFlag={onTogglePmcFlag}
               canSave={canSave}
             />
           ))}
@@ -4667,13 +4827,17 @@ function PeriodGroupRow({
 }
 
 function ReviewDayRow({
-  day, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete, canSave,
+  day, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete,
+  pmcFlaggedIds, pmcWeekFlagCount, onTogglePmcFlag, canSave,
 }: {
   day: ReviewPeriodDay
   reviewByIncidentId: Map<string, IncidentReview>
   teamMembersByIncidentId: Map<string, IncidentTeamMember[]>
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
+  pmcFlaggedIds: Set<string>
+  pmcWeekFlagCount: (reportDate: string) => number
+  onTogglePmcFlag: (incident: IncidentRow) => Promise<void>
   canSave: boolean
 }) {
   const [open, setOpen] = useState(false)
@@ -4715,6 +4879,9 @@ function ReviewDayRow({
                 teamMembers={teamMembersByIncidentId.get(inc.id) ?? []}
                 onSave={onSave}
                 onDelete={onDelete}
+                pmcFlagged={pmcFlaggedIds.has(inc.id)}
+                pmcWeekCount={pmcWeekFlagCount(inc.report_date)}
+                onTogglePmcFlag={onTogglePmcFlag}
                 canSave={canSave}
               />
             ))
@@ -4726,13 +4893,17 @@ function ReviewDayRow({
 }
 
 function ReviewIncidentRow({
-  incident, review, teamMembers, onSave, onDelete, canSave,
+  incident, review, teamMembers, onSave, onDelete,
+  pmcFlagged, pmcWeekCount, onTogglePmcFlag, canSave,
 }: {
   incident: IncidentRow
   review: IncidentReview | undefined
   teamMembers: IncidentTeamMember[]
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
+  pmcFlagged: boolean
+  pmcWeekCount: number
+  onTogglePmcFlag: (incident: IncidentRow) => Promise<void>
   canSave: boolean
 }) {
   const [open, setOpen] = useState(false)
@@ -4740,6 +4911,7 @@ function ReviewIncidentRow({
   const reviewed = !!review
   const cls      = review?.incident_classification ?? null
   const autoNA   = isReviewAutoNA(incident, review)
+  const triggers = detectReviewTriggers(incident)
 
   return (
     <div
@@ -4754,7 +4926,7 @@ function ReviewIncidentRow({
         type="button"
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-start gap-3 px-3 py-2.5 text-left text-xs hover:bg-[var(--bg-card-hi)] transition-colors"
-        title={autoNA ? `Auto N/A — delay below ${NA_DELAY_THRESHOLD} min. Click to open and override.` : undefined}
+        title={autoNA ? `Auto N/A — delay below ${NA_DELAY_THRESHOLD} min and no review triggers (ITSR, service recovery, stranded train, refail, technical conference) in the log. Click to open and override.` : undefined}
       >
         <ChevronDown size={11} className="mt-1" style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
         <span className={`pill pill-${incident.severity.toLowerCase()} shrink-0`} style={autoNA ? { filter: 'grayscale(0.7)' } : undefined}>{incident.severity}</span>
@@ -4777,6 +4949,20 @@ function ReviewIncidentRow({
           )}
         </div>
         <div className="flex items-center gap-3 shrink-0">
+          {triggers.length > 0 && (
+            <span
+              className="pill text-[9px]"
+              style={{ background: 'rgba(74,111,165,0.12)', color: 'var(--nr-blue)', borderColor: 'rgba(74,111,165,0.4)' }}
+              title={`Flagged for review — mentioned in the incident log: ${triggers.join(', ')}`}
+            >
+              {triggers.join(' · ')}
+            </span>
+          )}
+          {pmcFlagged && (
+            <span className="pill text-[9px]" style={{ background: 'rgba(224,82,6,0.12)', color: 'var(--nr-orange)', borderColor: 'rgba(224,82,6,0.4)' }} title="Flagged for the Control PMC report">
+              <Flag size={9} /> PMC
+            </span>
+          )}
           {cls && <ClassificationPill value={cls} />}
           {autoNA && !reviewed && (
             <span className="pill text-[9px]" style={{ background: 'rgba(122,139,168,0.08)', color: 'var(--ink-500)', borderColor: 'var(--line)', fontStyle: 'italic' }}>
@@ -4807,9 +4993,16 @@ function ReviewIncidentRow({
           {autoNA && !reviewed && (
             <div className="px-3 py-2 text-[11px] flex items-center gap-2 border-t border-[var(--line)]" style={{ background: 'var(--bg-card-hi)', color: 'var(--ink-400)' }}>
               <AlertTriangle size={11} style={{ color: 'var(--ink-500)' }} />
-              This incident is auto-classified N/A (delay below {NA_DELAY_THRESHOLD} min) and excluded from review counts. Fill in the form below to record a manual review.
+              This incident is auto-classified N/A (delay below {NA_DELAY_THRESHOLD} min, and no ITSR / service recovery / stranded train / refail / technical conference mention in the log) and excluded from review counts. Fill in the form below to record a manual review.
             </div>
           )}
+          <PmcFlagBar
+            incident={incident}
+            flagged={pmcFlagged}
+            weekCount={pmcWeekCount}
+            onToggle={onTogglePmcFlag}
+            canSave={canSave}
+          />
           <ReviewForm
             incident={incident}
             review={review}
@@ -4820,6 +5013,66 @@ function ReviewIncidentRow({
           />
         </>
       )}
+    </div>
+  )
+}
+
+// Flag toggle for the weekly Control PMC report. Sits above the review form
+// when an incident is expanded. Max PMC_FLAG_LIMIT flags per railway week —
+// the button disables at capacity and the query layer re-checks the live
+// count on write in case another session flagged in the meantime.
+function PmcFlagBar({
+  incident, flagged, weekCount, onToggle, canSave,
+}: {
+  incident: IncidentRow
+  flagged: boolean
+  weekCount: number
+  onToggle: (incident: IncidentRow) => Promise<void>
+  canSave: boolean
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const atCap = !flagged && weekCount >= PMC_FLAG_LIMIT
+  const pw = railwayPeriodWeek(incident.report_date)
+
+  const handleClick = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await onToggle(incident)
+    } catch (e: any) {
+      setError(e?.message || 'Failed to update PMC flag')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="px-3 py-2 flex items-center gap-3 flex-wrap border-t border-[var(--line)] text-[11px]" style={{ background: 'var(--bg-card-hi)' }}>
+      <button
+        type="button"
+        className={`btn !py-1 !px-2.5 !text-[10px] ${flagged ? 'btn-active' : ''}`}
+        disabled={!canSave || busy || atCap}
+        onClick={handleClick}
+        title={
+          !canSave ? 'Flagging requires a live Supabase connection'
+          : flagged ? 'Remove this incident from the Control PMC report'
+          : atCap   ? `Maximum ${PMC_FLAG_LIMIT} incidents per railway week — unflag another incident first`
+          : 'Nominate this incident for the weekly Control PMC report (replaces the top-5-by-delay deep-dive)'
+        }
+      >
+        <Flag size={10} />
+        {busy ? 'Saving…' : flagged ? 'Flagged for Control PMC' : 'Flag for Control PMC'}
+      </button>
+      <span style={{ color: 'var(--ink-500)' }}>
+        {weekCount}/{PMC_FLAG_LIMIT} flagged in {pw.label.replace(' · ', ' ')} · {pw.yearLabel}
+      </span>
+      {atCap && (
+        <span style={{ color: 'var(--nr-amber)' }}>
+          Week at capacity — unflag another incident to free a slot.
+        </span>
+      )}
+      {error && <span style={{ color: '#FF8077' }}>{error}</span>}
     </div>
   )
 }
@@ -5560,6 +5813,9 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   // adherence figures. Fetched on demand for the chosen week + the previous
   // week (for week-on-week deltas).
   const [reviewBundle, setReviewBundle] = useState<{ reviews: IncidentReview[]; prevReviews: IncidentReview[] } | null>(null)
+  // Manual Control PMC flags for the scoped week — when any exist, the top-5
+  // deep-dive shows the flagged incidents (lowest → highest impact) instead.
+  const [reportPmcFlags, setReportPmcFlags] = useState<PmcFlag[]>([])
   // Trailing 6-month history used by the Control PMC top-5 deep-dive to flag
   // candidate repeat issues (matching fault numbers / location + asset type).
   const [historicalIncidents, setHistoricalIncidents] = useState<IncidentRow[]>([])
@@ -5621,6 +5877,7 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   useEffect(() => {
     if (template !== 'controlPmc') {
       setReviewBundle(null)
+      setReportPmcFlags([])
       return
     }
     let cancelled = false
@@ -5631,19 +5888,27 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
     async function run() {
       try {
         if (!isSupabaseConfigured() || demoMode) {
-          // No reviews in demo mode — Control PMC sections will surface an
-          // explanatory status banner rather than fake adherence numbers.
-          if (!cancelled) setReviewBundle({ reviews: [], prevReviews: [] })
+          // No reviews or flags in demo mode — Control PMC sections will
+          // surface an explanatory status banner rather than fake numbers.
+          if (!cancelled) {
+            setReviewBundle({ reviews: [], prevReviews: [] })
+            setReportPmcFlags([])
+          }
           return
         }
-        const [reviews, prevReviews] = await Promise.all([
+        const [reviews, prevReviews, flags] = await Promise.all([
           fetchReviewsForRange(scope.from, scope.to),
           fetchReviewsForRange(prevFrom, prevTo),
+          fetchPmcFlagsForRange(scope.from, scope.to),
         ])
-        if (!cancelled) setReviewBundle({ reviews, prevReviews })
+        if (!cancelled) {
+          setReviewBundle({ reviews, prevReviews })
+          setReportPmcFlags(flags)
+        }
       } catch (e: any) {
         if (!cancelled) {
           setReviewBundle({ reviews: [], prevReviews: [] })
+          setReportPmcFlags([])
         }
       }
     }
@@ -5728,10 +5993,11 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
         prevReviews:        reviewBundle?.prevReviews,
         historicalIncidents,
         historicalReviews,
+        pmcFlaggedIds:      reportPmcFlags.map(f => f.incident_id),
       },
       { template, sections, appendixLimit, clientLine: 'Network Rail · EMCC', preparedBy: 'EMCC Insight' },
     )
-  }, [reportData, filtersDescriptor, demoMode, template, sections, appendixLimit, reviewBundle, historicalIncidents, historicalReviews])
+  }, [reportData, filtersDescriptor, demoMode, template, sections, appendixLimit, reviewBundle, historicalIncidents, historicalReviews, reportPmcFlags])
 
   const html = useMemo(() => plan ? renderReportDocument(plan) : '', [plan])
 
@@ -5888,6 +6154,13 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
                 ? 'Loading data for this window…'
                 : `${incidentsCovered} incident${incidentsCovered === 1 ? '' : 's'} in scope · ${daysBetween(scope.from, scope.to)}-day window`}
             </div>
+            {template === 'controlPmc' && !loadingReport && (
+              <div className="text-[10.5px] mt-1" style={{ color: reportPmcFlags.length > 0 ? 'var(--nr-orange)' : 'var(--ink-400)' }}>
+                {reportPmcFlags.length > 0
+                  ? `${reportPmcFlags.length} incident${reportPmcFlags.length === 1 ? '' : 's'} flagged for this week — the deep-dive shows flagged incidents, lowest → highest impact.`
+                  : 'No incidents flagged for this week — the deep-dive falls back to the top 5 by delay. Flag incidents from the Review tab.'}
+              </div>
+            )}
           </div>
           <div>
             <div className="label-micro mb-1.5">Filters from dashboard</div>

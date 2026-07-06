@@ -452,18 +452,34 @@ function buildTopDelay(
   history: IncidentRow[],
   weekFrom: string,
   weekTo: string,
+  flaggedIds: Set<string>,
 ): PmcTopDelayPlan {
-  const ranked = nonContinuation(curr)
-    .map(i => ({ inc: i, delay: effectiveDelay(i) }))
-    .filter(x => x.delay > 0)
-    .sort((a, b) => b.delay - a.delay)
-    .slice(0, TOP_DELAY_N)
-
   // The history pool covers the lookback window plus the current week — we
   // exclude the target row's own id when matching so the same incident never
   // matches itself.
   const lookbackFrom = isoMinusDays(weekFrom, HISTORICAL_LOOKBACK_DAYS)
   const pool = history.filter(h => h.report_date >= lookbackFrom && h.report_date <= weekTo)
+
+  // Manually flagged incidents replace the automatic ranking when present.
+  // Flags are filter-blind like the ranking itself, so resolve them against
+  // the unfiltered history pool where available (falling back to the
+  // filtered week set when the historical dataset isn't loaded), and present
+  // them lowest → highest impact.
+  const weekPool = pool.filter(h => h.report_date >= weekFrom)
+  const flagSource = weekPool.length > 0 ? weekPool : curr
+  const flagged = flaggedIds.size === 0 ? [] : nonContinuation(flagSource)
+    .filter(i => flaggedIds.has(i.id))
+    .map(i => ({ inc: i, delay: effectiveDelay(i) }))
+    .sort((a, b) => a.delay - b.delay)
+    .slice(0, TOP_DELAY_N)
+
+  const mode: PmcTopDelayPlan['mode'] = flagged.length > 0 ? 'flagged' : 'ranked'
+
+  const ranked = mode === 'flagged' ? flagged : nonContinuation(curr)
+    .map(i => ({ inc: i, delay: effectiveDelay(i) }))
+    .filter(x => x.delay > 0)
+    .sort((a, b) => b.delay - a.delay)
+    .slice(0, TOP_DELAY_N)
 
   const incidents = ranked.map(x => toTopDelayDetail(x.inc, pool))
 
@@ -471,13 +487,17 @@ function buildTopDelay(
   if (incidents.length === 0) {
     insights.push('No delay-incurring incidents in the week — section presented for completeness.')
   } else {
+    if (mode === 'flagged') {
+      insights.push(`${incidents.length} incident${incidents.length === 1 ? '' : 's'} manually flagged for this reporting week — replacing the automatic top-5-by-delay ranking, presented lowest → highest impact.`)
+    }
     const totalTop = incidents.reduce((s, i) => s + i.delayMins, 0)
     const weekTotal = nonContinuation(curr).reduce((s, i) => s + effectiveDelay(i), 0)
     const share = weekTotal > 0 ? Math.round((totalTop / weekTotal) * 100) : 0
-    insights.push(`Top ${incidents.length} incident${incidents.length === 1 ? '' : 's'} account${incidents.length === 1 ? 's' : ''} for ${share}% of the week's total delay (${fmtMinsShort(totalTop)} of ${fmtMinsShort(weekTotal)}).`)
+    const setNoun = mode === 'flagged' ? 'Flagged' : 'Top'
+    insights.push(`${setNoun} ${incidents.length} incident${incidents.length === 1 ? '' : 's'} account${incidents.length === 1 ? 's' : ''} for ${share}% of the week's total delay (${fmtMinsShort(totalTop)} of ${fmtMinsShort(weekTotal)}).`)
     const repeats = incidents.filter(i => i.matches.length > 0).length
     if (repeats > 0) {
-      insights.push(`${repeats} of the top ${incidents.length} match historical incidents in the trailing ${HISTORICAL_LOOKBACK_DAYS} days — flagged as candidate repeat issues.`)
+      insights.push(`${repeats} of the ${incidents.length} match historical incidents in the trailing ${HISTORICAL_LOOKBACK_DAYS} days — flagged as candidate repeat issues.`)
     }
     if (history.length === 0) {
       insights.push('Historical 6-month dataset not loaded — repeat-match lookup is unavailable for this preview.')
@@ -485,9 +505,12 @@ function buildTopDelay(
   }
 
   return {
-    topic:       'Top 5 delay-incurring incidents',
+    topic:       mode === 'flagged'
+      ? `Flagged incidents — Control PMC (${incidents.length} of max ${TOP_DELAY_N})`
+      : 'Top 5 delay-incurring incidents',
     windowFrom:  lookbackFrom,
     windowTo:    weekTo,
+    mode,
     incidents,
     insights,
   }
@@ -564,6 +587,7 @@ export function buildControlPmcPlan(
   weekFrom: string,
   weekTo: string,
   allReviews: IncidentReview[] = [],
+  pmcFlaggedIds: string[] = [],
 ): ControlPmcPlan {
   const curRev  = new Map(reviews.map(r => [r.incident_id, r]))
   const prevRev = new Map(prevReviews.map(r => [r.incident_id, r]))
@@ -575,7 +599,7 @@ export function buildControlPmcPlan(
   const trainFaults = buildTrainFaults(curr, prev)
   const itsr        = buildItsr(curr, prev, curRev, prevRev)
   const satisfaction = buildSatisfaction()
-  const topDelay    = buildTopDelay(curr, history, weekFrom, weekTo)
+  const topDelay    = buildTopDelay(curr, history, weekFrom, weekTo, new Set(pmcFlaggedIds))
 
   // Recovery trend uses the broadest review pool available. Fall back to
   // current + previous week when no historical window was provided.
@@ -625,11 +649,15 @@ export function serialiseControlPmcCsv(plan: ControlPmcPlan, scopeLabel: string,
   if (plan.trainFaults.secondary) push('Train faults', 'Top 5 ≤200m', plan.trainFaults.secondary.incidents)
   push('ITSR adherence',             'ITSR completed', plan.itsr.incidents)
   if (plan.itsr.secondary)        push('ITSR adherence', 'No ITSR / unreviewed', plan.itsr.secondary.incidents)
-  // Top-5 deep-dive — emit each as a regular detail row, then a follow-up row
-  // per matched historical incident so the CSV remains flat / Excel-friendly.
+  // Top-5 / flagged deep-dive — emit each as a regular detail row, then a
+  // follow-up row per matched historical incident so the CSV remains flat /
+  // Excel-friendly.
+  const topDelayTopic = plan.topDelay.mode === 'flagged'
+    ? 'Flagged incidents (Control PMC)'
+    : 'Top 5 delay incidents'
   for (const t of plan.topDelay.incidents) {
     rows.push([
-      'Top 5 delay incidents', 'Headline', t.date, t.ccil ?? '', t.tda ?? '',
+      topDelayTopic, 'Headline', t.date, t.ccil ?? '', t.tda ?? '',
       CATEGORY_CONFIG[t.category]?.label ?? t.category,
       t.title ?? '', t.location ?? '', t.area ?? '',
       String(t.delayMins), String(t.trainsDelayed),
@@ -638,7 +666,7 @@ export function serialiseControlPmcCsv(plan: ControlPmcPlan, scopeLabel: string,
     ])
     for (const m of t.matches) {
       rows.push([
-        'Top 5 delay incidents',
+        topDelayTopic,
         `Repeat match (${m.matchedOn}) of ${t.ccil ?? t.date}`,
         m.date, m.ccil ?? '', '',
         CATEGORY_CONFIG[t.category]?.label ?? t.category,
@@ -677,6 +705,9 @@ export function serialiseControlPmcCsv(plan: ControlPmcPlan, scopeLabel: string,
   lines.push(`# Generated: ${generatedAt}`)
   lines.push(`# ITSR adherence: ${plan.itsr.itsrPct.toFixed(1)}% (${plan.itsr.itsrCompleted}/${plan.itsr.itsrCount} incidents > ${ITSR_THRESHOLD_MINS}m)`)
   lines.push(`# Top-5 historical lookup window: ${plan.topDelay.windowFrom} → ${plan.topDelay.windowTo}`)
+  if (plan.topDelay.mode === 'flagged') {
+    lines.push('# Deep-dive mode: manually flagged incidents (lowest → highest impact) — replaces the top-5-by-delay ranking')
+  }
   lines.push('')
   lines.push('## Topic summary')
   lines.push(summaryHeader.map(csvEscape).join(','))

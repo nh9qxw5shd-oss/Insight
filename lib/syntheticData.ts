@@ -251,6 +251,10 @@ function synthTitle(cat: IncidentCategory, code: string): string {
     NEAR_MISS:      [`Near miss reported — ${base}`, `${base}`],
     SPAD:           [`SPAD — ${base}`, `${base}`],
     FIRE:           [`Lineside fire — ${base}`, `${base}`],
+    // Titles that exercise the review-trigger keywords (ITSR, stranded,
+    // service recovery…) so the Review tab's trigger flagging is
+    // demonstrable in demo mode.
+    STRANDED_TRAIN: ['Stranded train — assisting unit requested', 'Train stranded — service recovery implemented', 'Stranded train — ITSR raised'],
   }
   const v = variants[cat] || [base]
   return v[Math.floor(Math.random() * v.length)]
