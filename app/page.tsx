@@ -75,6 +75,7 @@ import { DistillationTab } from './distillation-tab'
 import { FocusTab } from './focus-tab'
 import { WeatherTab } from './weather-tab'
 import { PerformanceFeedPanel } from './performance-feed'
+import { PerformanceAnalyticsPanel } from './performance-analytics'
 import { SearchTab } from './search-tab'
 import { CompareTab } from './compare-tab'
 import { CalendarTab } from './calendar-tab'
@@ -1408,6 +1409,9 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
     <div className="space-y-6">
       {/* Live route performance from the messaging-assistant snapshot feed */}
       <PerformanceFeedPanel />
+
+      {/* Drivers + forecast: performance history × CCIL incident factors */}
+      <PerformanceAnalyticsPanel />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 stagger">
         <KPICard label="Total Delay (mins)" value={kpis.totalDelayMins.toLocaleString()} delta={kpis.delayDeltaPct} icon={Clock} deltaInverted accent={!isCancMode} decompose={decompose} metric="delay" />
