@@ -13,6 +13,7 @@ import {
   IncidentReview, IncidentReviewInput,
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
   PmcFlag, PMC_FLAG_LIMIT,
+  InsightAnnotation, AnnotationKind, WatchlistEntry, WatchlistKind,
 } from './types'
 import { railwayPeriodWeek, railwayWeekBounds } from './railwayCalendar'
 import { classifyTrusted } from './classification'
@@ -1634,6 +1635,72 @@ export async function removePmcFlag(incidentId: string): Promise<void> {
   const sb = getSupabase()
   if (!sb) return
   const { error } = await sb.from('incident_pmc_flags').delete().eq('incident_id', incidentId)
+  if (error) throw new Error(error.message)
+}
+
+// ─── Annotations & watchlist (Notebook tab) ──────────────────────────────────
+
+const ANNOTATION_COLS = 'id, kind, anchor, note, author, created_at'
+
+export async function fetchAnnotations(): Promise<InsightAnnotation[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<InsightAnnotation>(() =>
+    sb!.from('insight_annotations').select(ANNOTATION_COLS)
+      .order('created_at', { ascending: false }),
+  )
+}
+
+export async function addAnnotation(
+  kind: AnnotationKind, anchor: string, note: string, author?: string | null,
+): Promise<InsightAnnotation | null> {
+  const sb = getSupabase()
+  if (!sb) return null
+  const { data, error } = await sb
+    .from('insight_annotations')
+    .insert({ kind, anchor, note, author: author || null })
+    .select(ANNOTATION_COLS)
+    .single()
+  if (error) throw new Error(error.message)
+  return data as unknown as InsightAnnotation
+}
+
+export async function deleteAnnotation(id: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('insight_annotations').delete().eq('id', id)
+  if (error) throw new Error(error.message)
+}
+
+const WATCHLIST_COLS = 'id, kind, anchor, note, author, created_at'
+
+export async function fetchWatchlist(): Promise<WatchlistEntry[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<WatchlistEntry>(() =>
+    sb!.from('insight_watchlist').select(WATCHLIST_COLS)
+      .order('created_at', { ascending: false }),
+  )
+}
+
+export async function addWatchlistEntry(
+  kind: WatchlistKind, anchor: string, note?: string | null, author?: string | null,
+): Promise<WatchlistEntry | null> {
+  const sb = getSupabase()
+  if (!sb) return null
+  const { data, error } = await sb
+    .from('insight_watchlist')
+    .upsert({ kind, anchor, note: note || null, author: author || null }, { onConflict: 'kind,anchor' })
+    .select(WATCHLIST_COLS)
+    .single()
+  if (error) throw new Error(error.message)
+  return data as unknown as WatchlistEntry
+}
+
+export async function deleteWatchlistEntry(id: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('insight_watchlist').delete().eq('id', id)
   if (error) throw new Error(error.message)
 }
 

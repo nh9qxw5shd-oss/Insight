@@ -188,6 +188,30 @@ export interface PmcFlag {
 
 export const PMC_FLAG_LIMIT = 5
 
+// ─── Annotations & watchlist (Notebook tab) ──────────────────────────────────
+
+export type AnnotationKind = 'date' | 'location' | 'asset' | 'incident'
+
+export interface InsightAnnotation {
+  id: string
+  kind: AnnotationKind
+  anchor: string          // ISO date / location name / asset key / incident id
+  note: string
+  author: string | null
+  created_at: string
+}
+
+export type WatchlistKind = 'location' | 'asset' | 'fault'
+
+export interface WatchlistEntry {
+  id: string
+  kind: WatchlistKind
+  anchor: string          // location name / "type — location" key / fault number
+  note: string | null
+  author: string | null
+  created_at: string
+}
+
 // ─── Incident team members (captured by Dlog2, read-only in Insight) ─────────
 
 export interface IncidentTeamMember {
@@ -244,8 +268,8 @@ export interface AnalyticsFilters {
   weatherConditions?: string[]    // condition group labels (Clear / Dry, Rain, Snow, …); empty = all
   minRainfall?: number            // rainfall_mm >= this (mm); incident day must have ≥ this rainfall
   maxRainfall?: number            // rainfall_mm <= this (mm)
-  minTempC?: number               // max_temp_c >= this (°C); incident day daily high at least X
-  maxTempC?: number               // max_temp_c <= this (°C); incident day daily high at most X
+  minTempC?: number               // min_temp_c >= this (°C); incident day's LOW at least X (warm nights)
+  maxTempC?: number               // max_temp_c <= this (°C); incident day's HIGH at most X (cold days)
   minWindKmh?: number             // max_wind_kmh >= this (km/h)
   maxWindKmh?: number             // max_wind_kmh <= this (km/h)
   // Controls visibility of off-route incidents:

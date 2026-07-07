@@ -268,6 +268,40 @@ enough to isolate the population you want to study.
 - Always click through to the **drill-down** incident list to confirm the story
   before acting on it.
 
+### 2.x Additional analysis views
+
+- **Weather** — condition-impact table (incident and delay rate per area-day
+  vs the Clear/Dry baseline, with lift), a category × condition matrix, a
+  threshold explorer (rainfall / wind / temperature bands), and an estimated
+  weather-attributable excess delay for the window. All figures are
+  correlations against the synced Open-Meteo record, not causes.
+- **Calendar** — month grids coloured by daily delay or incident load; click a
+  day to open its **timeline**: incidents drawn as bars on a 00:00–24:00 axis,
+  one lane per area, so concurrency and compounding disruption are visible.
+  Bars click through to the incident drill-down.
+- **Compare** — A vs B split comparison of any two scopes (railway periods,
+  weeks, or custom ranges): headline KPIs with deltas, day-aligned trend
+  overlay, paired category mix and top-location lists.
+- **Pivot** — build your own table: pick a rows dimension, an optional columns
+  dimension and a measure (count, delay, averages, SLA breach %…); totals,
+  heat-tinting and CSV export included.
+- **Search** — free-text search across incident titles *and* the full CCIL
+  events commentary, with matched lines highlighted. Terms are ANDed;
+  results cap at 100 with a summary strip.
+- **Notebook** — pin free-text **annotations** to dates, locations, assets or
+  incidents (date notes appear as ✎ markers on the Overview trend), and keep
+  a **watchlist** of locations / assets / fault numbers with live recurrence
+  counts for the current window.
+- **Quality** — data-capture completeness per field over time (arrival
+  timings, durations, events log…), with notes on which analytics each gap
+  caps.
+- **What-if** (Performance tab) — tick incidents to exclude them and watch
+  the window's delay/incident/cancellation numbers recompute; quantifies
+  what a single event cost the week.
+- **Board** (header button) — opens `/wallboard`: an auto-cycling, large-type
+  control-room view (KPIs → 7-day trend → hotspots & latest) refreshing every
+  five minutes.
+
 ---
 
 ## 3. Using the Review section (for SNDMs)
@@ -415,6 +449,22 @@ SNDM reviews are not just record-keeping — they drive reporting:
 - **ITSR adherence** counts incidents *without* an SNDM review on file against
   adherence — so completing reviews directly improves the accuracy of the
   Control PMC and other reports.
+### 3.x Review queue (fast completion)
+
+Next to the Log Periods tree there is a **Review queue** toggle: a flat list of
+every pending reviewable incident in the window, highest impact first, with
+filters (All / ≥400m / Triggered). Each row has:
+
+- a **⚡ quick review** button — saves a review pre-filled from the events log
+  (ITSR / MOM signals) under your initials and marks the incident reviewed;
+  open the full form afterwards for anything needing detail;
+- a checkbox for **bulk quick review** of several incidents at once.
+
+A **Weekly completion** chip row above shows reviewed/reviewable per railway
+week (green when a week is fully signed off). Inside the full form, a
+**Draft from events log** button inserts a deterministic commentary draft
+(opening line, key process mentions, closing line) into Additional Notes.
+
 - **Control PMC flags** — every expanded incident carries a **Flag for
   Control PMC** toggle just above the review form. Flagged incidents replace
   the automatic "Top 5 incidents by delay" deep-dive in that week's Control

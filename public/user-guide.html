@@ -360,6 +360,32 @@
     confirm the story before acting.</li>
   </ul>
 
+  <h3>2.x Additional analysis views</h3>
+  <ul>
+    <li><strong>Weather</strong> — incident/delay rates per condition vs the Clear/Dry
+    baseline (lift), category × condition matrix, rainfall/wind/temperature threshold
+    explorer, and estimated weather-attributable excess delay. Correlations, not causes.</li>
+    <li><strong>Calendar</strong> — month grids coloured by daily delay or incidents;
+    click a day for its <strong>timeline</strong>: incidents as bars on a 00:00–24:00
+    axis, one lane per area, so concurrency is visible. Bars open the drill-down.</li>
+    <li><strong>Compare</strong> — A vs B comparison of two railway periods, weeks or
+    custom ranges: KPI deltas, day-aligned trend overlay, paired category mix, top
+    locations.</li>
+    <li><strong>Pivot</strong> — rows × columns × measure table builder with totals,
+    heat tinting and CSV export.</li>
+    <li><strong>Search</strong> — free-text search across titles <em>and</em> the CCIL
+    events commentary with matched lines highlighted; terms are ANDed.</li>
+    <li><strong>Notebook</strong> — annotations pinned to dates / locations / assets /
+    incidents (date notes render as ✎ markers on the Overview trend) plus a watchlist
+    with live recurrence counts.</li>
+    <li><strong>Quality</strong> — data-capture completeness per field over time and
+    what each gap caps.</li>
+    <li><strong>What-if</strong> (Performance tab) — exclude incidents and watch the
+    window's numbers recompute.</li>
+    <li><strong>Board</strong> (header) — <code>/wallboard</code>: auto-cycling,
+    large-type control-room view, refreshing every five minutes.</li>
+  </ul>
+
   <h2 id="review">3. Using the Review section (for SNDMs)</h2>
   <p>The <strong>Review</strong> tab is the SNDM workspace. It lets a Senior Network
   Duty Manager work through every incident in a period and attach an optional review
@@ -490,6 +516,13 @@
     <li><strong>ITSR adherence</strong> counts incidents <em>without</em> an SNDM
     review on file against adherence — so completing reviews directly improves the
     accuracy of the Control PMC and other reports.</li>
+    <li><strong>Review queue</strong> — a toggle next to the Log Periods tree shows a
+    flat list of every pending reviewable incident, highest impact first (filters:
+    All / ≥400m / Triggered). ⚡ <strong>quick review</strong> saves an events-log
+    pre-filled review under your initials; checkboxes allow <strong>bulk</strong>
+    quick review. Weekly-completion chips show reviewed/reviewable per railway week,
+    and the form's <strong>Draft from events log</strong> button inserts a commentary
+    draft into Additional Notes.</li>
     <li><strong>Control PMC flags</strong> — every expanded incident carries a
     <strong>Flag for Control PMC</strong> toggle just above the review form. Flagged
     incidents replace the automatic "Top 5 incidents by delay" deep-dive in that
