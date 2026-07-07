@@ -104,6 +104,26 @@ CREATE INDEX IF NOT EXISTS idx_ma_message_snapshots_mfd  ON ma_message_snapshots
 - **Targets in force**: join `metrics[].name` → `ma_targets.name` within the
   `target_period_id`'s period (target / amber / dir columns).
 
+## Railway-calendar alignment (implemented — Insight migration 013)
+
+The shared database now enforces calendar attribution itself, so the builder
+needs no calendar knowledge:
+
+- `railway_period_week(date)` — a SQL function replicating Insight's
+  `lib/railwayCalendar.ts` exactly (P1 W1 = first Sunday on or after 1 April;
+  13 × 4-week periods; P13 absorbs the 53rd week). Validated against the TS
+  implementation on 20 dates including rail-year boundaries and the 53-week
+  P13 W5 case.
+- A `BEFORE INSERT OR UPDATE` trigger on `ma_message_snapshots` stamps every
+  row from its `metrics_for_date`: `rail_year`, `rail_period`, `rail_week`,
+  `rail_year_label` (e.g. `2026/27`) and `target_period_name` in
+  `ma_target_periods.period_name` format (e.g. `Period 4 26/27`).
+- **Consumers should attribute snapshots to periods/weeks via these columns**
+  (and join targets via `target_period_name`), NOT via whatever period the
+  builder had selected in its UI — the embedded `metrics[].target/amber` are
+  a convenience copy, but the calendar-derived join is authoritative.
+- Indexed on `(rail_year, rail_period, rail_week)`.
+
 Once data is flowing, Insight will add a Performance panel: daily standing
 RAG'd against target/amber, period-to-date trajectory with projection to
 period end, and incident-vs-performance overlay for review prioritisation.
