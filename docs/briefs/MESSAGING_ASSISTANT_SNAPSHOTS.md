@@ -127,3 +127,52 @@ needs no calendar knowledge:
 Once data is flowing, Insight will add a Performance panel: daily standing
 RAG'd against target/amber, period-to-date trajectory with projection to
 period end, and incident-vs-performance overlay for review prioritisation.
+
+## Historic seed from the WhatsApp export (implemented)
+
+Live capture only began on 2026-07-07, so `ma_message_snapshots` was
+back-filled from a WhatsApp export of the **"EM State of the Route"**
+community — the channel where Control posted the same performance data before
+the messaging assistant existed. `scripts/seed-whatsapp-performance.mjs`
+parses the export and seeds the table (1,684 rows, 2025-04-25 → 2026-07-07,
+covering P1 2025/26 → P4 2026/27 without gaps).
+
+How the reports were mapped onto the slot model:
+
+- The ~05:30 morning report carries **yesterday's end-of-day standing**
+  ("Yesterday's/Yesterdays Route Performance") in every format era →
+  slot `0530`, `metrics_for_date = snapshot_date - 1`, matching the live
+  capture semantics exactly.
+- Intraday reports → `0900` (sent before 12:00), `1500` (before 17:30),
+  `2200` (after, incl. shortly after midnight). Where several reports fell in
+  one slot (e.g. 19:00 + 22:00 evening reports, or posted corrections) the
+  latest wins and `build_count` records how many were folded in — mirroring
+  the builder's replace-on-rebuild rule.
+- Slot assignment keys off the WhatsApp **send timestamp**; the "Report:"
+  headers embedded in some messages carry stale dates/times and are kept only
+  as `payload.report_time`.
+
+Distinguishing seed rows from live rows:
+
+- Seed rows have `tab = 'whatsapp'` (live builder rows use `'tactical'`) and
+  `payload.source = 'whatsapp_export'`. `message` holds the full original
+  WhatsApp message text.
+- Inserts used `ON CONFLICT (snapshot_date, slot) DO NOTHING`, so live
+  builder rows always take precedence.
+
+Caveats for consumers:
+
+- `metrics[].target` is the target **as stated in the message** at the time;
+  `amber` is null (the reports never carried amber thresholds — the feed's
+  RAG recompute handles this). For periods present in `ma_target_periods`
+  (P1 26/27 onwards) the calendar join remains authoritative; spot-checks
+  show the inline targets agree with the DB except where Control quoted a
+  stale figure.
+- Early reports (Apr–Jul 2025) also quoted **"On Time"** (to-the-minute
+  punctuality) and **"L2H"** (last two hours). Both are **different
+  measures** from T3 and are deliberately **not seeded** — the parser skips
+  them, and readings seeded before this exclusion were purged from the
+  table. Later reports carried `Current Period Variance`, which is seeded
+  additively under its natural name, per the metrics contract.
+- `metrics[].rag` is the emoji RAG as posted; values/targets are parsed
+  after normalising human typos (`79..4%`, `84,8%`, `87.9.3%`).
