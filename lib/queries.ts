@@ -14,6 +14,7 @@ import {
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
   PmcFlag, PMC_FLAG_LIMIT,
   InsightAnnotation, AnnotationKind, WatchlistEntry, WatchlistKind,
+  PerfSnapshot,
 } from './types'
 import { railwayPeriodWeek, railwayWeekBounds } from './railwayCalendar'
 import { classifyTrusted } from './classification'
@@ -1636,6 +1637,41 @@ export async function removePmcFlag(incidentId: string): Promise<void> {
   if (!sb) return
   const { error } = await sb.from('incident_pmc_flags').delete().eq('incident_id', incidentId)
   if (error) throw new Error(error.message)
+}
+
+// ─── Performance snapshots (messaging-assistant feed) ────────────────────────
+// Reads the ma_message_snapshots table the messaging assistant writes on every
+// "Build message" press. Filtered on metrics_for_date — the day the figures
+// describe — so the 0530 end-of-day snapshot lands on the correct day.
+
+const PERF_SNAPSHOT_COLS =
+  'id, snapshot_date, slot, metrics_for_date, rail_year, rail_period, rail_week, ' +
+  'rail_year_label, target_period_name, build_count, last_built_at, metrics'
+
+export async function fetchPerfSnapshots(from: string, to: string): Promise<PerfSnapshot[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  const rows = await fetchAllRows<PerfSnapshot>(() =>
+    sb!.from('ma_message_snapshots').select(PERF_SNAPSHOT_COLS)
+      .gte('metrics_for_date', from)
+      .lte('metrics_for_date', to)
+      .order('metrics_for_date', { ascending: true })
+      .order('slot', { ascending: true }),
+  )
+  // Defensive: metrics may be null/non-array on legacy rows.
+  return rows.map(r => ({ ...r, metrics: Array.isArray(r.metrics) ? r.metrics : [] }))
+}
+
+// The day's authoritative reading: prefer the NEXT morning's 0530 snapshot
+// (end-of-day figures for this date), falling back to the latest tactical
+// slot captured on the day itself.
+export function pickDailyFinal(snapshots: PerfSnapshot[], date: string): PerfSnapshot | null {
+  const forDate = snapshots.filter(s => s.metrics_for_date === date)
+  if (forDate.length === 0) return null
+  const eod = forDate.find(s => s.slot === '0530')
+  if (eod) return eod
+  const order: Record<string, number> = { '2200': 3, '1500': 2, '0900': 1, '0530': 0 }
+  return [...forDate].sort((a, b) => (order[b.slot] ?? 0) - (order[a.slot] ?? 0))[0]
 }
 
 // ─── Annotations & watchlist (Notebook tab) ──────────────────────────────────

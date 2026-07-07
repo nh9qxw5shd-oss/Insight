@@ -298,6 +298,15 @@ enough to isolate the population you want to study.
 - **What-if** (Performance tab) — tick incidents to exclude them and watch
   the window's delay/incident/cancellation numbers recompute; quantifies
   what a single event cost the week.
+- **Live performance standing** (top of the Performance tab) — route
+  performance metrics (Route/EMR/GTR/XC T3 %, EMR Can %) captured
+  automatically from the tactical messaging system on every message build.
+  Shows the latest standing RAG'd against the targets in force, a
+  slot-by-slot ticker (05:30 EOD / 09:00 / 15:00 / 22:00), and a
+  period-to-date chart of daily final standings with a naive projection to
+  period end once three days have accumulated. Period attribution is stamped
+  by the database using Insight's railway calendar. Live data only — the
+  panel explains itself in demo mode.
 - **Board** (header button) — opens `/wallboard`: an auto-cycling, large-type
   control-room view (KPIs → 7-day trend → hotspots & latest) refreshing every
   five minutes.
