@@ -128,9 +128,10 @@ const INTRA_HEAD = /Route Performance/i
 
 const METRIC_RE = new RegExp(
   '(🟩|🟢|🟨|🟠|🟧|🟥|🔴|🟪|🟣|⚪|⚫)?\\s*•?\\s*\\*?' +
-  // NB: early-era "On Time" readings are deliberately not extracted — On Time
-  // (to-the-minute) is a different measure from T3 and must not join this series.
-  '(Route T3 %|Route T3|EMR T3 %|EMR T3|EMR Can %|GTR T3 %|GTR T3|XC T3 %|XC T3|Current Period Variance|L2H|Can)' +
+  // NB: early-era "On Time" (to-the-minute punctuality) and "L2H" (last two
+  // hours) readings are deliberately not extracted — different measures from
+  // T3 that must not join this series.
+  '(Route T3 %|Route T3|EMR T3 %|EMR T3|EMR Can %|GTR T3 %|GTR T3|XC T3 %|XC T3|Current Period Variance|Can)' +
   '\\*?\\s*:?\\s*(?:🟩|🟢|🟨|🟠|🟧|🟥|🔴)?\\s*(-?\\d+(?:\\.\\d+)?)\\s*%?' +
   '(?:\\s*\\((?:Tgt|Target|tgt)\\s*:?\\s*(-?\\d+(?:\\.\\d+)?)\\s*%?\\)?,?)?',
   'gu',
@@ -151,24 +152,27 @@ const NAME_MAP = {
   'Can': 'EMR Can %', 'EMR Can %': 'EMR Can %',
   'GTR T3': 'GTR T3 %', 'GTR T3 %': 'GTR T3 %',
   'XC T3': 'XC T3 %', 'XC T3 %': 'XC T3 %',
-  'L2H': 'Route L2H %',
   'Current Period Variance': 'Current Period Variance',
 }
 const DIR = {
   'Route T3 %': 'higher', 'EMR T3 %': 'higher',
   'EMR Can %': 'lower', 'GTR T3 %': 'higher', 'XC T3 %': 'higher',
-  'Route L2H %': 'higher', 'Current Period Variance': 'higher',
+  'Current Period Variance': 'higher',
 }
 const RAG = { '🟩': 'green', '🟢': 'green', '🟨': 'amber', '🟠': 'amber', '🟧': 'amber', '🟥': 'red', '🔴': 'red' }
 
 function cleanNote(s) {
   const t = s
     .replace(/^[\s.,;:–—\-()\[\]*%]+/, '')
+    // Excluded L2H readings often precede real commentary — drop the figure,
+    // keep the commentary.
+    .replace(/^L2H\s*:?\s*(?:--|[\d.]+)?\s*%?\s*/i, '')
+    .replace(/^[\s.,;:–—\-()\[\]*%]+/, '')
     .replace(/[\s.,;:–—\-()\[\]*]+$/, '')
     .trim()
   if (t.length < 3) return null
-  // Fragments of half-parsed metrics are noise, not commentary.
-  if (/Tgt|^Can\b|^\d[\d.,%\s]*$/.test(t)) return null
+  // Fragments of half-parsed or excluded metrics are noise, not commentary.
+  if (/Tgt|^Can\b|^(?:On [Tt]ime|L2H)\b[\s:]*[\d.]*%?$|^\d[\d.,%\s]*$/.test(t)) return null
   return t
 }
 
