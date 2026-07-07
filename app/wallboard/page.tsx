@@ -204,7 +204,13 @@ export default function WallboardPage() {
                 <div className="label-micro text-sm mb-6" style={{ color: 'var(--nr-orange)' }}>
                   Delay minutes — last 7 days
                 </div>
-                <div className="flex-1 min-h-0">
+                {/* ResponsiveContainer's height="100%" resolves against the
+                    parent's *specified* height, which is auto here (the div is
+                    sized by flex-grow) — so it computes 0 and the chart never
+                    mounts. An absolutely-positioned wrapper resolves against
+                    the parent's real laid-out height instead. */}
+                <div className="flex-1 min-h-0 relative">
+                  <div className="absolute inset-0">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={trend} margin={{ top: 10, right: 30, bottom: 10, left: 10 }}>
                       <defs>
@@ -239,6 +245,7 @@ export default function WallboardPage() {
                       />
                     </AreaChart>
                   </ResponsiveContainer>
+                  </div>
                 </div>
               </div>
             )}
