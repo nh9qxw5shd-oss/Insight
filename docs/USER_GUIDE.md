@@ -307,6 +307,21 @@ enough to isolate the population you want to study.
   period end once three days have accumulated. Period attribution is stamped
   by the database using Insight's railway calendar. Live data only — the
   panel explains itself in demo mode.
+- **Predictive analytics** (Performance tab, below the live standing) —
+  computational analysis between the performance metric history and the CCIL
+  incident log. Three parts: a **driver ranking** per metric (which incident
+  factors — infrastructure/fleet/person/external/weather delay minutes,
+  counts, cancellations — correlate most with daily performance, with effect
+  sizes like "−0.8pp per +100 infrastructure delay minutes"); a **correlation
+  matrix** across every metric × factor pair (red worsens, green improves);
+  and a **forecast** projecting each metric beyond today from an
+  autoregressive + factor model fitted on the joint history, with an
+  uncertainty band, tomorrow's contribution breakdown, and a projected
+  period-end average vs target. Factor delays are continuation-aware and
+  exclude off-route incidents. Same-day correlations are observational —
+  treat drivers as leads for review, not proven causes; the forecast assumes
+  typical incident load and will be broken by a major event (read the band,
+  not the line). Live data only.
 - **Board** (header button) — opens `/wallboard`: an auto-cycling, large-type
   control-room view (KPIs → 7-day trend → hotspots & latest) refreshing every
   five minutes.

@@ -249,7 +249,9 @@ export function searchMatch(i: IncidentRow, q: string): boolean {
 // Returns the delay minutes that count toward aggregate totals. Off-route
 // incidents are excluded from all delay sums — their delay is still visible
 // on individual incident cards via i.minutes_delay directly.
-export function effectiveDelay(i: IncidentRow): number {
+export function effectiveDelay(
+  i: Pick<IncidentRow, 'is_off_route' | 'is_continuation' | 'delay_delta' | 'minutes_delay'>,
+): number {
   if (i.is_off_route) return 0
   return i.is_continuation ? (i.delay_delta ?? 0) : (i.minutes_delay ?? 0)
 }
@@ -1672,6 +1674,24 @@ export function pickDailyFinal(snapshots: PerfSnapshot[], date: string): PerfSna
   if (eod) return eod
   const order: Record<string, number> = { '2200': 3, '1500': 2, '0900': 1, '0530': 0 }
   return [...forDate].sort((a, b) => (order[b.slot] ?? 0) - (order[a.slot] ?? 0))[0]
+}
+
+// Lean incident fetch for the performance-analytics panel: only the columns
+// daily factor aggregation needs, over a long window, without the events log.
+export type SlimIncident = Pick<IncidentRow,
+  'report_date' | 'category' | 'minutes_delay' | 'trains_delayed' | 'cancelled' |
+  'part_cancelled' | 'is_continuation' | 'delay_delta' | 'is_off_route' | 'train_company'>
+
+export async function fetchIncidentsSlim(from: string, to: string): Promise<SlimIncident[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<SlimIncident>(() =>
+    sb!.from('incidents')
+      .select('report_date, category, minutes_delay, trains_delayed, cancelled, part_cancelled, is_continuation, delay_delta, is_off_route, train_company')
+      .gte('report_date', from)
+      .lte('report_date', to)
+      .order('report_date', { ascending: true }),
+  )
 }
 
 // ─── Annotations & watchlist (Notebook tab) ──────────────────────────────────
