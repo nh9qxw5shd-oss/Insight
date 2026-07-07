@@ -13,6 +13,8 @@ import {
   IncidentReview, IncidentReviewInput,
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
   PmcFlag, PMC_FLAG_LIMIT,
+  InsightAnnotation, AnnotationKind, WatchlistEntry, WatchlistKind,
+  PerfSnapshot,
 } from './types'
 import { railwayPeriodWeek, railwayWeekBounds } from './railwayCalendar'
 import { classifyTrusted } from './classification'
@@ -1634,6 +1636,107 @@ export async function removePmcFlag(incidentId: string): Promise<void> {
   const sb = getSupabase()
   if (!sb) return
   const { error } = await sb.from('incident_pmc_flags').delete().eq('incident_id', incidentId)
+  if (error) throw new Error(error.message)
+}
+
+// ─── Performance snapshots (messaging-assistant feed) ────────────────────────
+// Reads the ma_message_snapshots table the messaging assistant writes on every
+// "Build message" press. Filtered on metrics_for_date — the day the figures
+// describe — so the 0530 end-of-day snapshot lands on the correct day.
+
+const PERF_SNAPSHOT_COLS =
+  'id, snapshot_date, slot, metrics_for_date, rail_year, rail_period, rail_week, ' +
+  'rail_year_label, target_period_name, build_count, last_built_at, metrics'
+
+export async function fetchPerfSnapshots(from: string, to: string): Promise<PerfSnapshot[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  const rows = await fetchAllRows<PerfSnapshot>(() =>
+    sb!.from('ma_message_snapshots').select(PERF_SNAPSHOT_COLS)
+      .gte('metrics_for_date', from)
+      .lte('metrics_for_date', to)
+      .order('metrics_for_date', { ascending: true })
+      .order('slot', { ascending: true }),
+  )
+  // Defensive: metrics may be null/non-array on legacy rows.
+  return rows.map(r => ({ ...r, metrics: Array.isArray(r.metrics) ? r.metrics : [] }))
+}
+
+// The day's authoritative reading: prefer the NEXT morning's 0530 snapshot
+// (end-of-day figures for this date), falling back to the latest tactical
+// slot captured on the day itself.
+export function pickDailyFinal(snapshots: PerfSnapshot[], date: string): PerfSnapshot | null {
+  const forDate = snapshots.filter(s => s.metrics_for_date === date)
+  if (forDate.length === 0) return null
+  const eod = forDate.find(s => s.slot === '0530')
+  if (eod) return eod
+  const order: Record<string, number> = { '2200': 3, '1500': 2, '0900': 1, '0530': 0 }
+  return [...forDate].sort((a, b) => (order[b.slot] ?? 0) - (order[a.slot] ?? 0))[0]
+}
+
+// ─── Annotations & watchlist (Notebook tab) ──────────────────────────────────
+
+const ANNOTATION_COLS = 'id, kind, anchor, note, author, created_at'
+
+export async function fetchAnnotations(): Promise<InsightAnnotation[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<InsightAnnotation>(() =>
+    sb!.from('insight_annotations').select(ANNOTATION_COLS)
+      .order('created_at', { ascending: false }),
+  )
+}
+
+export async function addAnnotation(
+  kind: AnnotationKind, anchor: string, note: string, author?: string | null,
+): Promise<InsightAnnotation | null> {
+  const sb = getSupabase()
+  if (!sb) return null
+  const { data, error } = await sb
+    .from('insight_annotations')
+    .insert({ kind, anchor, note, author: author || null })
+    .select(ANNOTATION_COLS)
+    .single()
+  if (error) throw new Error(error.message)
+  return data as unknown as InsightAnnotation
+}
+
+export async function deleteAnnotation(id: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('insight_annotations').delete().eq('id', id)
+  if (error) throw new Error(error.message)
+}
+
+const WATCHLIST_COLS = 'id, kind, anchor, note, author, created_at'
+
+export async function fetchWatchlist(): Promise<WatchlistEntry[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<WatchlistEntry>(() =>
+    sb!.from('insight_watchlist').select(WATCHLIST_COLS)
+      .order('created_at', { ascending: false }),
+  )
+}
+
+export async function addWatchlistEntry(
+  kind: WatchlistKind, anchor: string, note?: string | null, author?: string | null,
+): Promise<WatchlistEntry | null> {
+  const sb = getSupabase()
+  if (!sb) return null
+  const { data, error } = await sb
+    .from('insight_watchlist')
+    .upsert({ kind, anchor, note: note || null, author: author || null }, { onConflict: 'kind,anchor' })
+    .select(WATCHLIST_COLS)
+    .single()
+  if (error) throw new Error(error.message)
+  return data as unknown as WatchlistEntry
+}
+
+export async function deleteWatchlistEntry(id: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('insight_watchlist').delete().eq('id', id)
   if (error) throw new Error(error.message)
 }
 

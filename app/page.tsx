@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Activity, AlertTriangle, BarChart2, Bell, BookOpen, ChevronDown, ChevronLeft, ChevronRight,
-  ClipboardCheck, ClipboardList, Clock, Compass, Crosshair, Download, FileText, Filter, Flag, FlaskConical, GitBranch, Layers, List, MapPin,
-  Minus, Moon, RefreshCw, Route, Search, Sun, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
+  Activity, AlertTriangle, BarChart2, Bell, BookOpen, CalendarDays, ChevronDown, ChevronLeft, ChevronRight,
+  ClipboardCheck, ClipboardList, Clock, Cloud, Compass, Crosshair, Download, FileText, Filter, Flag, FlaskConical,
+  Gauge, GitBranch, GitCompare, Layers, List, MapPin, Minus, Monitor, Moon, RefreshCw, Route, Search, StickyNote,
+  Sun, Table2, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
@@ -21,7 +22,7 @@ import {
   IncidentReview, IncidentReviewInput, IncidentClassification, First50Outcome,
   CLASSIFICATION_CONFIG, YesNoNa, MomDepot, MOM_DEPOT_LABELS, StrandedTrainEntry,
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum, IncidentEvent,
-  PmcFlag, PMC_FLAG_LIMIT,
+  PmcFlag, PMC_FLAG_LIMIT, InsightAnnotation,
 } from '@/lib/types'
 import { parseEventSignals, detectReviewTriggers, EventSignals } from '@/lib/eventParser'
 import {
@@ -37,12 +38,13 @@ import {
   deriveSignals, deriveLineBreakdown, deriveDelayAttribution, deriveContinuationChains,
   deriveChangePoints, deriveDelta, deriveHypotheses, deriveIncidentTypeList,
   effectiveDelay, effectiveMinsToArrival, effectiveDuration, SLA_THRESHOLD_MINS,
-  searchMatch,
+  searchMatch, nonContinuation,
   fetchIncidentsForRange, fetchReportsForRange, fetchReviewsForRange,
   fetchTeamMembersForRange, deriveTeamWorkload, deriveStaffPatterns,
   upsertIncidentReview, deleteIncidentReview, deriveReviewPeriods,
   deriveRecoveryTrendByPeriod,
   fetchPmcFlagsForRange, addPmcFlag, removePmcFlag,
+  fetchAnnotations,
   RawData, ReviewPeriodGroup, ReviewPeriodDay, RecoveryTrendPoint,
 } from '@/lib/queries'
 import {
@@ -71,10 +73,21 @@ import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/pri
 import { serialiseControlPmcCsv, controlPmcCsvFilename } from '@/lib/reports/controlPmc'
 import { DistillationTab } from './distillation-tab'
 import { FocusTab } from './focus-tab'
+import { WeatherTab } from './weather-tab'
+import { PerformanceFeedPanel } from './performance-feed'
+import { SearchTab } from './search-tab'
+import { CompareTab } from './compare-tab'
+import { CalendarTab } from './calendar-tab'
+import { PivotTab } from './pivot-tab'
+import { NotebookTab } from './notebook-tab'
+import { QualityTab } from './quality-tab'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes' | 'trends' | 'explore' | 'analytics' | 'focus' | 'review' | 'reports' | 'distillation'
+type Tab =
+  | 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes'
+  | 'trends' | 'explore' | 'analytics' | 'weather' | 'calendar' | 'compare' | 'pivot' | 'search'
+  | 'focus' | 'review' | 'reports' | 'distillation' | 'notebook' | 'quality'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -86,10 +99,17 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'trends',      label: 'Trends',      icon: GitBranch },
   { id: 'explore',     label: 'Explore',     icon: Compass },
   { id: 'analytics',   label: 'Analytics',   icon: BarChart2 },
+  { id: 'weather',      label: 'Weather',      icon: Cloud },
+  { id: 'calendar',     label: 'Calendar',     icon: CalendarDays },
+  { id: 'compare',      label: 'Compare',      icon: GitCompare },
+  { id: 'pivot',        label: 'Pivot',        icon: Table2 },
+  { id: 'search',       label: 'Search',       icon: Search },
   { id: 'focus',        label: 'Focus',        icon: Crosshair },
   { id: 'review',       label: 'Review',       icon: ClipboardCheck },
   { id: 'reports',      label: 'Reports',      icon: FileText },
   { id: 'distillation', label: 'Distillation', icon: FlaskConical },
+  { id: 'notebook',     label: 'Notebook',     icon: StickyNote },
+  { id: 'quality',      label: 'Quality',      icon: Gauge },
 ]
 
 // ─── Window navigation helper ────────────────────────────────────────────────
@@ -201,6 +221,18 @@ export default function InsightDashboard() {
 
   // Weather data synced from Open-Meteo via Supabase
   const [weatherData, setWeatherData] = useState<WeatherDay[]>([])
+
+  // Notebook date annotations — rendered as markers on the Overview trend.
+  // Refreshed on tab switches so notes added in the Notebook appear promptly.
+  const [dateAnnotations, setDateAnnotations] = useState<InsightAnnotation[]>([])
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return
+    let cancelled = false
+    fetchAnnotations()
+      .then(rows => { if (!cancelled) setDateAnnotations(rows.filter(r => r.kind === 'date')) })
+      .catch(() => { /* non-fatal — markers are supplemental */ })
+    return () => { cancelled = true }
+  }, [tab])
 
   // After hydration, restore any filters saved in the URL. This runs once and
   // must come before the URL-sync effect so a stale DEFAULT_FILTERS write
@@ -328,12 +360,15 @@ export default function InsightDashboard() {
         if (filters.weatherConditions?.length) {
           if (!filters.weatherConditions.includes(conditionGroup(wx.conditions))) return false
         }
-        if (filters.minRainfall != null && (wx.rainfall_mm  ?? 0) < filters.minRainfall)  return false
-        if (filters.maxRainfall != null && (wx.rainfall_mm  ?? 0) > filters.maxRainfall)  return false
-        if (filters.minTempC    != null && (wx.max_temp_c   ?? 0) < filters.minTempC)     return false
-        if (filters.maxTempC    != null && (wx.max_temp_c   ?? 0) > filters.maxTempC)     return false
-        if (filters.minWindKmh  != null && (wx.max_wind_kmh ?? 0) < filters.minWindKmh)   return false
-        if (filters.maxWindKmh  != null && (wx.max_wind_kmh ?? 0) > filters.maxWindKmh)   return false
+        // Strict null handling: when a numeric weather bound is active, a day
+        // with no reading for that field is excluded rather than treated as 0.
+        // Temperature bounds: min tests the day's LOW, max tests the day's HIGH.
+        if (filters.minRainfall != null && (wx.rainfall_mm  == null || wx.rainfall_mm  < filters.minRainfall)) return false
+        if (filters.maxRainfall != null && (wx.rainfall_mm  == null || wx.rainfall_mm  > filters.maxRainfall)) return false
+        if (filters.minTempC    != null && (wx.min_temp_c   == null || wx.min_temp_c   < filters.minTempC))    return false
+        if (filters.maxTempC    != null && (wx.max_temp_c   == null || wx.max_temp_c   > filters.maxTempC))    return false
+        if (filters.minWindKmh  != null && (wx.max_wind_kmh == null || wx.max_wind_kmh < filters.minWindKmh))  return false
+        if (filters.maxWindKmh  != null && (wx.max_wind_kmh == null || wx.max_wind_kmh > filters.maxWindKmh))  return false
         return true
       })
     }
@@ -649,7 +684,7 @@ export default function InsightDashboard() {
 
         {kpis && effectiveData && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} annotations={dateAnnotations.map(a => ({ date: a.anchor, note: a.note }))} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={effectiveData} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
             {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} metricFocus={filters.metricFocus} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
@@ -659,6 +694,13 @@ export default function InsightDashboard() {
             {tab === 'trends'      && <TrendsTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowDays={effectiveData.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'explore'     && <ExploreTab incidents={effectiveData.incidents} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} />}
+            {tab === 'weather'     && <WeatherTab incidents={effectiveData.incidents} weatherData={weatherData} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
+            {tab === 'calendar'    && <CalendarTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onDrillDown={setDrillDown} />}
+            {tab === 'compare'     && <CompareTab demoMode={demoMode} />}
+            {tab === 'pivot'       && <PivotTab incidents={effectiveData.incidents} />}
+            {tab === 'search'      && <SearchTab windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} demoMode={demoMode} fallbackIncidents={effectiveData.incidents} />}
+            {tab === 'notebook'    && <NotebookTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} canWrite={isSupabaseConfigured() && !demoMode} />}
+            {tab === 'quality'     && <QualityTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
             {tab === 'focus'       && <FocusTab incidents={effectiveData.incidents} weatherData={weatherData} />}
             {tab === 'review'      && (
               reviewLoading && !reviewIncidents
@@ -837,6 +879,15 @@ function Header(props: {
           >
             <BookOpen size={12} />
             Guide
+          </button>
+
+          <button
+            onClick={() => window.open('/wallboard', '_blank', 'noopener,noreferrer')}
+            className="btn"
+            title="Open the auto-cycling control-room wallboard view in a new tab"
+          >
+            <Monitor size={12} />
+            Board
           </button>
 
           {props.onExport && (
@@ -1082,7 +1133,7 @@ function HypothesisRow({ h, maxLift, onClick }: {
   )
 }
 
-function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose }: any) {
+function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, annotations }: any) {
   return (
     <div className="space-y-6">
 
@@ -1145,7 +1196,7 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card title="Daily Activity" subtitle={`${trend.length}-day rolling window · stability band shaded`} className="lg:col-span-2 tick-corners"
               right={<ChartTypeToggle value={chart} onChange={setChart} />}>
-          <TrendChart data={trend} kind={chart} onDateClick={onDateClick} changePoints={changePoints} showBaseline />
+          <TrendChart data={trend} kind={chart} onDateClick={onDateClick} changePoints={changePoints} showBaseline annotations={annotations} />
         </Card>
 
         <Card title="Category Mix" subtitle={`${cats.length} categories · click to pin filter`}
@@ -1355,6 +1406,9 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
 
   return (
     <div className="space-y-6">
+      {/* Live route performance from the messaging-assistant snapshot feed */}
+      <PerformanceFeedPanel />
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 stagger">
         <KPICard label="Total Delay (mins)" value={kpis.totalDelayMins.toLocaleString()} delta={kpis.delayDeltaPct} icon={Clock} deltaInverted accent={!isCancMode} decompose={decompose} metric="delay" />
         <KPICard label="Cancelled" value={kpis.totalCancelled} icon={X} accent={isCancMode} />
@@ -1450,8 +1504,121 @@ function PerformanceTab({ kpis, trend, changePoints, hots, resp, responderLoad, 
       )}
 
       <DelayThresholdSplitter incidents={incidents} />
+
+      <WhatIfCard incidents={incidents} />
     </div>
   )
+}
+
+// ─── What-if impact simulator ────────────────────────────────────────────────
+// Exclude selected incidents and see the window's headline numbers recompute —
+// quantifies what a single event (or a handful) cost the week for PMC cases.
+
+function WhatIfCard({ incidents }: { incidents: IncidentRow[] }) {
+  const [excluded, setExcluded] = useState<Set<string>>(new Set())
+
+  const top = useMemo(() => nonContinuation(incidents)
+    .map(i => ({ inc: i, delay: effectiveDelay(i) }))
+    .filter(x => x.delay > 0)
+    .sort((a, b) => b.delay - a.delay)
+    .slice(0, 15), [incidents])
+
+  const stats = useMemo(() => {
+    const uniques = nonContinuation(incidents)
+    const days = new Set(incidents.map(i => i.report_date)).size || 1
+    const total = (rows: IncidentRow[]) => ({
+      delay:     rows.reduce((s, i) => s + effectiveDelay(i), 0),
+      count:     rows.length,
+      cancelled: rows.reduce((s, i) => s + i.cancelled + i.part_cancelled, 0),
+      trains:    rows.reduce((s, i) => s + i.trains_delayed, 0),
+    })
+    const before = total(uniques)
+    const after  = total(uniques.filter(i => !excluded.has(i.id)))
+    return { before, after, days }
+  }, [incidents, excluded])
+
+  const toggle = (id: string) => setExcluded(prev => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+
+  const fmtD = (n: number) => `${Math.round(n).toLocaleString()}m`
+  const b = stats.before, a = stats.after
+  const reductionPct = b.delay > 0 ? ((b.delay - a.delay) / b.delay) * 100 : 0
+
+  const StatPair = ({ label, before, after, unit }: { label: string; before: number; after: number; unit?: string }) => (
+    <div>
+      <div className="label-micro text-[9px] mb-1">{label}</div>
+      <div className="numeric-mono text-sm" style={{ color: 'var(--ink-100)' }}>
+        {unit === 'm' ? fmtD(before) : before.toLocaleString()}
+        {excluded.size > 0 && (
+          <>
+            <span style={{ color: 'var(--ink-500)' }}> → </span>
+            <span style={{ color: '#27AE60' }}>{unit === 'm' ? fmtD(after) : after.toLocaleString()}</span>
+          </>
+        )}
+      </div>
+    </div>
+  )
+
+  return (
+    <Card
+      title="What-if — impact simulator"
+      subtitle="Exclude incidents to see what the window would have looked like without them"
+      className="tick-corners"
+      right={excluded.size > 0 ? (
+        <button className="btn !text-[10px]" onClick={() => setExcluded(new Set())}>
+          <RotateCcwIconFallback /> Reset ({excluded.size})
+        </button>
+      ) : undefined}
+    >
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-4">
+        <StatPair label="Delay" before={b.delay} after={a.delay} unit="m" />
+        <StatPair label="Delay / day" before={b.delay / stats.days} after={a.delay / stats.days} unit="m" />
+        <StatPair label="Incidents" before={b.count} after={a.count} />
+        <StatPair label="Cancellations" before={b.cancelled} after={a.cancelled} />
+        <div>
+          <div className="label-micro text-[9px] mb-1">Delay removed</div>
+          <div className="numeric-mono text-sm" style={{ color: excluded.size ? 'var(--nr-orange)' : 'var(--ink-500)' }}>
+            {excluded.size ? `${fmtD(b.delay - a.delay)} · ${reductionPct.toFixed(1)}%` : '—'}
+          </div>
+        </div>
+      </div>
+
+      {top.length === 0 ? (
+        <Empty msg="No delay-incurring incidents in the window" />
+      ) : (
+        <div className="space-y-1">
+          {top.map(({ inc, delay }) => {
+            const cfg = CATEGORY_CONFIG[inc.category]
+            const off = excluded.has(inc.id)
+            return (
+              <label
+                key={inc.id}
+                className="flex items-center gap-3 text-xs py-1.5 px-2 rounded border cursor-pointer transition-colors hover:bg-[var(--bg-card-hi)]"
+                style={{ borderColor: off ? 'var(--nr-orange)' : 'var(--line)', opacity: off ? 0.55 : 1, textDecoration: off ? 'line-through' : 'none' }}
+              >
+                <input type="checkbox" checked={off} onChange={() => toggle(inc.id)} />
+                <span className="numeric-mono text-[10px] shrink-0" style={{ color: 'var(--ink-500)' }}>{inc.report_date}</span>
+                <span className="pill text-[9px] shrink-0" style={{ background: `${cfg.color}20`, color: cfg.color, borderColor: `${cfg.color}50` }}>{cfg.short}</span>
+                <span className="flex-1 truncate" style={{ color: 'var(--ink-200)' }}>{inc.title ?? '—'}</span>
+                <span className="truncate max-w-[140px] text-[10px]" style={{ color: 'var(--ink-500)' }}>{inc.location ?? ''}</span>
+                <span className="numeric-mono shrink-0" style={{ color: 'var(--nr-orange)' }}>{fmtD(delay)}</span>
+              </label>
+            )
+          })}
+          <div className="text-[10.5px] pt-2" style={{ color: 'var(--ink-500)' }}>
+            Top 15 incidents by delay shown. Continuation rows follow their parent incident automatically (delay is counted once per chain).
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function RotateCcwIconFallback() {
+  return <RefreshCw size={10} />
 }
 
 // ─── Geography tab ───────────────────────────────────────────────────────────
@@ -2838,7 +3005,7 @@ const ROLLING_KEY: Record<string, string> = {
   safetyCritical: 'rolling7SafetyAvg',
 }
 
-function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick, changePoints, showBaseline }: any) {
+function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick, changePoints, showBaseline, annotations }: any) {
   const stroke = gradient === 'orange' ? '#E05206' : '#4A6FA5'
   const gradientId = `grad-${dataKey}-${gradient}`
 
@@ -2901,6 +3068,27 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
     />
   ))
 
+  // Notebook date annotations — a pencil marker on annotated dates that fall
+  // inside the charted window. The note text rides on the guide's tooltip.
+  const dateSet = new Set(data.map((d: any) => d.date))
+  const annotationLines = (annotations ?? [])
+    .filter((a: { date: string }) => dateSet.has(a.date))
+    .map((a: { date: string; note: string }, i: number) => (
+      <ReferenceLine
+        key={`note-${i}`}
+        x={a.date}
+        stroke="#F39C12"
+        strokeDasharray="2 4"
+        strokeOpacity={0.55}
+        label={{
+          value: '✎',
+          position: 'top',
+          fill: '#F39C12',
+          fontSize: 11,
+        }}
+      />
+    ))
+
   // Markers on the days flagged anomalous (outside the stability band).
   const anomalyMarkers = hasBaseline
     ? data.filter((d: any) => d.isAnomalous).map((d: any, i: number) => (
@@ -2938,6 +3126,7 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
         <Tooltip content={<CustomTooltip footer="Click to focus this date" />} position={{ x: 65, y: 8 }} />
         {baselineBand}
         {changePointLines}
+        {annotationLines}
         {mainSeries}
         {movingAvgLine}
         {regressionLine}
@@ -4132,22 +4321,25 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
               </div>
             </div>
 
-            {/* Temperature range (daily high) */}
+            {/* Temperature range — min bounds the day's LOW, max bounds the day's HIGH */}
             <div className="mb-3">
-              <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>DAILY HIGH TEMPERATURE (°C)</div>
+              <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>TEMPERATURE (°C)</div>
               <div className="flex items-center gap-2">
                 <div className="flex-1">
-                  <label className="label-micro mb-1 block text-[9px]">Min</label>
-                  <input type="number" className="input w-full" placeholder="e.g. -5"
+                  <label className="label-micro mb-1 block text-[9px]">Day low ≥</label>
+                  <input type="number" className="input w-full" placeholder="e.g. 15"
                     value={draft.minTempC ?? ''}
                     onChange={(e) => setDraft({ ...draft, minTempC: e.target.value === '' ? undefined : Number(e.target.value) })} />
                 </div>
                 <div className="flex-1">
-                  <label className="label-micro mb-1 block text-[9px]">Max</label>
-                  <input type="number" className="input w-full" placeholder="no limit"
+                  <label className="label-micro mb-1 block text-[9px]">Day high ≤</label>
+                  <input type="number" className="input w-full" placeholder="e.g. 2"
                     value={draft.maxTempC ?? ''}
                     onChange={(e) => setDraft({ ...draft, maxTempC: e.target.value === '' ? undefined : Number(e.target.value) })} />
                 </div>
+              </div>
+              <div className="text-[10px] mt-1.5" style={{ color: 'var(--ink-500)' }}>
+                "Day high ≤ 2" isolates freezing days; "day low ≥ 15" isolates hot nights.
               </div>
             </div>
 
@@ -4575,6 +4767,42 @@ function isReviewAutoNA(incident: IncidentRow, review: IncidentReview | undefine
   return detectReviewTriggers(incident).length === 0
 }
 
+// One-click review: everything the events log can answer, nothing asserted
+// beyond it. The reviewer can always reopen the full form to add detail.
+function buildQuickReviewInput(incident: IncidentRow, author: string | null): IncidentReviewInput {
+  const sig = parseEventSignals(incident.events)
+  return {
+    incident_id: incident.id,
+    report_date: incident.report_date,
+    itsr_required:        sig.itsr ? 'YES' : null,
+    time_huddle_held:     sig.itsr?.time ?? null,
+    mom_responded:        (sig.momDispatch || sig.momArrival) ? 'YES' : null,
+    mom_dispatched_time:  sig.momDispatch?.time ?? null,
+    mom_arrived_time:     sig.momArrival?.time ?? null,
+    reviewed_by:          author,
+    notes: 'Quick review — fields auto-filled from the events log.',
+  }
+}
+
+// Deterministic commentary draft from the CCIL events log: opening line,
+// key process mentions (ITSR / MOM / stranded / recovery…), closing line.
+function draftCommentaryFromEvents(incident: IncidentRow): string {
+  const lines = (incident.events ?? []).filter(e => e?.description?.trim())
+  if (lines.length === 0) return ''
+  const KEY = /itsr|stranded|service recovery|re-?fail|tech(nical)?\s+conf|\bMOMs?\b|line[s]? (blocked|reopened)|all lines|normal working|recover/i
+  const fmt = (e: IncidentEvent) => {
+    const s = `${e.time ? e.time + ' — ' : ''}${e.description!.trim()}`
+    return s.length > 220 ? `${s.slice(0, 219)}…` : s
+  }
+  const picks: string[] = [fmt(lines[0])]
+  for (const e of lines.slice(1, -1)) {
+    if (picks.length >= 6) break
+    if (KEY.test(e.description!)) picks.push(fmt(e))
+  }
+  if (lines.length > 1) picks.push(fmt(lines[lines.length - 1]))
+  return picks.join('\n')
+}
+
 function ReviewTab({
   periods, reviewByIncidentId, teamMembersByIncidentId, teamWorkload, recoveryTrend, onSave, onDelete,
   pmcFlaggedIds, pmcWeekFlagCount, onTogglePmcFlag, demoMode, supabaseConfigured,
@@ -4592,6 +4820,8 @@ function ReviewTab({
   demoMode: boolean
   supabaseConfigured: boolean
 }) {
+  const [view, setView] = useState<'tree' | 'queue'>('tree')
+
   const allUnique = periods.flatMap(g => g.days.flatMap(d => d.incidents.filter(i => !i.is_continuation)))
   const totalIncidents   = allUnique.length
   const reviewable       = allUnique.filter(i => !isReviewAutoNA(i, reviewByIncidentId.get(i.id)))
@@ -4599,6 +4829,24 @@ function ReviewTab({
   const naCount          = totalIncidents - reviewableTotal
   const totalReviewed    = reviewable.filter(i => reviewByIncidentId.has(i.id)).length
   const reviewPct        = reviewableTotal > 0 ? (totalReviewed / reviewableTotal) * 100 : 0
+
+  // Per-railway-week completion, so a whole week can be signed off at a glance.
+  const weekStats = (() => {
+    const m = new Map<string, { label: string; yearLabel: string; from: string; reviewable: number; reviewed: number }>()
+    for (const i of reviewable) {
+      const pw = railwayPeriodWeek(i.report_date)
+      const key = `${pw.railYear}-${pw.period}-${pw.week}`
+      const cur = m.get(key) ?? {
+        label: `P${String(pw.period).padStart(2, '0')} W${pw.week}`,
+        yearLabel: pw.yearLabel, from: i.report_date, reviewable: 0, reviewed: 0,
+      }
+      cur.reviewable += 1
+      if (reviewByIncidentId.has(i.id)) cur.reviewed += 1
+      if (i.report_date < cur.from) cur.from = i.report_date
+      m.set(key, cur)
+    }
+    return Array.from(m.values()).sort((a, b) => a.from.localeCompare(b.from))
+  })()
 
   return (
     <div className="space-y-6">
@@ -4640,6 +4888,47 @@ function ReviewTab({
           icon={ClipboardCheck}
           accent
         />
+      </div>
+
+      {/* Per-railway-week completion chips */}
+      {weekStats.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="label-micro shrink-0">Weekly completion</span>
+          {weekStats.map(w => {
+            const complete = w.reviewed >= w.reviewable
+            const colour = complete ? '#27AE60' : w.reviewed > 0 ? 'var(--nr-orange)' : 'var(--ink-500)'
+            return (
+              <span
+                key={`${w.yearLabel}-${w.label}`}
+                className="pill text-[10px]"
+                style={{ background: complete ? 'rgba(39,174,96,0.10)' : 'var(--bg-card)', color: colour, borderColor: complete ? 'rgba(39,174,96,0.4)' : 'var(--line-hi)' }}
+                title={`${w.yearLabel} · ${w.label} — ${w.reviewed} of ${w.reviewable} reviewable incidents reviewed`}
+              >
+                {w.label} <span className="numeric-mono">{w.reviewed}/{w.reviewable}</span>
+              </span>
+            )
+          })}
+        </div>
+      )}
+
+      {/* View mode toggle: period tree vs flat priority queue */}
+      <div className="flex items-center gap-2">
+        <button onClick={() => setView('tree')}  className={`btn !text-[11px] ${view === 'tree'  ? 'btn-active' : ''}`}>
+          <Layers size={11} /> Period tree
+        </button>
+        <button onClick={() => setView('queue')} className={`btn !text-[11px] ${view === 'queue' ? 'btn-active' : ''}`}>
+          <List size={11} /> Review queue
+          {reviewableTotal - totalReviewed > 0 && (
+            <span className="ml-1 px-1.5 py-0.5 text-[9px] bg-[var(--nr-orange)] text-white rounded-sm">
+              {reviewableTotal - totalReviewed}
+            </span>
+          )}
+        </button>
+        <span className="text-[10.5px] ml-2" style={{ color: 'var(--ink-500)' }}>
+          {view === 'queue'
+            ? 'Every pending reviewable incident in the window, highest impact first — quick-review or open the full form.'
+            : 'Browse by railway period → day → incident.'}
+        </span>
       </div>
 
       {teamWorkload.length > 0 && (
@@ -4713,29 +5002,206 @@ function ReviewTab({
         </div>
       )}
 
-      <Card title="Log Periods" subtitle="Expand a period to drill into its days and incidents" className="tick-corners">
-        {periods.length === 0 ? (
-          <Empty msg="No incidents in the current date range" />
-        ) : (
-          <div className="space-y-2">
-            {periods.map(g => (
-              <PeriodGroupRow
-                key={g.key}
-                group={g}
-                reviewByIncidentId={reviewByIncidentId}
-                teamMembersByIncidentId={teamMembersByIncidentId}
-                onSave={onSave}
-                onDelete={onDelete}
-                pmcFlaggedIds={pmcFlaggedIds}
-                pmcWeekFlagCount={pmcWeekFlagCount}
-                onTogglePmcFlag={onTogglePmcFlag}
-                canSave={supabaseConfigured && !demoMode}
-              />
-            ))}
-          </div>
-        )}
-      </Card>
+      {view === 'tree' ? (
+        <Card title="Log Periods" subtitle="Expand a period to drill into its days and incidents" className="tick-corners">
+          {periods.length === 0 ? (
+            <Empty msg="No incidents in the current date range" />
+          ) : (
+            <div className="space-y-2">
+              {periods.map(g => (
+                <PeriodGroupRow
+                  key={g.key}
+                  group={g}
+                  reviewByIncidentId={reviewByIncidentId}
+                  teamMembersByIncidentId={teamMembersByIncidentId}
+                  onSave={onSave}
+                  onDelete={onDelete}
+                  pmcFlaggedIds={pmcFlaggedIds}
+                  pmcWeekFlagCount={pmcWeekFlagCount}
+                  onTogglePmcFlag={onTogglePmcFlag}
+                  canSave={supabaseConfigured && !demoMode}
+                />
+              ))}
+            </div>
+          )}
+        </Card>
+      ) : (
+        <ReviewQueue
+          incidents={allUnique}
+          reviewByIncidentId={reviewByIncidentId}
+          teamMembersByIncidentId={teamMembersByIncidentId}
+          onSave={onSave}
+          onDelete={onDelete}
+          pmcFlaggedIds={pmcFlaggedIds}
+          pmcWeekFlagCount={pmcWeekFlagCount}
+          onTogglePmcFlag={onTogglePmcFlag}
+          canSave={supabaseConfigured && !demoMode}
+        />
+      )}
     </div>
+  )
+}
+
+// ─── Review queue — flat, priority-ordered pending list ─────────────────────
+// The period tree is good for browsing; this is for clearing the backlog.
+// Every pending reviewable incident in one list, highest impact first, with
+// one-click "quick review" (saves the event-log auto-fill) and bulk actions.
+
+function ReviewQueue({
+  incidents, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete,
+  pmcFlaggedIds, pmcWeekFlagCount, onTogglePmcFlag, canSave,
+}: {
+  incidents: IncidentRow[]
+  reviewByIncidentId: Map<string, IncidentReview>
+  teamMembersByIncidentId: Map<string, IncidentTeamMember[]>
+  onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
+  onDelete: (incidentId: string) => Promise<void>
+  pmcFlaggedIds: Set<string>
+  pmcWeekFlagCount: (reportDate: string) => number
+  onTogglePmcFlag: (incident: IncidentRow) => Promise<void>
+  canSave: boolean
+}) {
+  const [filter, setFilter]     = useState<'all' | 'delay' | 'triggered'>('all')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [busy, setBusy]         = useState(false)
+  const [progress, setProgress] = useState<string | null>(null)
+  const [error, setError]       = useState<string | null>(null)
+  const [author, setAuthor]     = useState<string>(() =>
+    typeof window === 'undefined' ? '' : localStorage.getItem('insight-author') ?? '')
+
+  const setAuthorPersist = (v: string) => {
+    setAuthor(v)
+    try { localStorage.setItem('insight-author', v) } catch { /* private mode */ }
+  }
+
+  const pending = useMemo(() => incidents
+    .filter(i => !reviewByIncidentId.has(i.id))
+    .filter(i => !isReviewAutoNA(i, undefined))
+    .filter(i => {
+      if (filter === 'delay')     return (i.minutes_delay ?? 0) >= NA_DELAY_THRESHOLD
+      if (filter === 'triggered') return detectReviewTriggers(i).length > 0
+      return true
+    })
+    .sort((a, b) => effectiveDelay(b) - effectiveDelay(a)),
+  [incidents, reviewByIncidentId, filter])
+
+  const toggleSelect = (id: string) => setSelected(prev => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+
+  const quickReview = async (i: IncidentRow) => {
+    await onSave(buildQuickReviewInput(i, author.trim() || null), i.incident_start)
+  }
+
+  const quickReviewOne = async (i: IncidentRow) => {
+    setBusy(true); setError(null)
+    try { await quickReview(i) }
+    catch (e: any) { setError(e?.message || 'Quick review failed') }
+    finally { setBusy(false) }
+  }
+
+  const quickReviewSelected = async () => {
+    const targets = pending.filter(p => selected.has(p.id))
+    if (targets.length === 0) return
+    setBusy(true); setError(null)
+    try {
+      for (let n = 0; n < targets.length; n++) {
+        setProgress(`${n + 1}/${targets.length}`)
+        await quickReview(targets[n])
+      }
+      setSelected(new Set())
+    } catch (e: any) {
+      setError(e?.message || 'Bulk quick review failed — already-saved rows are kept')
+    } finally {
+      setBusy(false); setProgress(null)
+    }
+  }
+
+  const selectedPendingCount = pending.filter(p => selected.has(p.id)).length
+
+  return (
+    <Card
+      title="Review queue"
+      subtitle="Pending reviewable incidents across the window, highest impact first"
+      className="tick-corners"
+      right={
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {(['all', 'delay', 'triggered'] as const).map(f => (
+            <button key={f} onClick={() => setFilter(f)} className={`btn !py-1 !px-2 !text-[10px] ${filter === f ? 'btn-active' : ''}`}>
+              {f === 'all' ? 'All' : f === 'delay' ? `≥${NA_DELAY_THRESHOLD}m` : 'Triggered'}
+            </button>
+          ))}
+        </div>
+      }
+    >
+      <div className="flex items-center gap-3 flex-wrap mb-4 text-[11px]">
+        <label className="flex items-center gap-2">
+          <span className="label-micro text-[9px]">Reviewer initials</span>
+          <input
+            type="text"
+            className="input !py-1 !px-2 w-20 text-[11px]"
+            placeholder="e.g. JD"
+            value={author}
+            onChange={e => setAuthorPersist(e.target.value)}
+          />
+        </label>
+        <button
+          className="btn !text-[10.5px]"
+          disabled={!canSave || busy || selectedPendingCount === 0}
+          onClick={quickReviewSelected}
+          title="Save a quick review (event-log auto-fill + reviewer initials) for every selected incident"
+        >
+          <Zap size={11} /> Quick-review selected{selectedPendingCount > 0 ? ` (${selectedPendingCount})` : ''}{progress ? ` · ${progress}` : ''}
+        </button>
+        <span style={{ color: 'var(--ink-500)' }}>
+          {pending.length} pending · quick review saves the event-log auto-fill (ITSR / MOM signals) and marks the incident reviewed — open the full form for anything needing detail.
+        </span>
+        {error && <span style={{ color: '#FF8077' }}>{error}</span>}
+      </div>
+
+      {pending.length === 0 ? (
+        <Empty msg={filter === 'all' ? 'Nothing pending — every reviewable incident in the window is reviewed' : 'No pending incidents match this filter'} />
+      ) : (
+        <div className="space-y-2">
+          {pending.map(inc => (
+            <div key={inc.id} className="flex items-stretch gap-2">
+              <div className="flex flex-col items-center justify-center gap-2 px-1 shrink-0">
+                <input
+                  type="checkbox"
+                  checked={selected.has(inc.id)}
+                  onChange={() => toggleSelect(inc.id)}
+                  disabled={busy}
+                  title="Select for bulk quick review"
+                />
+                <button
+                  className="btn !py-0.5 !px-1.5 !text-[9px]"
+                  disabled={!canSave || busy}
+                  onClick={() => quickReviewOne(inc)}
+                  title="Quick review — save event-log auto-fill and mark reviewed"
+                >
+                  <Zap size={10} />
+                </button>
+              </div>
+              <div className="flex-1 min-w-0">
+                <ReviewIncidentRow
+                  incident={inc}
+                  review={reviewByIncidentId.get(inc.id)}
+                  teamMembers={teamMembersByIncidentId.get(inc.id) ?? []}
+                  onSave={onSave}
+                  onDelete={onDelete}
+                  pmcFlagged={pmcFlaggedIds.has(inc.id)}
+                  pmcWeekCount={pmcWeekFlagCount(inc.report_date)}
+                  onTogglePmcFlag={onTogglePmcFlag}
+                  canSave={canSave}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   )
 }
 
@@ -5443,7 +5909,23 @@ function ReviewForm({
 
         {/* Notes */}
         <Field label="Additional Notes">
-          <textarea className="input w-full" rows={2} value={form.notes ?? ''} onChange={e => set('notes', e.target.value)} placeholder="Anything else worth recording" />
+          <div className="space-y-1.5">
+            <textarea className="input w-full" rows={2} value={form.notes ?? ''} onChange={e => set('notes', e.target.value)} placeholder="Anything else worth recording" />
+            {(incident.events?.length ?? 0) > 0 && (
+              <button
+                type="button"
+                className="btn !py-1 !px-2 !text-[10px]"
+                onClick={() => {
+                  const draft = draftCommentaryFromEvents(incident)
+                  if (!draft) return
+                  set('notes', form.notes?.trim() ? `${form.notes.trim()}\n\n${draft}` : draft)
+                }}
+                title="Insert a commentary draft built from the CCIL events log — opening line, key process mentions, closing line. Edit before saving."
+              >
+                <FileText size={10} /> Draft from events log
+              </button>
+            )}
+          </div>
         </Field>
 
         {/* Refine CCIL overrides */}

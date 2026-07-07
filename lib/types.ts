@@ -188,6 +188,65 @@ export interface PmcFlag {
 
 export const PMC_FLAG_LIMIT = 5
 
+// ─── Performance snapshots (messaging-assistant feed) ────────────────────────
+// Captured by the messaging assistant on every "Build message" press and
+// pinned to the next tactical slot (0530 / 0900 / 1500 / 2200). The 0530
+// snapshot carries the PREVIOUS day's end-of-day standing, which is why
+// metrics_for_date, not snapshot_date, is the attribution date. Railway
+// calendar columns are stamped by a DB trigger (migration 013) so period
+// bucketing is guaranteed to match Insight's calendar.
+
+export type PerfSlot = '0530' | '0900' | '1500' | '2200'
+
+export interface PerfMetricReading {
+  name: string                 // matches ma_targets.name, e.g. "Route T3 %"
+  value: number | null
+  target: number | null
+  amber: number | null
+  dir: 'higher' | 'lower' | null
+  rag: string | null           // builder-computed; Insight recomputes from value/target/amber
+  notes: string | null
+}
+
+export interface PerfSnapshot {
+  id: string
+  snapshot_date: string
+  slot: PerfSlot
+  metrics_for_date: string     // the day the metrics describe
+  rail_year: number | null
+  rail_period: number | null
+  rail_week: number | null
+  rail_year_label: string | null
+  target_period_name: string | null
+  build_count: number
+  last_built_at: string
+  metrics: PerfMetricReading[]
+}
+
+// ─── Annotations & watchlist (Notebook tab) ──────────────────────────────────
+
+export type AnnotationKind = 'date' | 'location' | 'asset' | 'incident'
+
+export interface InsightAnnotation {
+  id: string
+  kind: AnnotationKind
+  anchor: string          // ISO date / location name / asset key / incident id
+  note: string
+  author: string | null
+  created_at: string
+}
+
+export type WatchlistKind = 'location' | 'asset' | 'fault'
+
+export interface WatchlistEntry {
+  id: string
+  kind: WatchlistKind
+  anchor: string          // location name / "type — location" key / fault number
+  note: string | null
+  author: string | null
+  created_at: string
+}
+
 // ─── Incident team members (captured by Dlog2, read-only in Insight) ─────────
 
 export interface IncidentTeamMember {
@@ -244,8 +303,8 @@ export interface AnalyticsFilters {
   weatherConditions?: string[]    // condition group labels (Clear / Dry, Rain, Snow, …); empty = all
   minRainfall?: number            // rainfall_mm >= this (mm); incident day must have ≥ this rainfall
   maxRainfall?: number            // rainfall_mm <= this (mm)
-  minTempC?: number               // max_temp_c >= this (°C); incident day daily high at least X
-  maxTempC?: number               // max_temp_c <= this (°C); incident day daily high at most X
+  minTempC?: number               // min_temp_c >= this (°C); incident day's LOW at least X (warm nights)
+  maxTempC?: number               // max_temp_c <= this (°C); incident day's HIGH at most X (cold days)
   minWindKmh?: number             // max_wind_kmh >= this (km/h)
   maxWindKmh?: number             // max_wind_kmh <= this (km/h)
   // Controls visibility of off-route incidents:
