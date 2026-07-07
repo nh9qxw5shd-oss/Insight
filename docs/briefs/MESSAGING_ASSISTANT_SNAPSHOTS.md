@@ -168,9 +168,11 @@ Caveats for consumers:
   (P1 26/27 onwards) the calendar join remains authoritative; spot-checks
   show the inline targets agree with the DB except where Control quoted a
   stale figure.
-- Early reports (Apr–Jul 2025) tracked **"On Time"** (seeded as
-  `Route On Time %`) before switching to `Route T3 %`; some also carried
-  `Route L2H %` and later `Current Period Variance`. These extra names are
-  additive, per the metrics contract.
+- Early reports (Apr–Jul 2025) tracked **"On Time"** alongside/before
+  `Route T3 %`. On Time (to-the-minute) is a **different measure** from T3
+  and is deliberately **not seeded** — the parser skips it, and readings
+  seeded before this exclusion were purged from the table. Some reports also
+  carried `Route L2H %` and later `Current Period Variance`; those extra
+  names are additive, per the metrics contract.
 - `metrics[].rag` is the emoji RAG as posted; values/targets are parsed
   after normalising human typos (`79..4%`, `84,8%`, `87.9.3%`).

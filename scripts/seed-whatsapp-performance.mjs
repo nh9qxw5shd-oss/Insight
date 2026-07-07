@@ -128,7 +128,9 @@ const INTRA_HEAD = /Route Performance/i
 
 const METRIC_RE = new RegExp(
   '(🟩|🟢|🟨|🟠|🟧|🟥|🔴|🟪|🟣|⚪|⚫)?\\s*•?\\s*\\*?' +
-  '(Route T3 %|Route T3|On [Tt]ime|EMR T3 %|EMR T3|EMR Can %|GTR T3 %|GTR T3|XC T3 %|XC T3|Current Period Variance|L2H|Can)' +
+  // NB: early-era "On Time" readings are deliberately not extracted — On Time
+  // (to-the-minute) is a different measure from T3 and must not join this series.
+  '(Route T3 %|Route T3|EMR T3 %|EMR T3|EMR Can %|GTR T3 %|GTR T3|XC T3 %|XC T3|Current Period Variance|L2H|Can)' +
   '\\*?\\s*:?\\s*(?:🟩|🟢|🟨|🟠|🟧|🟥|🔴)?\\s*(-?\\d+(?:\\.\\d+)?)\\s*%?' +
   '(?:\\s*\\((?:Tgt|Target|tgt)\\s*:?\\s*(-?\\d+(?:\\.\\d+)?)\\s*%?\\)?,?)?',
   'gu',
@@ -145,7 +147,6 @@ function cleanNumbers(line) {
 
 const NAME_MAP = {
   'Route T3': 'Route T3 %', 'Route T3 %': 'Route T3 %',
-  'On Time': 'Route On Time %', 'On time': 'Route On Time %',
   'EMR T3': 'EMR T3 %', 'EMR T3 %': 'EMR T3 %',
   'Can': 'EMR Can %', 'EMR Can %': 'EMR Can %',
   'GTR T3': 'GTR T3 %', 'GTR T3 %': 'GTR T3 %',
@@ -154,7 +155,7 @@ const NAME_MAP = {
   'Current Period Variance': 'Current Period Variance',
 }
 const DIR = {
-  'Route T3 %': 'higher', 'Route On Time %': 'higher', 'EMR T3 %': 'higher',
+  'Route T3 %': 'higher', 'EMR T3 %': 'higher',
   'EMR Can %': 'lower', 'GTR T3 %': 'higher', 'XC T3 %': 'higher',
   'Route L2H %': 'higher', 'Current Period Variance': 'higher',
 }
