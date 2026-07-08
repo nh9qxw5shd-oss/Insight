@@ -323,8 +323,17 @@ enough to isolate the population you want to study.
   typical incident load and will be broken by a major event (read the band,
   not the line). Live data only.
 - **Board** (header button) — opens `/wallboard`: an auto-cycling, large-type
-  control-room view (KPIs → 7-day trend → hotspots & latest) refreshing every
-  five minutes.
+  control-room view refreshing every five minutes. Five rotation panels with
+  panel-specific dwell times: **KPIs** (10s), **Performance** (20s — latest
+  route standing RAG'd against target, today's slot ticker, and the
+  period-to-date Route T3 % chart with trajectory to period end), **Trend**
+  (15s — 7-day delay chart, with the worst days captioned by their single
+  biggest contributing incident), **Safety** (15s — safety-critical incidents
+  in the window with category badges), and **Hotspots & latest** (20s).
+  Clicking a dot pins that panel; `?panel=<kpis|performance|trend|safety|hotspots>`
+  in the URL pins it from launch so a dedicated screen can be locked to one
+  view. If the five-minute refresh fails repeatedly, a red **Data stale**
+  banner appears with the time of the last good update.
 
 ---
 
