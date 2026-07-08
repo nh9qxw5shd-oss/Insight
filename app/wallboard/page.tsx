@@ -147,14 +147,14 @@ export default function WallboardPage() {
   const trend    = useMemo(() => data ? deriveTrend(data) : [], [data])
   const hotspots = useMemo(() => data ? deriveLocationHotspots(data, 5) : [], [data])
 
-  // Five most recent high-delay incidents — newest day first, biggest delay first
-  const latest = useMemo(() => {
+  // Five highest-delay incidents across the 7-day window, biggest first.
+  // Continuation rows are excluded so a multi-day incident appears once,
+  // ranked by its headline delay.
+  const topDelay = useMemo(() => {
     if (!data) return []
     return [...nonContinuation(data.incidents)]
-      .sort((a, b) =>
-        b.report_date.localeCompare(a.report_date) ||
-        effectiveDelay(b) - effectiveDelay(a),
-      )
+      .filter(i => effectiveDelay(i) > 0)
+      .sort((a, b) => effectiveDelay(b) - effectiveDelay(a))
       .slice(0, 5)
   }, [data])
 
@@ -593,7 +593,7 @@ export default function WallboardPage() {
               </div>
             )}
 
-            {/* ── Panel — hotspots & latest ───────────────────────────────── */}
+            {/* ── Panel — hotspots & highest-delay incidents ──────────────── */}
             {panelId === 'hotspots' && (
               <div className="flex-1 grid grid-cols-1 xl:grid-cols-2 gap-6 min-h-0">
                 {/* Top locations by delay */}
@@ -624,19 +624,19 @@ export default function WallboardPage() {
                   </div>
                 </div>
 
-                {/* Latest high-delay incidents */}
+                {/* Highest-delay incidents in window */}
                 <div className="card p-8 flex flex-col">
                   <div className="label-micro text-sm mb-6" style={{ color: 'var(--nr-orange)' }}>
-                    Latest high-delay incidents
+                    Highest-delay incidents — 7 days
                   </div>
                   <div className="flex-1 flex flex-col justify-center divide-y" style={{ borderColor: 'var(--line)' }}>
-                    {latest.length === 0 && (
+                    {topDelay.length === 0 && (
                       <div className="text-lg" style={{ color: 'var(--ink-500)' }}>No incidents in window</div>
                     )}
-                    {latest.map(i => (
+                    {topDelay.map(i => (
                       <div key={i.id} className="py-4 flex items-center gap-6" style={{ borderColor: 'var(--line)' }}>
-                        <div className="numeric-mono text-lg shrink-0 w-20" style={{ color: 'var(--ink-400)' }}>
-                          {i.incident_start ?? '—'}
+                        <div className="numeric-mono text-lg shrink-0 w-28" style={{ color: 'var(--ink-400)' }}>
+                          {shortDay(i.report_date)} {i.incident_start ?? '—'}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="text-xl truncate" style={{ color: 'var(--ink-100)' }}>
