@@ -1,6 +1,6 @@
 'use client'
 
-import { IncidentRow, ReportRow, IncidentCategory, Severity, SAFETY_CATEGORIES } from './types'
+import { IncidentRow, ReportRow, IncidentCategory, IncidentEvent, Severity, SAFETY_CATEGORIES } from './types'
 import { RawData } from './queries'
 import { classifyTrusted } from './classification'
 
@@ -184,6 +184,29 @@ function buildIncident(rng: () => number, dateStr: string, idx: number, faultPoo
   const dt = new Date(dateStr)
   const dow = dt.getUTCDay()
 
+  // CCIL events block — a scripted chronological commentary so the drill-down
+  // "Show events" view (and its ITSR / MOM auto-tagging) works in demo mode.
+  const eventScript = [
+    `Incident reported — ${location}`,
+    'Signaller advised, trains cautioned through the affected section',
+    'MOM dispatched to site',
+    'MOM arrived on site and commenced examination',
+    'Update from site — investigation continuing',
+    'Fault team requested to attend',
+    'Response staff update passed to route control',
+    'Update — repair work in progress',
+    'ITSR discussed — time huddle held with route control',
+    'Service recovery plan implemented',
+    'Line reopened — trains resuming at caution',
+    'Incident concluded — normal working resumed',
+  ]
+  let evMin = incidentStartMin
+  const events: IncidentEvent[] = eventScript.slice(0, 1 + Math.floor(rng() * 12)).map(desc => {
+    const e = { date: dateStr, time: fmt(evMin), company: rng() < 0.7 ? 'NR' : pick(COMPANIES, rng), description: desc }
+    evMin += 5 + Math.floor(rng() * 40)
+    return e
+  })
+
   return {
     id: `demo-${dateStr}-${idx}`,
     report_date: dateStr,
@@ -234,7 +257,8 @@ function buildIncident(rng: () => number, dateStr: string, idx: number, faultPoo
     // Weight TRMC codes realistically: NR Infrastructure dominant, then TOC, NR Ops
     trmc_code: pick(['IQVL','IQVL','IQVL','MXHA','MXHA','IQVR','IQV9','IQGR',null,null] as (string|null)[], rng),
     fts_div_count: 0,
-    event_count: 1 + Math.floor(rng() * 12),
+    event_count: events.length,
+    events,
     has_files: rng() < 0.18,
     hour_of_day: hr,
     day_of_week: dow,

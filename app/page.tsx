@@ -39,7 +39,7 @@ import {
   deriveChangePoints, deriveDelta, deriveHypotheses, deriveIncidentTypeList,
   effectiveDelay, effectiveMinsToArrival, effectiveDuration, SLA_THRESHOLD_MINS,
   searchMatch, nonContinuation,
-  fetchIncidentsForRange, fetchReportsForRange, fetchReviewsForRange,
+  fetchIncidentsForRange, fetchReportsForRange, fetchReviewsForRange, fetchIncidentEvents,
   fetchTeamMembersForRange, deriveTeamWorkload, deriveStaffPatterns,
   upsertIncidentReview, deleteIncidentReview, deriveReviewPeriods,
   deriveRecoveryTrendByPeriod,
@@ -3617,10 +3617,85 @@ function DrillDownModal({ title, incidents, onClose }: { title: string; incident
                   )}
                 </div>
               ))}
+              <DrillDownEvents rows={[inc, ...continuations]} />
             </div>
           ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+// "Show events" expander on each drill-down incident. The analytics fetch
+// deliberately omits the jsonb events column, so the CCIL commentary is
+// pulled on demand for just this incident (primary + carried-over rows).
+function DrillDownEvents({ rows }: { rows: IncidentRow[] }) {
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [byId, setById] = useState<Map<string, IncidentEvent[]> | null>(null)
+
+  const expectedCount = rows.reduce((n, r) => n + (r.events?.length ?? r.event_count ?? 0), 0)
+  if (expectedCount === 0) return null
+
+  const toggle = () => {
+    if (open) { setOpen(false); return }
+    setOpen(true)
+    if (byId || loading) return
+    const local = new Map<string, IncidentEvent[]>()
+    for (const r of rows) {
+      if (r.events && r.events.length > 0) local.set(r.id, r.events)
+    }
+    const missing = rows.filter(r => r.events == null).map(r => r.id)
+    if (missing.length === 0) { setById(local); return }
+    setLoading(true)
+    setError(null)
+    fetchIncidentEvents(missing)
+      .then(remote => {
+        for (const [id, evs] of remote) local.set(id, evs)
+        setById(local)
+      })
+      .catch(e => setError(e instanceof Error ? e.message : 'Failed to load events'))
+      .finally(() => setLoading(false))
+  }
+
+  const sections = byId
+    ? rows.filter(r => byId.has(r.id)).map(r => ({ row: r, events: byId.get(r.id)! }))
+    : []
+
+  return (
+    <div className="border-t border-[var(--line)]" style={{ background: 'var(--bg-card)' }}>
+      <button
+        type="button"
+        onClick={toggle}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-[var(--bg-card-hi)] transition-colors"
+      >
+        <span className="label-micro flex items-center gap-2">
+          {open ? 'Hide events' : 'Show events'}
+          <span className="numeric-mono text-[9px]" style={{ color: 'var(--ink-500)' }}>{expectedCount}</span>
+        </span>
+        <span className="flex items-center gap-2">
+          <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL commentary</span>
+          <ChevronDown size={12} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 pt-1 border-t border-[var(--line)] space-y-1">
+          {loading && <div className="text-[11px] py-1" style={{ color: 'var(--ink-400)' }}>Loading events…</div>}
+          {error && <div className="text-[11px] py-1" style={{ color: 'var(--nr-red)' }}>{error}</div>}
+          {!loading && !error && byId && sections.length === 0 && (
+            <div className="text-[11px] py-1" style={{ color: 'var(--ink-400)' }}>No events log recorded for this incident.</div>
+          )}
+          {sections.map(({ row, events }) => (
+            <div key={row.id} className="space-y-1">
+              {sections.length > 1 && (
+                <div className="label-micro text-[9px] pt-1" style={{ color: 'var(--ink-500)' }}>{row.report_date}</div>
+              )}
+              <EventLogRows events={events} signals={parseEventSignals(events)} />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -6072,16 +6147,49 @@ function CcilDetailBlock({ incident }: { incident: IncidentRow }) {
 // Collapsible CCIL events-log viewer for the review form. Collapsed by default
 // so it costs no vertical space until the SNDM opens it. Events the parser
 // used to derive the ITSR / MOM fields are tagged inline.
-function IncidentEventsBlock({ events, signals }: { events: IncidentEvent[]; signals: EventSignals }) {
-  const [open, setOpen] = useState(false)
-  if (events.length === 0) return null
-
+function EventLogRows({ events, signals }: { events: IncidentEvent[]; signals: EventSignals }) {
   const tagFor = (i: number): { label: string; color: string } | null => {
     if (signals.itsr?.eventIndex === i)        return { label: 'ITSR',         color: 'var(--nr-orange)' }
     if (signals.momArrival?.eventIndex === i)  return { label: 'MOM on site',  color: 'var(--nr-green)' }
     if (signals.momDispatch?.eventIndex === i) return { label: 'MOM dispatch', color: 'var(--nr-blue)' }
     return null
   }
+  return (
+    <>
+      {events.map((e, i) => {
+        const tag = tagFor(i)
+        return (
+          <div
+            key={i}
+            className="flex items-start gap-2 text-[11px] rounded-sm px-2 py-1"
+            style={tag ? { background: 'var(--bg-card)', border: '1px solid var(--line)' } : undefined}
+          >
+            <span className="numeric-mono text-[10px] shrink-0 pt-0.5" style={{ color: 'var(--ink-400)', minWidth: '4ch' }}>
+              {e.time || '—'}
+            </span>
+            {e.company && (
+              <span className="label-micro text-[8px] shrink-0 pt-0.5" style={{ color: 'var(--ink-500)' }}>{e.company}</span>
+            )}
+            <span className="flex-1 break-words" style={{ color: 'var(--ink-200)' }}>{e.description || '—'}</span>
+            {tag && (
+              <span
+                className="pill text-[8px] shrink-0"
+                style={{ background: `${tag.color}20`, color: tag.color, borderColor: `${tag.color}60` }}
+              >
+                {tag.label}
+              </span>
+            )}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+function IncidentEventsBlock({ events, signals }: { events: IncidentEvent[]; signals: EventSignals }) {
+  const [open, setOpen] = useState(false)
+  if (events.length === 0) return null
+
   const matchCount = [signals.itsr, signals.momDispatch, signals.momArrival].filter(Boolean).length
 
   return (
@@ -6107,32 +6215,7 @@ function IncidentEventsBlock({ events, signals }: { events: IncidentEvent[]; sig
       </button>
       {open && (
         <div className="px-3 pb-3 pt-1 border-t border-[var(--line)] space-y-1">
-          {events.map((e, i) => {
-            const tag = tagFor(i)
-            return (
-              <div
-                key={i}
-                className="flex items-start gap-2 text-[11px] rounded-sm px-2 py-1"
-                style={tag ? { background: 'var(--bg-card)', border: '1px solid var(--line)' } : undefined}
-              >
-                <span className="numeric-mono text-[10px] shrink-0 pt-0.5" style={{ color: 'var(--ink-400)', minWidth: '4ch' }}>
-                  {e.time || '—'}
-                </span>
-                {e.company && (
-                  <span className="label-micro text-[8px] shrink-0 pt-0.5" style={{ color: 'var(--ink-500)' }}>{e.company}</span>
-                )}
-                <span className="flex-1 break-words" style={{ color: 'var(--ink-200)' }}>{e.description || '—'}</span>
-                {tag && (
-                  <span
-                    className="pill text-[8px] shrink-0"
-                    style={{ background: `${tag.color}20`, color: tag.color, borderColor: `${tag.color}60` }}
-                  >
-                    {tag.label}
-                  </span>
-                )}
-              </div>
-            )
-          })}
+          <EventLogRows events={events} signals={signals} />
         </div>
       )}
     </div>
