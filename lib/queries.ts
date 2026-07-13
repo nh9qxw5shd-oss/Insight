@@ -10,7 +10,7 @@ import {
   Signal, SignalType, LineDatum, AttributionDatum, Chain,
   ChangePoint, DeltaMetric, DeltaContribution, DeltaDecomposition, Severity,
   Hypothesis, HypothesisCluster, HypothesisDimension,
-  IncidentReview, IncidentReviewInput,
+  IncidentReview, IncidentReviewInput, IncidentEvent,
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum,
   PmcFlag, PMC_FLAG_LIMIT,
   InsightAnnotation, AnnotationKind, WatchlistEntry, WatchlistKind,
@@ -1454,6 +1454,24 @@ export async function fetchIncidentsForRange(from: string, to: string): Promise<
       .order('incident_start', { ascending: true, nullsFirst: false }),
   )
   return normaliseCats(rows)
+}
+
+// Events log for a specific set of incidents, keyed by incident id. The
+// analytics fetch omits the jsonb events column to stay lean, so drill-down
+// views pull it on demand for just the rows they display.
+export async function fetchIncidentEvents(ids: string[]): Promise<Map<string, IncidentEvent[]>> {
+  const out = new Map<string, IncidentEvent[]>()
+  const sb = getSupabase()
+  if (!sb || ids.length === 0) return out
+  const { data, error } = await sb
+    .from('incidents')
+    .select('id, events')
+    .in('id', ids)
+  if (error) throw new Error(error.message)
+  for (const row of (data ?? []) as { id: string; events: IncidentEvent[] | null }[]) {
+    if (row.events && row.events.length > 0) out.set(row.id, row.events)
+  }
+  return out
 }
 
 export async function fetchReportsForRange(from: string, to: string): Promise<ReportRow[]> {
