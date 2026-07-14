@@ -60,10 +60,28 @@ helpers `periodStartDateOf` (06:00-boundary date mapping), `voteLogDate`
 
 **`lib/types.ts`** — `Incident.headerIsoDate`, `dateSource: 'rows'` variant.
 
+## Second commit — the Log Date is set by the system, not the operator
+
+On top of the gates, the Log Date is no longer a hand-maintained value at all.
+At upload it is derived in authority order:
+
+1. **Incident row timestamps** (`dateSource: 'rows'`) — a ≥60% majority of the
+   machine-stamped CCIL header timestamps mapped onto the 06:00→06:00 grid.
+   This is the primary source: the rows cannot be hand-edited into the wrong
+   day, so a mis-dated document header simply loses the vote.
+2. **Document period header** (`'header'`) — only when too few rows agree
+   (tiny logs, or continuation-heavy logs with no clear majority).
+3. **Yesterday** (`'fallback'`) — nothing readable; flagged for confirmation.
+
+The Roster step shows the date **read-only with its provenance** ("Set by the
+system from the incidents' own CCIL timestamps"). Manual editing exists only
+behind an explicit **Unlock** button for exceptional cases (backfilling an old
+day) — and everything typed there still has to pass the save-boundary gates.
+
 ## How to apply
 
 The full change is the sibling file `05-log-date-integrity.patch` — a
-standard git patch of one commit against `main` @ `9e6369c`:
+standard git patch of two commits against `main` @ `9e6369c`:
 
 ```bash
 cd dlog2
