@@ -23,6 +23,15 @@ Apply order:
 Historic rows can be left as-is — Insight gracefully handles NULLs and the
 analytics windows are typically rolling, so historic gaps disappear over time.
 
+## Critical — log-date integrity gates (patch 5)
+
+Patch 5 (`patches/05-log-date-integrity.patch.md` + the `git am`-able
+`05-log-date-integrity.patch`) hard-blocks saving a log under a date whose
+06:00→06:00 period hasn't happened — the recurring failure that blanked
+Sun 21 Jun and Sun 12 Jul 2026 in Insight and merged two days' incidents
+under one `report_date`. Apply it to DLog2 before anything else: every
+night it is missing is another night the corruption can recur.
+
 ## Optional — persist the incident EVENTS block (patch 4)
 
 Patches 1–3 capture structured fields but still discard the per-incident

@@ -135,6 +135,11 @@ export interface IncidentReview {
   itsr_commentary: string | null
   time_huddle_held: string | null
 
+  // SNDM downgrade: the incident was flagged for review (delay / trigger
+  // mention) but a human judged no review is needed. Excluded from the
+  // reviewable count exactly like an auto-N/A incident.
+  review_not_required: boolean | null
+
   incident_classification: IncidentClassification | null
 
   mom_responded: YesNoNa | null

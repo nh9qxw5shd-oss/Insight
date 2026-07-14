@@ -19,8 +19,7 @@ import {
   CATEGORY_CONFIG, SEVERITY_CONFIG, SAFETY_CATEGORIES,
   TIME_WINDOWS, ChartKind, DistributionKind, Signal, ChangePoint,
   DeltaMetric, DeltaDecomposition, HypothesisCluster, Hypothesis,
-  IncidentReview, IncidentReviewInput, IncidentClassification, First50Outcome,
-  CLASSIFICATION_CONFIG, YesNoNa, MomDepot, MOM_DEPOT_LABELS, StrandedTrainEntry,
+  IncidentReview, IncidentReviewInput, YesNoNa, StrandedTrainEntry,
   IncidentTeamMember, TeamMemberWorkload, StaffPatternDatum, IncidentEvent,
   PmcFlag, PMC_FLAG_LIMIT, InsightAnnotation,
 } from '@/lib/types'
@@ -4841,6 +4840,9 @@ function RecoveryMetricChart({
 const NA_DELAY_THRESHOLD = 400
 
 function isReviewAutoNA(incident: IncidentRow, review: IncidentReview | undefined): boolean {
+  // An SNDM downgrade outranks the flagging heuristics: "review not required"
+  // removes the incident from the reviewable count whatever its delay/triggers.
+  if (review?.review_not_required) return true
   const delay = review?.minutes_delay_override ?? incident.minutes_delay ?? 0
   if (delay >= NA_DELAY_THRESHOLD) return false
   return detectReviewTriggers(incident).length === 0
@@ -4848,6 +4850,7 @@ function isReviewAutoNA(incident: IncidentRow, review: IncidentReview | undefine
 
 // One-click review: everything the events log can answer, nothing asserted
 // beyond it. The reviewer can always reopen the full form to add detail.
+// The first ITSR/huddle mention supplies the time the huddle was held.
 function buildQuickReviewInput(incident: IncidentRow, author: string | null): IncidentReviewInput {
   const sig = parseEventSignals(incident.events)
   return {
@@ -4855,11 +4858,19 @@ function buildQuickReviewInput(incident: IncidentRow, author: string | null): In
     report_date: incident.report_date,
     itsr_required:        sig.itsr ? 'YES' : null,
     time_huddle_held:     sig.itsr?.time ?? null,
-    mom_responded:        (sig.momDispatch || sig.momArrival) ? 'YES' : null,
-    mom_dispatched_time:  sig.momDispatch?.time ?? null,
-    mom_arrived_time:     sig.momArrival?.time ?? null,
     reviewed_by:          author,
     notes: 'Quick review — fields auto-filled from the events log.',
+  }
+}
+
+// One-click downgrade for incidents flagged for review that don't actually
+// need one. Saves a review row carrying only the not-required marker.
+function buildNotRequiredInput(incident: IncidentRow, author: string | null): IncidentReviewInput {
+  return {
+    incident_id: incident.id,
+    report_date: incident.report_date,
+    review_not_required: true,
+    reviewed_by: author,
   }
 }
 
@@ -4868,7 +4879,7 @@ function buildQuickReviewInput(incident: IncidentRow, author: string | null): In
 function draftCommentaryFromEvents(incident: IncidentRow): string {
   const lines = (incident.events ?? []).filter(e => e?.description?.trim())
   if (lines.length === 0) return ''
-  const KEY = /itsr|stranded|service recovery|re-?fail|tech(nical)?\s+conf|\bMOMs?\b|line[s]? (blocked|reopened)|all lines|normal working|recover/i
+  const KEY = /itsr|huddle|stranded|service recovery|re-?fail|tech(nical)?\s+conf|\bMOMs?\b|line[s]? (blocked|reopened)|all lines|normal working|recover/i
   const fmt = (e: IncidentEvent) => {
     const s = `${e.time ? e.time + ' — ' : ''}${e.description!.trim()}`
     return s.length > 220 ? `${s.slice(0, 219)}…` : s
@@ -5010,52 +5021,6 @@ function ReviewTab({
         </span>
       </div>
 
-      {teamWorkload.length > 0 && (
-        <Card title="Team on Duty" subtitle="Who was recorded on shift across incidents in this window">
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-[var(--line)]">
-                  <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Name</th>
-                  <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Role</th>
-                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Incidents</th>
-                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Total Delay</th>
-                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Avg / Incident</th>
-                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Shifts</th>
-                </tr>
-              </thead>
-              <tbody>
-                {teamWorkload.map((w, i) => (
-                  <tr key={`${w.name}-${w.role}`} className="border-b border-[var(--line)] last:border-0">
-                    <td className="py-2 font-medium" style={{ color: 'var(--ink-100)' }}>{w.name}</td>
-                    <td className="py-2" style={{ color: 'var(--ink-300)' }}>{w.role}</td>
-                    <td className="py-2 text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>{w.incidentCount}</td>
-                    <td className="py-2 text-right numeric-mono" style={{ color: 'var(--nr-orange)' }}>{fmtMins(w.totalDelay)}</td>
-                    <td className="py-2 text-right numeric-mono" style={{ color: 'var(--ink-300)' }}>
-                      {w.incidentCount > 0 ? fmtMins(w.totalDelay / w.incidentCount) : '—'}
-                    </td>
-                    <td className="py-2 text-right">
-                      <span className="inline-flex items-center gap-1.5">
-                        {w.dayShifts > 0 && (
-                          <span className="pill text-[9px]" style={{ background: 'rgba(243,156,18,0.12)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.3)' }}>
-                            Day ×{w.dayShifts}
-                          </span>
-                        )}
-                        {w.nightShifts > 0 && (
-                          <span className="pill text-[9px]" style={{ background: 'rgba(74,111,165,0.12)', color: 'var(--nr-blue)', borderColor: 'rgba(74,111,165,0.3)' }}>
-                            Night ×{w.nightShifts}
-                          </span>
-                        )}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
-
       {recoveryTrend.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Card
@@ -5116,6 +5081,52 @@ function ReviewTab({
           onTogglePmcFlag={onTogglePmcFlag}
           canSave={supabaseConfigured && !demoMode}
         />
+      )}
+
+      {teamWorkload.length > 0 && (
+        <Card title="Team on Duty" subtitle="Who was recorded on shift across incidents in this window">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-[var(--line)]">
+                  <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Name</th>
+                  <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Role</th>
+                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Incidents</th>
+                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Total Delay</th>
+                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Avg / Incident</th>
+                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Shifts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {teamWorkload.map((w, i) => (
+                  <tr key={`${w.name}-${w.role}`} className="border-b border-[var(--line)] last:border-0">
+                    <td className="py-2 font-medium" style={{ color: 'var(--ink-100)' }}>{w.name}</td>
+                    <td className="py-2" style={{ color: 'var(--ink-300)' }}>{w.role}</td>
+                    <td className="py-2 text-right numeric-mono" style={{ color: 'var(--ink-100)' }}>{w.incidentCount}</td>
+                    <td className="py-2 text-right numeric-mono" style={{ color: 'var(--nr-orange)' }}>{fmtMins(w.totalDelay)}</td>
+                    <td className="py-2 text-right numeric-mono" style={{ color: 'var(--ink-300)' }}>
+                      {w.incidentCount > 0 ? fmtMins(w.totalDelay / w.incidentCount) : '—'}
+                    </td>
+                    <td className="py-2 text-right">
+                      <span className="inline-flex items-center gap-1.5">
+                        {w.dayShifts > 0 && (
+                          <span className="pill text-[9px]" style={{ background: 'rgba(243,156,18,0.12)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.3)' }}>
+                            Day ×{w.dayShifts}
+                          </span>
+                        )}
+                        {w.nightShifts > 0 && (
+                          <span className="pill text-[9px]" style={{ background: 'rgba(74,111,165,0.12)', color: 'var(--nr-blue)', borderColor: 'rgba(74,111,165,0.3)' }}>
+                            Night ×{w.nightShifts}
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       )}
     </div>
   )
@@ -5181,6 +5192,14 @@ function ReviewQueue({
     finally { setBusy(false) }
   }
 
+  // One-click downgrade: the flagged incident doesn't need a review at all.
+  const notRequiredOne = async (i: IncidentRow) => {
+    setBusy(true); setError(null)
+    try { await onSave(buildNotRequiredInput(i, author.trim() || null), i.incident_start) }
+    catch (e: any) { setError(e?.message || 'Downgrade failed') }
+    finally { setBusy(false) }
+  }
+
   const quickReviewSelected = async () => {
     const targets = pending.filter(p => selected.has(p.id))
     if (targets.length === 0) return
@@ -5235,7 +5254,7 @@ function ReviewQueue({
           <Zap size={11} /> Quick-review selected{selectedPendingCount > 0 ? ` (${selectedPendingCount})` : ''}{progress ? ` · ${progress}` : ''}
         </button>
         <span style={{ color: 'var(--ink-500)' }}>
-          {pending.length} pending · quick review saves the event-log auto-fill (ITSR / MOM signals) and marks the incident reviewed — open the full form for anything needing detail.
+          {pending.length} pending · quick review (⚡) saves the event-log auto-fill (ITSR/huddle signal + time) and marks the incident reviewed; ✕ downgrades it as review-not-required — open the full form for anything needing detail.
         </span>
         {error && <span style={{ color: '#FF8077' }}>{error}</span>}
       </div>
@@ -5261,6 +5280,14 @@ function ReviewQueue({
                   title="Quick review — save event-log auto-fill and mark reviewed"
                 >
                   <Zap size={10} />
+                </button>
+                <button
+                  className="btn !py-0.5 !px-1.5 !text-[9px]"
+                  disabled={!canSave || busy}
+                  onClick={() => notRequiredOne(inc)}
+                  title="Review not required — downgrade this flagged incident and remove it from the pending count"
+                >
+                  <X size={10} />
                 </button>
               </div>
               <div className="flex-1 min-w-0">
@@ -5452,11 +5479,11 @@ function ReviewIncidentRow({
   canSave: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const cfg      = CATEGORY_CONFIG[incident.category]
-  const reviewed = !!review
-  const cls      = review?.incident_classification ?? null
-  const autoNA   = isReviewAutoNA(incident, review)
-  const triggers = detectReviewTriggers(incident)
+  const cfg         = CATEGORY_CONFIG[incident.category]
+  const notRequired = !!review?.review_not_required
+  const reviewed    = !!review && !notRequired
+  const autoNA      = isReviewAutoNA(incident, review)
+  const triggers    = detectReviewTriggers(incident)
 
   return (
     <div
@@ -5508,8 +5535,12 @@ function ReviewIncidentRow({
               <Flag size={9} /> PMC
             </span>
           )}
-          {cls && <ClassificationPill value={cls} />}
-          {autoNA && !reviewed && (
+          {notRequired && (
+            <span className="pill text-[9px]" style={{ background: 'rgba(122,139,168,0.12)', color: 'var(--ink-400)', borderColor: 'var(--line-hi)' }} title={`Downgraded by an SNDM — review not required${review?.reviewed_by ? ` (${review.reviewed_by})` : ''}`}>
+              Not required
+            </span>
+          )}
+          {autoNA && !reviewed && !notRequired && (
             <span className="pill text-[9px]" style={{ background: 'rgba(122,139,168,0.08)', color: 'var(--ink-500)', borderColor: 'var(--line)', fontStyle: 'italic' }}>
               Auto N/A
             </span>
@@ -5535,7 +5566,7 @@ function ReviewIncidentRow({
 
       {open && (
         <>
-          {autoNA && !reviewed && (
+          {autoNA && !review && (
             <div className="px-3 py-2 text-[11px] flex items-center gap-2 border-t border-[var(--line)]" style={{ background: 'var(--bg-card-hi)', color: 'var(--ink-400)' }}>
               <AlertTriangle size={11} style={{ color: 'var(--ink-500)' }} />
               This incident is auto-classified N/A (delay below {NA_DELAY_THRESHOLD} min, and no ITSR / service recovery / stranded train / refail / technical conference mention in the log) and excluded from review counts. Fill in the form below to record a manual review.
@@ -5546,6 +5577,13 @@ function ReviewIncidentRow({
             flagged={pmcFlagged}
             weekCount={pmcWeekCount}
             onToggle={onTogglePmcFlag}
+            canSave={canSave}
+          />
+          <NotRequiredBar
+            incident={incident}
+            review={review}
+            onSave={onSave}
+            onDelete={onDelete}
             canSave={canSave}
           />
           <ReviewForm
@@ -5622,12 +5660,67 @@ function PmcFlagBar({
   )
 }
 
-function ClassificationPill({ value }: { value: IncidentClassification }) {
-  const cfg = CLASSIFICATION_CONFIG[value]
+// Downgrade strip for incidents flagged for review that an SNDM judges don't
+// actually need one. Marking saves a review row carrying only the
+// not-required flag; the incident then counts like an auto-N/A row.
+function NotRequiredBar({
+  incident, review, onSave, onDelete, canSave,
+}: {
+  incident: IncidentRow
+  review: IncidentReview | undefined
+  onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
+  onDelete: (incidentId: string) => Promise<void>
+  canSave: boolean
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const notRequired = !!review?.review_not_required
+
+  // Only meaningful for flagged-but-unreviewed incidents, or to undo a
+  // previous downgrade. A completed review or an auto-N/A row doesn't need it.
+  const flagged = (incident.minutes_delay ?? 0) >= NA_DELAY_THRESHOLD || detectReviewTriggers(incident).length > 0
+  if (!notRequired && (review || !flagged)) return null
+
+  const handle = async () => {
+    setBusy(true); setError(null)
+    try {
+      if (notRequired) {
+        if (!confirm('Reopen this incident for review? The not-required marker will be removed.')) { setBusy(false); return }
+        await onDelete(incident.id)
+      } else {
+        const author = typeof window === 'undefined' ? null : (localStorage.getItem('insight-author') || null)
+        await onSave(buildNotRequiredInput(incident, author), incident.incident_start)
+      }
+    } catch (e: any) {
+      setError(e?.message || 'Failed to update')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
-    <span className="pill text-[9px] font-bold" style={{ background: cfg.color, color: cfg.textColor, borderColor: cfg.color }}>
-      {cfg.label.toUpperCase()}
-    </span>
+    <div className="px-3 py-2 flex items-center gap-3 flex-wrap border-t border-[var(--line)] text-[11px]" style={{ background: 'var(--bg-card-hi)' }}>
+      <button
+        type="button"
+        className={`btn !py-1 !px-2.5 !text-[10px] ${notRequired ? 'btn-active' : ''}`}
+        disabled={!canSave || busy}
+        onClick={handle}
+        title={
+          !canSave ? 'Requires a live Supabase connection'
+          : notRequired ? 'Remove the downgrade and return this incident to the review queue'
+          : 'Downgrade this flagged incident — no SNDM review is required. It is removed from the pending count.'
+        }
+      >
+        <X size={10} />
+        {busy ? 'Saving…' : notRequired ? 'Marked review not required — reopen' : 'Review not required'}
+      </button>
+      <span style={{ color: 'var(--ink-500)' }}>
+        {notRequired
+          ? `Downgraded${review?.reviewed_by ? ` by ${review.reviewed_by}` : ''} — excluded from review counts.`
+          : 'Flagged for review — downgrade if no review is actually needed.'}
+      </span>
+      {error && <span style={{ color: '#FF8077' }}>{error}</span>}
+    </div>
   )
 }
 
@@ -5646,10 +5739,10 @@ function ReviewForm({
 }) {
   type FormState = Omit<IncidentReviewInput, 'incident_id' | 'report_date'>
 
-  // Signals auto-parsed from the CCIL events log. Used to pre-fill empty
-  // ITSR / MOM fields below and to tag the matched events in the log view.
+  // Signals auto-parsed from the CCIL events log. Used to pre-fill the empty
+  // ITSR fields below and to tag the matched events in the log view. The
+  // first ITSR/huddle mention supplies the time the huddle was held.
   const eventSignals = useMemo(() => parseEventSignals(incident.events), [incident.events])
-  const momDetected  = !!(eventSignals.momDispatch || eventSignals.momArrival)
 
   const initial: FormState = useMemo(() => ({
     technical_conference_outcome: review?.technical_conference_outcome ?? null,
@@ -5658,13 +5751,6 @@ function ReviewForm({
     stranded_trains: review?.stranded_trains ?? null,
     itsr_required: review?.itsr_required ?? (eventSignals.itsr ? 'YES' : null),
     time_huddle_held: review?.time_huddle_held ?? eventSignals.itsr?.time ?? null,
-    incident_classification: review?.incident_classification ?? null,
-    mom_responded: review?.mom_responded ?? (momDetected ? 'YES' : null),
-    mom_depot: review?.mom_depot ?? null,
-    mom_response_time: review?.mom_response_time ?? null,
-    mom_dispatched_time: review?.mom_dispatched_time ?? eventSignals.momDispatch?.time ?? null,
-    mom_arrived_time: review?.mom_arrived_time ?? eventSignals.momArrival?.time ?? null,
-    first_50_30min_target_met: review?.first_50_30min_target_met ?? null,
     target_recovery_time: review?.target_recovery_time ?? null,
     actual_recovery_time: review?.actual_recovery_time ?? null,
     title_override: review?.title_override ?? null,
@@ -5676,7 +5762,7 @@ function ReviewForm({
     part_cancelled_override: review?.part_cancelled_override ?? null,
     notes: review?.notes ?? null,
     reviewed_by: review?.reviewed_by ?? null,
-  }), [review, eventSignals, momDetected])
+  }), [review, eventSignals])
 
   const [form, setForm] = useState<FormState>(initial)
   const [saving, setSaving] = useState(false)
@@ -5690,11 +5776,8 @@ function ReviewForm({
   // A field shows the "auto · from events" tag while it still holds the value
   // derived from the events log and the SNDM has no saved value for it. Any
   // manual edit (or a previously saved review) clears the tag.
-  const autoITSR    = !review?.itsr_required        && eventSignals.itsr != null               && form.itsr_required === 'YES'
-  const autoHuddle  = !review?.time_huddle_held     && eventSignals.itsr?.time != null         && form.time_huddle_held === eventSignals.itsr.time
-  const autoMomResp = !review?.mom_responded        && momDetected                             && form.mom_responded === 'YES'
-  const autoMomDisp = !review?.mom_dispatched_time  && eventSignals.momDispatch?.time != null  && form.mom_dispatched_time === eventSignals.momDispatch.time
-  const autoMomArr  = !review?.mom_arrived_time     && eventSignals.momArrival?.time != null   && form.mom_arrived_time === eventSignals.momArrival.time
+  const autoITSR   = !review?.itsr_required    && eventSignals.itsr != null       && form.itsr_required === 'YES'
+  const autoHuddle = !review?.time_huddle_held && eventSignals.itsr?.time != null && form.time_huddle_held === eventSignals.itsr.time
 
   // Period / week derived from incident.report_date (read-only)
   const railPeriod = useMemo(() => railwayPeriodWeek(incident.report_date), [incident.report_date])
@@ -5737,6 +5820,8 @@ function ReviewForm({
       for (const [k, v] of Object.entries(form)) {
         cleaned[k] = v === '' ? null : v
       }
+      // Completing a review supersedes a "review not required" downgrade
+      cleaned.review_not_required = false
       // Drop any stranded entries that are completely blank so we don't
       // persist empty objects
       if (Array.isArray(cleaned.stranded_trains)) {
@@ -5903,74 +5988,7 @@ function ReviewForm({
           )}
         </FieldGroup>
 
-        {/* Row 5 — Incident classification */}
-        <FieldGroup label="Incident Classification">
-          <div className="col-span-full flex gap-2 flex-wrap">
-            {(Object.keys(CLASSIFICATION_CONFIG) as IncidentClassification[]).map(k => {
-              const cfg = CLASSIFICATION_CONFIG[k]
-              const active = form.incident_classification === k
-              return (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => set('incident_classification', active ? null : k)}
-                  className="px-3 py-1.5 rounded-sm text-[10px] font-bold tracking-wider uppercase transition-all"
-                  style={{
-                    background: active ? cfg.color : 'transparent',
-                    color: active ? cfg.textColor : cfg.color,
-                    border: `1px solid ${cfg.color}`,
-                    boxShadow: active ? `0 0 12px ${cfg.color}80` : 'none',
-                    fontFamily: 'JetBrains Mono, monospace',
-                  }}
-                >
-                  {cfg.label}
-                </button>
-              )
-            })}
-          </div>
-        </FieldGroup>
-
-        {/* Row 6 — MOM response */}
-        <FieldGroup label="MOM Response">
-          <Field label="MOM Responded?" auto={autoMomResp}>
-            <YesNoNaSelect value={form.mom_responded} onChange={v => set('mom_responded', v)} />
-          </Field>
-          {form.mom_responded === 'YES' && (
-            <>
-              <Field label="Depot">
-                <select
-                  className="select"
-                  value={form.mom_depot ?? ''}
-                  onChange={e => set('mom_depot', (e.target.value || null) as MomDepot | null)}
-                >
-                  <option value="">—</option>
-                  {(Object.keys(MOM_DEPOT_LABELS) as MomDepot[]).map(code => (
-                    <option key={code} value={code}>{MOM_DEPOT_LABELS[code]}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="MOM Dispatched" auto={autoMomDisp}>
-                <input className="input" type="time" value={form.mom_dispatched_time ?? ''} onChange={e => set('mom_dispatched_time', e.target.value || null)} />
-              </Field>
-              <Field label="MOM Arrived On Site" auto={autoMomArr}>
-                <input className="input" type="time" value={form.mom_arrived_time ?? ''} onChange={e => set('mom_arrived_time', e.target.value || null)} />
-              </Field>
-              <Field label="Response Time">
-                <input className="input" type="time" value={form.mom_response_time ?? ''} onChange={e => set('mom_response_time', e.target.value || null)} />
-              </Field>
-              <Field label="First 50 — 30min target">
-                <select className="select" value={form.first_50_30min_target_met ?? ''} onChange={e => set('first_50_30min_target_met', (e.target.value || null) as First50Outcome | null)}>
-                  <option value="">—</option>
-                  <option value="YES">Yes</option>
-                  <option value="NO">No</option>
-                  <option value="NA">N/A</option>
-                </select>
-              </Field>
-            </>
-          )}
-        </FieldGroup>
-
-        {/* Row 7 — Recovery */}
+        {/* Row 5 — Recovery */}
         <FieldGroup label="Recovery">
           <Field label="Target Recovery Time">
             <input className="input" type="time" value={form.target_recovery_time ?? ''} onChange={e => set('target_recovery_time', e.target.value || null)} />

@@ -33,7 +33,10 @@ export function normaliseEventTime(raw: string | null | undefined): string | nul
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
 }
 
-const ITSR_RE   = /\bITSR\b/i
+// "Huddle" is used interchangeably with ITSR in the control log — the first
+// mention of either marks the ITSR, and its event time is taken as the time
+// the huddle was held.
+const ITSR_RE   = /\bITSR\b|\bhuddles?\b/i
 const MOM_RE    = /\bMOMs?\b|mobile operations? managers?/i
 const ARRIVE_RE = /\barrived?\b|\bon[\s-]?site\b|\bon[\s-]?scene\b|\battend(?:ed|ing|ance)\b/i
 
@@ -44,7 +47,7 @@ const ARRIVE_RE = /\barrived?\b|\bon[\s-]?site\b|\bon[\s-]?scene\b|\battend(?:ed
 // events (an ITSR raised, a train stranded, a technical conference held…).
 
 const REVIEW_TRIGGER_PATTERNS: { label: string; re: RegExp }[] = [
-  { label: 'ITSR',                 re: /\bITSR\b/i },
+  { label: 'ITSR',                 re: /\bITSR\b|\bhuddles?\b/i },   // "huddle" is used interchangeably with ITSR
   { label: 'Service recovery',     re: /service\s+recovery/i },
   { label: 'Stranded train',       re: /\bstranded\b/i },
   { label: 'Refail',               re: /\bre-?fail/i },                       // refail / re-fail / refailed…
