@@ -1272,7 +1272,7 @@ function renderPmcSummary(plan: ReportPlan, num: number): string {
       <div class="two-col">
         <div class="panel">
           <div class="panel-title">How this report is built</div>
-          <p>Incidents are grouped by topic from the same CCIL feed used by the live dashboard. Stranded-train and ITSR adherence figures are driven by reviewed incidents — events without an SNDM review on file count against ITSR adherence and don't appear in the stranded-train list until reviewed.</p>
+          <p>Incidents are grouped by topic from the same CCIL feed used by the live dashboard. Stranded-train and ITSR adherence figures are driven by reviewed incidents — events without an SNDM review on file count against ITSR adherence and don't appear in the stranded-train list until reviewed. Incidents reviewed as ITSR N/A are exempt and excluded from the adherence denominator.</p>
         </div>
         <div class="panel-light">
           <div class="panel-title">Period vector</div>
@@ -1392,7 +1392,7 @@ function renderPmcItsr(plan: ReportPlan, num: number): string {
         <div class="kpi" style="padding: 6mm 5mm;">
           <div class="kpi-label">Adherence</div>
           <div class="kpi-value">${itsr.itsrPct.toFixed(0)}%</div>
-          <div class="kpi-hint">${fmt(itsr.itsrCompleted)} of ${fmt(itsr.itsrCount)} reviewed with ITSR</div>
+          <div class="kpi-hint">${fmt(itsr.itsrCompleted)} of ${fmt(itsr.itsrCount)} applicable · ${fmt(itsr.itsrExempt)} N/A exempt</div>
         </div>
         <div class="kpi" style="padding: 6mm 5mm;">
           <div class="kpi-label">ITSR completed</div>
@@ -1402,7 +1402,7 @@ function renderPmcItsr(plan: ReportPlan, num: number): string {
         <div class="kpi" style="padding: 6mm 5mm;">
           <div class="kpi-label">No ITSR (reviewed)</div>
           <div class="kpi-value">${fmt(itsr.itsrMissing)}</div>
-          <div class="kpi-hint">Reviewed · ITSR not required</div>
+          <div class="kpi-hint">Counts against adherence · N/A rows exempt</div>
         </div>
         <div class="kpi ${itsr.itsrUnreviewed > 0 ? 'kpi-critical' : ''}" style="padding: 6mm 5mm; border-right: none;">
           <div class="kpi-label">Unreviewed</div>
@@ -1425,7 +1425,7 @@ function renderPmcItsr(plan: ReportPlan, num: number): string {
   return `
     <section class="page section">
       ${sectionHead(String(num).padStart(2, '0'), 'ITSR adherence', plan.meta.scopeLabel)}
-      <p class="section-lede">Every incident with delay above 300 minutes should have a completed ITSR. The adherence figure measures the share of those incidents whose review confirms an ITSR was completed.</p>
+      <p class="section-lede">Every applicable incident with delay above 300 minutes should have a completed ITSR. The adherence figure measures the share of those incidents whose review confirms an ITSR was completed. Incidents reviewed as ITSR N/A (an ITSR does not apply) are excluded from the calculation entirely.</p>
       ${status}
       ${adherenceTile}
       ${pmcLocationTable(itsr.locations)}
