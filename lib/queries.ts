@@ -1607,6 +1607,18 @@ export async function deleteIncidentReview(incidentId: string): Promise<void> {
   if (error) throw new Error(error.message)
 }
 
+// Permanently delete an incident row from the shared database. Child rows
+// (review, team members, PMC flags) cascade at the DB level. This is the
+// Review tab's escape hatch for the odd stray row that is completely
+// off-area and irrelevant — it removes the incident from Insight AND from
+// the stored DLog2 report, and cannot be undone.
+export async function deleteIncidentRow(incidentId: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) throw new Error('Supabase not configured')
+  const { error } = await sb.from('incidents').delete().eq('id', incidentId)
+  if (error) throw new Error(error.message)
+}
+
 // ─── Control PMC incident flags ──────────────────────────────────────────────
 // Manual nominations for the weekly Control PMC report. Max PMC_FLAG_LIMIT
 // flags per railway week — checked here against the live table so the cap

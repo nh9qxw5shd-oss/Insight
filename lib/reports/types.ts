@@ -277,11 +277,12 @@ export interface PmcTopicPlan {
 
 export interface PmcItsrPlan extends PmcTopicPlan {
   // ITSR-specific roll-up. The 300-min threshold is the policy gate.
-  itsrPct:        number               // pct of >300m incidents that had ITSR completed
-  itsrCount:      number               // total >300m incidents
+  itsrPct:        number               // pct of APPLICABLE >300m incidents that had ITSR completed
+  itsrCount:      number               // applicable >300m incidents (total minus N/A-exempt)
   itsrCompleted:  number               // those with itsr_required = YES on the review
-  itsrMissing:    number               // those without ITSR
-  itsrUnreviewed: number               // those with no review at all
+  itsrMissing:    number               // reviewed without an ITSR completed (counts against)
+  itsrUnreviewed: number               // those with no review at all (counts against)
+  itsrExempt:     number               // reviewed as N/A — ITSR does not apply; excluded from the denominator
 }
 
 // Single matching incident found in the 6-month history alongside one of the

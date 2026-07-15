@@ -6,7 +6,7 @@ import {
   Activity, AlertTriangle, BarChart2, Bell, BookOpen, CalendarDays, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, ClipboardList, Clock, Cloud, Compass, Crosshair, Download, FileText, Filter, Flag, FlaskConical,
   Gauge, GitBranch, GitCompare, Layers, List, MapPin, Minus, Monitor, Moon, RefreshCw, Route, Search, StickyNote,
-  Sun, Table2, TrendingDown, TrendingUp, Train, Wrench, X, Zap, type LucideIcon,
+  Sun, Table2, TrendingDown, TrendingUp, Train, Trash2, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
@@ -40,7 +40,7 @@ import {
   searchMatch, nonContinuation,
   fetchIncidentsForRange, fetchReportsForRange, fetchReviewsForRange, fetchIncidentEvents,
   fetchTeamMembersForRange, deriveTeamWorkload, deriveStaffPatterns,
-  upsertIncidentReview, deleteIncidentReview, deriveReviewPeriods,
+  upsertIncidentReview, deleteIncidentReview, deleteIncidentRow, deriveReviewPeriods,
   deriveRecoveryTrendByPeriod,
   fetchPmcFlagsForRange, addPmcFlag, removePmcFlag,
   fetchAnnotations,
@@ -583,6 +583,17 @@ export default function InsightDashboard() {
     setReviewRows(prev => prev.filter(r => r.incident_id !== incidentId))
   }
 
+  // Permanent incident removal (Review tab escape hatch for stray off-area
+  // rows). The DB delete cascades to review / team / PMC rows; mirror that
+  // in the local state so the row vanishes without a refetch.
+  const handleRemoveIncident = async (incidentId: string) => {
+    await deleteIncidentRow(incidentId)
+    setReviewIncidents(prev => prev ? prev.filter(i => i.id !== incidentId) : prev)
+    setReviewRows(prev => prev.filter(r => r.incident_id !== incidentId))
+    setReviewTeamMembers(prev => prev.filter(m => m.incident_id !== incidentId))
+    setPmcFlags(prev => prev.filter(f => f.incident_id !== incidentId))
+  }
+
   // ─── Control PMC flag helpers ──────────────────────────────────────────────
 
   const pmcFlaggedIds = useMemo(() => new Set(pmcFlags.map(f => f.incident_id)), [pmcFlags])
@@ -715,6 +726,7 @@ export default function InsightDashboard() {
                       recoveryTrend={reviewRecoveryTrend}
                       onSave={handleReviewSave}
                       onDelete={handleReviewDelete}
+                      onRemoveIncident={handleRemoveIncident}
                       pmcFlaggedIds={pmcFlaggedIds}
                       pmcWeekFlagCount={pmcWeekFlagCount}
                       onTogglePmcFlag={handleTogglePmcFlag}
@@ -4894,7 +4906,7 @@ function draftCommentaryFromEvents(incident: IncidentRow): string {
 }
 
 function ReviewTab({
-  periods, reviewByIncidentId, teamMembersByIncidentId, teamWorkload, recoveryTrend, onSave, onDelete,
+  periods, reviewByIncidentId, teamMembersByIncidentId, teamWorkload, recoveryTrend, onSave, onDelete, onRemoveIncident,
   pmcFlaggedIds, pmcWeekFlagCount, onTogglePmcFlag, demoMode, supabaseConfigured,
 }: {
   periods: ReviewPeriodGroup[]
@@ -4904,6 +4916,7 @@ function ReviewTab({
   recoveryTrend: RecoveryTrendPoint[]
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
+  onRemoveIncident: (incidentId: string) => Promise<void>
   pmcFlaggedIds: Set<string>
   pmcWeekFlagCount: (reportDate: string) => number
   onTogglePmcFlag: (incident: IncidentRow) => Promise<void>
@@ -4941,7 +4954,7 @@ function ReviewTab({
   return (
     <div className="space-y-6">
       {!supabaseConfigured && (
-        <div className="card p-4 text-xs flex items-start gap-3" style={{ borderColor: 'var(--nr-amber)' }}>
+        <div className="card p-4 text-sm flex items-start gap-3" style={{ borderColor: 'var(--nr-amber)' }}>
           <AlertTriangle size={14} style={{ color: 'var(--nr-amber)' }} className="mt-0.5 shrink-0" />
           <div>
             <div className="font-medium" style={{ color: 'var(--ink-100)' }}>Demo mode — review edits will not be saved</div>
@@ -4952,7 +4965,7 @@ function ReviewTab({
         </div>
       )}
       {supabaseConfigured && demoMode && (
-        <div className="card p-4 text-xs flex items-start gap-3" style={{ borderColor: 'var(--nr-amber)' }}>
+        <div className="card p-4 text-sm flex items-start gap-3" style={{ borderColor: 'var(--nr-amber)' }}>
           <AlertTriangle size={14} style={{ color: 'var(--nr-amber)' }} className="mt-0.5 shrink-0" />
           <div>
             <div className="font-medium" style={{ color: 'var(--ink-100)' }}>No incidents in the current window — showing demo data</div>
@@ -4983,14 +4996,14 @@ function ReviewTab({
       {/* Per-railway-week completion chips */}
       {weekStats.length > 0 && (
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="label-micro shrink-0">Weekly completion</span>
+          <span className="label-micro text-[11px] shrink-0">Weekly completion</span>
           {weekStats.map(w => {
             const complete = w.reviewed >= w.reviewable
             const colour = complete ? '#27AE60' : w.reviewed > 0 ? 'var(--nr-orange)' : 'var(--ink-500)'
             return (
               <span
                 key={`${w.yearLabel}-${w.label}`}
-                className="pill text-[10px]"
+                className="pill text-[12px]"
                 style={{ background: complete ? 'rgba(39,174,96,0.10)' : 'var(--bg-card)', color: colour, borderColor: complete ? 'rgba(39,174,96,0.4)' : 'var(--line-hi)' }}
                 title={`${w.yearLabel} · ${w.label} — ${w.reviewed} of ${w.reviewable} reviewable incidents reviewed`}
               >
@@ -5003,18 +5016,18 @@ function ReviewTab({
 
       {/* View mode toggle: period tree vs flat priority queue */}
       <div className="flex items-center gap-2">
-        <button onClick={() => setView('tree')}  className={`btn !text-[11px] ${view === 'tree'  ? 'btn-active' : ''}`}>
+        <button onClick={() => setView('tree')}  className={`btn !text-[13px] ${view === 'tree'  ? 'btn-active' : ''}`}>
           <Layers size={11} /> Period tree
         </button>
-        <button onClick={() => setView('queue')} className={`btn !text-[11px] ${view === 'queue' ? 'btn-active' : ''}`}>
+        <button onClick={() => setView('queue')} className={`btn !text-[13px] ${view === 'queue' ? 'btn-active' : ''}`}>
           <List size={11} /> Review queue
           {reviewableTotal - totalReviewed > 0 && (
-            <span className="ml-1 px-1.5 py-0.5 text-[9px] bg-[var(--nr-orange)] text-white rounded-sm">
+            <span className="ml-1 px-1.5 py-0.5 text-[11px] bg-[var(--nr-orange)] text-white rounded-sm">
               {reviewableTotal - totalReviewed}
             </span>
           )}
         </button>
-        <span className="text-[10.5px] ml-2" style={{ color: 'var(--ink-500)' }}>
+        <span className="text-[12px] ml-2" style={{ color: 'var(--ink-500)' }}>
           {view === 'queue'
             ? 'Every pending reviewable incident in the window, highest impact first — quick-review or open the full form.'
             : 'Browse by railway period → day → incident.'}
@@ -5060,6 +5073,7 @@ function ReviewTab({
                   teamMembersByIncidentId={teamMembersByIncidentId}
                   onSave={onSave}
                   onDelete={onDelete}
+                  onRemoveIncident={onRemoveIncident}
                   pmcFlaggedIds={pmcFlaggedIds}
                   pmcWeekFlagCount={pmcWeekFlagCount}
                   onTogglePmcFlag={onTogglePmcFlag}
@@ -5076,6 +5090,7 @@ function ReviewTab({
           teamMembersByIncidentId={teamMembersByIncidentId}
           onSave={onSave}
           onDelete={onDelete}
+          onRemoveIncident={onRemoveIncident}
           pmcFlaggedIds={pmcFlaggedIds}
           pmcWeekFlagCount={pmcWeekFlagCount}
           onTogglePmcFlag={onTogglePmcFlag}
@@ -5086,15 +5101,15 @@ function ReviewTab({
       {teamWorkload.length > 0 && (
         <Card title="Team on Duty" subtitle="Who was recorded on shift across incidents in this window">
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[var(--line)]">
-                  <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Name</th>
-                  <th className="text-left pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Role</th>
-                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Incidents</th>
-                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Total Delay</th>
-                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Avg / Incident</th>
-                  <th className="text-right pb-2 label-micro" style={{ color: 'var(--ink-400)' }}>Shifts</th>
+                  <th className="text-left pb-2 label-micro text-[11px]" style={{ color: 'var(--ink-400)' }}>Name</th>
+                  <th className="text-left pb-2 label-micro text-[11px]" style={{ color: 'var(--ink-400)' }}>Role</th>
+                  <th className="text-right pb-2 label-micro text-[11px]" style={{ color: 'var(--ink-400)' }}>Incidents</th>
+                  <th className="text-right pb-2 label-micro text-[11px]" style={{ color: 'var(--ink-400)' }}>Total Delay</th>
+                  <th className="text-right pb-2 label-micro text-[11px]" style={{ color: 'var(--ink-400)' }}>Avg / Incident</th>
+                  <th className="text-right pb-2 label-micro text-[11px]" style={{ color: 'var(--ink-400)' }}>Shifts</th>
                 </tr>
               </thead>
               <tbody>
@@ -5110,12 +5125,12 @@ function ReviewTab({
                     <td className="py-2 text-right">
                       <span className="inline-flex items-center gap-1.5">
                         {w.dayShifts > 0 && (
-                          <span className="pill text-[9px]" style={{ background: 'rgba(243,156,18,0.12)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.3)' }}>
+                          <span className="pill text-[11px]" style={{ background: 'rgba(243,156,18,0.12)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.3)' }}>
                             Day ×{w.dayShifts}
                           </span>
                         )}
                         {w.nightShifts > 0 && (
-                          <span className="pill text-[9px]" style={{ background: 'rgba(74,111,165,0.12)', color: 'var(--nr-blue)', borderColor: 'rgba(74,111,165,0.3)' }}>
+                          <span className="pill text-[11px]" style={{ background: 'rgba(74,111,165,0.12)', color: 'var(--nr-blue)', borderColor: 'rgba(74,111,165,0.3)' }}>
                             Night ×{w.nightShifts}
                           </span>
                         )}
@@ -5138,7 +5153,7 @@ function ReviewTab({
 // one-click "quick review" (saves the event-log auto-fill) and bulk actions.
 
 function ReviewQueue({
-  incidents, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete,
+  incidents, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete, onRemoveIncident,
   pmcFlaggedIds, pmcWeekFlagCount, onTogglePmcFlag, canSave,
 }: {
   incidents: IncidentRow[]
@@ -5146,6 +5161,7 @@ function ReviewQueue({
   teamMembersByIncidentId: Map<string, IncidentTeamMember[]>
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
+  onRemoveIncident: (incidentId: string) => Promise<void>
   pmcFlaggedIds: Set<string>
   pmcWeekFlagCount: (reportDate: string) => number
   onTogglePmcFlag: (incident: IncidentRow) => Promise<void>
@@ -5227,26 +5243,26 @@ function ReviewQueue({
       right={
         <div className="flex items-center gap-2 flex-wrap justify-end">
           {(['all', 'delay', 'triggered'] as const).map(f => (
-            <button key={f} onClick={() => setFilter(f)} className={`btn !py-1 !px-2 !text-[10px] ${filter === f ? 'btn-active' : ''}`}>
+            <button key={f} onClick={() => setFilter(f)} className={`btn !py-1 !px-2 !text-[12px] ${filter === f ? 'btn-active' : ''}`}>
               {f === 'all' ? 'All' : f === 'delay' ? `≥${NA_DELAY_THRESHOLD}m` : 'Triggered'}
             </button>
           ))}
         </div>
       }
     >
-      <div className="flex items-center gap-3 flex-wrap mb-4 text-[11px]">
+      <div className="flex items-center gap-3 flex-wrap mb-4 text-[13px]">
         <label className="flex items-center gap-2">
-          <span className="label-micro text-[9px]">Reviewer initials</span>
+          <span className="label-micro text-[11px]">Reviewer initials</span>
           <input
             type="text"
-            className="input !py-1 !px-2 w-20 text-[11px]"
+            className="input !py-1 !px-2 w-20 text-[13px]"
             placeholder="e.g. JD"
             value={author}
             onChange={e => setAuthorPersist(e.target.value)}
           />
         </label>
         <button
-          className="btn !text-[10.5px]"
+          className="btn !text-[12px]"
           disabled={!canSave || busy || selectedPendingCount === 0}
           onClick={quickReviewSelected}
           title="Save a quick review (event-log auto-fill + reviewer initials) for every selected incident"
@@ -5274,7 +5290,7 @@ function ReviewQueue({
                   title="Select for bulk quick review"
                 />
                 <button
-                  className="btn !py-0.5 !px-1.5 !text-[9px]"
+                  className="btn !py-0.5 !px-1.5 !text-[11px]"
                   disabled={!canSave || busy}
                   onClick={() => quickReviewOne(inc)}
                   title="Quick review — save event-log auto-fill and mark reviewed"
@@ -5282,7 +5298,7 @@ function ReviewQueue({
                   <Zap size={10} />
                 </button>
                 <button
-                  className="btn !py-0.5 !px-1.5 !text-[9px]"
+                  className="btn !py-0.5 !px-1.5 !text-[11px]"
                   disabled={!canSave || busy}
                   onClick={() => notRequiredOne(inc)}
                   title="Review not required — downgrade this flagged incident and remove it from the pending count"
@@ -5297,6 +5313,7 @@ function ReviewQueue({
                   teamMembers={teamMembersByIncidentId.get(inc.id) ?? []}
                   onSave={onSave}
                   onDelete={onDelete}
+                  onRemoveIncident={onRemoveIncident}
                   pmcFlagged={pmcFlaggedIds.has(inc.id)}
                   pmcWeekCount={pmcWeekFlagCount(inc.report_date)}
                   onTogglePmcFlag={onTogglePmcFlag}
@@ -5312,7 +5329,7 @@ function ReviewQueue({
 }
 
 function PeriodGroupRow({
-  group, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete,
+  group, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete, onRemoveIncident,
   pmcFlaggedIds, pmcWeekFlagCount, onTogglePmcFlag, canSave,
 }: {
   group: ReviewPeriodGroup
@@ -5320,6 +5337,7 @@ function PeriodGroupRow({
   teamMembersByIncidentId: Map<string, IncidentTeamMember[]>
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
+  onRemoveIncident: (incidentId: string) => Promise<void>
   pmcFlaggedIds: Set<string>
   pmcWeekFlagCount: (reportDate: string) => number
   onTogglePmcFlag: (incident: IncidentRow) => Promise<void>
@@ -5346,29 +5364,29 @@ function PeriodGroupRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
             <span className="serif text-base font-medium" style={{ color: 'var(--ink-100)' }}>{group.periodLabel}</span>
-            <span className="label-micro" style={{ color: 'var(--ink-400)' }}>{group.yearLabel}</span>
-            <span className="label-micro">{group.days.length} day{group.days.length !== 1 ? 's' : ''}</span>
-            <span className="label-micro" style={{ color: 'var(--ink-500)' }}>
+            <span className="label-micro text-[11px]" style={{ color: 'var(--ink-400)' }}>{group.yearLabel}</span>
+            <span className="label-micro text-[11px]">{group.days.length} day{group.days.length !== 1 ? 's' : ''}</span>
+            <span className="label-micro text-[11px]" style={{ color: 'var(--ink-500)' }}>
               {group.days[group.days.length - 1]?.date} → {group.days[0]?.date}
             </span>
           </div>
         </div>
         <div className="hidden sm:flex items-center gap-4 shrink-0">
           <div className="text-right">
-            <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Incidents</div>
-            <div className="numeric-mono text-xs" style={{ color: 'var(--ink-100)' }}>{group.totalIncidents}</div>
+            <div className="label-micro text-[11px]" style={{ color: 'var(--ink-500)' }}>Incidents</div>
+            <div className="numeric-mono text-sm" style={{ color: 'var(--ink-100)' }}>{group.totalIncidents}</div>
           </div>
           <div className="text-right">
-            <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Delay</div>
-            <div className="numeric-mono text-xs" style={{ color: 'var(--nr-orange)' }}>{fmtMins(group.totalDelay)}</div>
+            <div className="label-micro text-[11px]" style={{ color: 'var(--ink-500)' }}>Delay</div>
+            <div className="numeric-mono text-sm" style={{ color: 'var(--nr-orange)' }}>{fmtMins(group.totalDelay)}</div>
           </div>
           <div className="text-right w-28">
-            <div className="label-micro text-[9px]" style={{ color: 'var(--ink-500)' }}>Reviewed</div>
+            <div className="label-micro text-[11px]" style={{ color: 'var(--ink-500)' }}>Reviewed</div>
             <div className="flex items-center gap-2">
               <div className="h-1 flex-1 bg-[var(--bg-card-hi)] rounded-sm overflow-hidden">
                 <div className="h-full" style={{ width: `${pct}%`, background: complete ? 'var(--nr-green)' : 'var(--nr-orange)' }} />
               </div>
-              <span className="numeric-mono text-[10px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-300)' }}>
+              <span className="numeric-mono text-[12px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-300)' }}>
                 {groupReviewed}/{groupReviewable}
               </span>
             </div>
@@ -5386,6 +5404,7 @@ function PeriodGroupRow({
               teamMembersByIncidentId={teamMembersByIncidentId}
               onSave={onSave}
               onDelete={onDelete}
+              onRemoveIncident={onRemoveIncident}
               pmcFlaggedIds={pmcFlaggedIds}
               pmcWeekFlagCount={pmcWeekFlagCount}
               onTogglePmcFlag={onTogglePmcFlag}
@@ -5399,7 +5418,7 @@ function PeriodGroupRow({
 }
 
 function ReviewDayRow({
-  day, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete,
+  day, reviewByIncidentId, teamMembersByIncidentId, onSave, onDelete, onRemoveIncident,
   pmcFlaggedIds, pmcWeekFlagCount, onTogglePmcFlag, canSave,
 }: {
   day: ReviewPeriodDay
@@ -5407,6 +5426,7 @@ function ReviewDayRow({
   teamMembersByIncidentId: Map<string, IncidentTeamMember[]>
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
+  onRemoveIncident: (incidentId: string) => Promise<void>
   pmcFlaggedIds: Set<string>
   pmcWeekFlagCount: (reportDate: string) => number
   onTogglePmcFlag: (incident: IncidentRow) => Promise<void>
@@ -5426,14 +5446,14 @@ function ReviewDayRow({
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-3 px-6 py-2 text-left hover:bg-[var(--bg-card-hi)] transition-colors text-xs"
+        className="w-full flex items-center gap-3 px-6 py-2 text-left hover:bg-[var(--bg-card-hi)] transition-colors text-sm"
       >
         <ChevronDown size={12} style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
         <span className="numeric-mono shrink-0" style={{ color: 'var(--ink-100)' }}>{formatDayLabel(day.date)}</span>
-        <span className="label-micro" style={{ color: 'var(--nr-orange)' }}>{day.weekLabel}</span>
-        <span className="label-micro" style={{ color: 'var(--ink-500)' }}>{day.incidentCount} incident{day.incidentCount !== 1 ? 's' : ''}</span>
-        <span className="label-micro" style={{ color: 'var(--ink-500)' }}>{fmtMins(day.totalDelay)} delay</span>
-        <span className="ml-auto numeric-mono text-[10px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-400)' }}>
+        <span className="label-micro text-[11px]" style={{ color: 'var(--nr-orange)' }}>{day.weekLabel}</span>
+        <span className="label-micro text-[11px]" style={{ color: 'var(--ink-500)' }}>{day.incidentCount} incident{day.incidentCount !== 1 ? 's' : ''}</span>
+        <span className="label-micro text-[11px]" style={{ color: 'var(--ink-500)' }}>{fmtMins(day.totalDelay)} delay</span>
+        <span className="ml-auto numeric-mono text-[12px]" style={{ color: complete ? 'var(--nr-green)' : 'var(--ink-400)' }}>
           {dayReviewedCount}/{dayReviewableCount} reviewed
         </span>
       </button>
@@ -5441,7 +5461,7 @@ function ReviewDayRow({
       {open && (
         <div className="px-6 pb-3 space-y-2">
           {uniques.length === 0 ? (
-            <div className="text-[11px] py-2" style={{ color: 'var(--ink-500)' }}>No primary incidents on this day.</div>
+            <div className="text-[13px] py-2" style={{ color: 'var(--ink-500)' }}>No primary incidents on this day.</div>
           ) : (
             uniques.map(inc => (
               <ReviewIncidentRow
@@ -5451,6 +5471,7 @@ function ReviewDayRow({
                 teamMembers={teamMembersByIncidentId.get(inc.id) ?? []}
                 onSave={onSave}
                 onDelete={onDelete}
+                onRemoveIncident={onRemoveIncident}
                 pmcFlagged={pmcFlaggedIds.has(inc.id)}
                 pmcWeekCount={pmcWeekFlagCount(inc.report_date)}
                 onTogglePmcFlag={onTogglePmcFlag}
@@ -5465,7 +5486,7 @@ function ReviewDayRow({
 }
 
 function ReviewIncidentRow({
-  incident, review, teamMembers, onSave, onDelete,
+  incident, review, teamMembers, onSave, onDelete, onRemoveIncident,
   pmcFlagged, pmcWeekCount, onTogglePmcFlag, canSave,
 }: {
   incident: IncidentRow
@@ -5473,6 +5494,7 @@ function ReviewIncidentRow({
   teamMembers: IncidentTeamMember[]
   onSave: (input: IncidentReviewInput, incidentStart: string | null) => Promise<void>
   onDelete: (incidentId: string) => Promise<void>
+  onRemoveIncident: (incidentId: string) => Promise<void>
   pmcFlagged: boolean
   pmcWeekCount: number
   onTogglePmcFlag: (incident: IncidentRow) => Promise<void>
@@ -5497,25 +5519,25 @@ function ReviewIncidentRow({
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-start gap-3 px-3 py-2.5 text-left text-xs hover:bg-[var(--bg-card-hi)] transition-colors"
+        className="w-full flex items-start gap-3 px-3 py-2.5 text-left text-sm hover:bg-[var(--bg-card-hi)] transition-colors"
         title={autoNA ? `Auto N/A — delay below ${NA_DELAY_THRESHOLD} min and no review triggers (ITSR, service recovery, stranded train, refail, technical conference) in the log. Click to open and override.` : undefined}
       >
         <ChevronDown size={11} className="mt-1" style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
         <span className={`pill pill-${incident.severity.toLowerCase()} shrink-0`} style={autoNA ? { filter: 'grayscale(0.7)' } : undefined}>{incident.severity}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap mb-0.5">
-            {incident.ccil && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL {incident.ccil}</span>}
-            {incident.incident_start && <span className="numeric-mono text-[10px]" style={{ color: 'var(--ink-400)' }}>{incident.incident_start}</span>}
-            <span className="pill text-[9px]" style={{ background: `${cfg.color}20`, color: cfg.color, borderColor: `${cfg.color}50` }}>
+            {incident.ccil && <span className="numeric-mono text-[12px]" style={{ color: 'var(--ink-500)' }}>CCIL {incident.ccil}</span>}
+            {incident.incident_start && <span className="numeric-mono text-[12px]" style={{ color: 'var(--ink-400)' }}>{incident.incident_start}</span>}
+            <span className="pill text-[11px]" style={{ background: `${cfg.color}20`, color: cfg.color, borderColor: `${cfg.color}50` }}>
               {cfg.short}
             </span>
-            {incident.area && <span className="text-[10px]" style={{ color: 'var(--ink-400)' }}>{incident.area}</span>}
+            {incident.area && <span className="text-[12px]" style={{ color: 'var(--ink-400)' }}>{incident.area}</span>}
           </div>
           <div className="font-medium truncate" style={{ color: autoNA ? 'var(--ink-400)' : 'var(--ink-200)' }}>
             {review?.title_override ?? incident.title ?? '—'}
           </div>
           {(review?.location_override || incident.location) && (
-            <div className="text-[10px] mt-0.5" style={{ color: 'var(--ink-500)' }}>
+            <div className="text-[12px] mt-0.5" style={{ color: 'var(--ink-500)' }}>
               {review?.location_override ?? incident.location}
             </div>
           )}
@@ -5523,7 +5545,7 @@ function ReviewIncidentRow({
         <div className="flex items-center gap-3 shrink-0">
           {triggers.length > 0 && (
             <span
-              className="pill text-[9px]"
+              className="pill text-[11px]"
               style={{ background: 'rgba(74,111,165,0.12)', color: 'var(--nr-blue)', borderColor: 'rgba(74,111,165,0.4)' }}
               title={`Flagged for review — mentioned in the incident log: ${triggers.join(', ')}`}
             >
@@ -5531,33 +5553,33 @@ function ReviewIncidentRow({
             </span>
           )}
           {pmcFlagged && (
-            <span className="pill text-[9px]" style={{ background: 'rgba(224,82,6,0.12)', color: 'var(--nr-orange)', borderColor: 'rgba(224,82,6,0.4)' }} title="Flagged for the Control PMC report">
+            <span className="pill text-[11px]" style={{ background: 'rgba(224,82,6,0.12)', color: 'var(--nr-orange)', borderColor: 'rgba(224,82,6,0.4)' }} title="Flagged for the Control PMC report">
               <Flag size={9} /> PMC
             </span>
           )}
           {notRequired && (
-            <span className="pill text-[9px]" style={{ background: 'rgba(122,139,168,0.12)', color: 'var(--ink-400)', borderColor: 'var(--line-hi)' }} title={`Downgraded by an SNDM — review not required${review?.reviewed_by ? ` (${review.reviewed_by})` : ''}`}>
+            <span className="pill text-[11px]" style={{ background: 'rgba(122,139,168,0.12)', color: 'var(--ink-400)', borderColor: 'var(--line-hi)' }} title={`Downgraded by an SNDM — review not required${review?.reviewed_by ? ` (${review.reviewed_by})` : ''}`}>
               Not required
             </span>
           )}
           {autoNA && !reviewed && !notRequired && (
-            <span className="pill text-[9px]" style={{ background: 'rgba(122,139,168,0.08)', color: 'var(--ink-500)', borderColor: 'var(--line)', fontStyle: 'italic' }}>
+            <span className="pill text-[11px]" style={{ background: 'rgba(122,139,168,0.08)', color: 'var(--ink-500)', borderColor: 'var(--line)', fontStyle: 'italic' }}>
               Auto N/A
             </span>
           )}
           {reviewed && (
-            <span className="pill text-[9px]" style={{ background: 'rgba(39,174,96,0.12)', color: 'var(--nr-green)', borderColor: 'rgba(39,174,96,0.4)' }}>
+            <span className="pill text-[11px]" style={{ background: 'rgba(39,174,96,0.12)', color: 'var(--nr-green)', borderColor: 'rgba(39,174,96,0.4)' }}>
               <ClipboardCheck size={9} /> Reviewed
             </span>
           )}
           {!autoNA && !reviewed && (
-            <span className="pill text-[9px]" style={{ background: 'rgba(122,139,168,0.12)', color: 'var(--ink-400)', borderColor: 'var(--line)' }}>
+            <span className="pill text-[11px]" style={{ background: 'rgba(122,139,168,0.12)', color: 'var(--ink-400)', borderColor: 'var(--line)' }}>
               Pending
             </span>
           )}
           <div className="text-right w-16">
-            <div className="numeric-mono text-[10px]" style={{ color: 'var(--ink-500)' }}>DELAY</div>
-            <div className="numeric-mono text-[11px]" style={{ color: autoNA ? 'var(--ink-400)' : 'var(--nr-orange)' }}>
+            <div className="numeric-mono text-[12px]" style={{ color: 'var(--ink-500)' }}>DELAY</div>
+            <div className="numeric-mono text-[13px]" style={{ color: autoNA ? 'var(--ink-400)' : 'var(--nr-orange)' }}>
               {(review?.minutes_delay_override ?? incident.minutes_delay)}m
             </div>
           </div>
@@ -5567,7 +5589,7 @@ function ReviewIncidentRow({
       {open && (
         <>
           {autoNA && !review && (
-            <div className="px-3 py-2 text-[11px] flex items-center gap-2 border-t border-[var(--line)]" style={{ background: 'var(--bg-card-hi)', color: 'var(--ink-400)' }}>
+            <div className="px-3 py-2 text-[13px] flex items-center gap-2 border-t border-[var(--line)]" style={{ background: 'var(--bg-card-hi)', color: 'var(--ink-400)' }}>
               <AlertTriangle size={11} style={{ color: 'var(--ink-500)' }} />
               This incident is auto-classified N/A (delay below {NA_DELAY_THRESHOLD} min, and no ITSR / service recovery / stranded train / refail / technical conference mention in the log) and excluded from review counts. Fill in the form below to record a manual review.
             </div>
@@ -5584,6 +5606,11 @@ function ReviewIncidentRow({
             review={review}
             onSave={onSave}
             onDelete={onDelete}
+            canSave={canSave}
+          />
+          <RemoveIncidentBar
+            incident={incident}
+            onRemove={onRemoveIncident}
             canSave={canSave}
           />
           <ReviewForm
@@ -5631,10 +5658,10 @@ function PmcFlagBar({
   }
 
   return (
-    <div className="px-3 py-2 flex items-center gap-3 flex-wrap border-t border-[var(--line)] text-[11px]" style={{ background: 'var(--bg-card-hi)' }}>
+    <div className="px-3 py-2 flex items-center gap-3 flex-wrap border-t border-[var(--line)] text-[13px]" style={{ background: 'var(--bg-card-hi)' }}>
       <button
         type="button"
-        className={`btn !py-1 !px-2.5 !text-[10px] ${flagged ? 'btn-active' : ''}`}
+        className={`btn !py-1 !px-2.5 !text-[12px] ${flagged ? 'btn-active' : ''}`}
         disabled={!canSave || busy || atCap}
         onClick={handleClick}
         title={
@@ -5699,10 +5726,10 @@ function NotRequiredBar({
   }
 
   return (
-    <div className="px-3 py-2 flex items-center gap-3 flex-wrap border-t border-[var(--line)] text-[11px]" style={{ background: 'var(--bg-card-hi)' }}>
+    <div className="px-3 py-2 flex items-center gap-3 flex-wrap border-t border-[var(--line)] text-[13px]" style={{ background: 'var(--bg-card-hi)' }}>
       <button
         type="button"
-        className={`btn !py-1 !px-2.5 !text-[10px] ${notRequired ? 'btn-active' : ''}`}
+        className={`btn !py-1 !px-2.5 !text-[12px] ${notRequired ? 'btn-active' : ''}`}
         disabled={!canSave || busy}
         onClick={handle}
         title={
@@ -5718,6 +5745,61 @@ function NotRequiredBar({
         {notRequired
           ? `Downgraded${review?.reviewed_by ? ` by ${review.reviewed_by}` : ''} — excluded from review counts.`
           : 'Flagged for review — downgrade if no review is actually needed.'}
+      </span>
+      {error && <span style={{ color: '#FF8077' }}>{error}</span>}
+    </div>
+  )
+}
+
+// Permanent-removal strip for the odd stray row that is completely off-area
+// and irrelevant to the route. Deletes the incident from the shared database
+// (review / team / PMC rows cascade), so it disappears from Insight AND from
+// the stored DLog2 report. Guarded by an explicit are-you-sure dialog.
+function RemoveIncidentBar({
+  incident, onRemove, canSave,
+}: {
+  incident: IncidentRow
+  onRemove: (incidentId: string) => Promise<void>
+  canSave: boolean
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handle = async () => {
+    const label = `${incident.ccil ? `CCIL ${incident.ccil} — ` : ''}${incident.title ?? 'this incident'}`
+    if (!confirm(
+      `Are you sure you want to permanently remove ${label}?\n\n` +
+      'This deletes the incident and its review, team and PMC data from the shared database — ' +
+      'it disappears from Insight AND from the stored DLog2 report, and it CANNOT be undone.\n\n' +
+      'Only use this for a stray row that is completely off-area and irrelevant.'
+    )) return
+    setBusy(true); setError(null)
+    try {
+      await onRemove(incident.id)
+    } catch (e: any) {
+      setError(e?.message || 'Failed to remove incident')
+      setBusy(false)
+    }
+    // On success the row unmounts — no state reset needed.
+  }
+
+  return (
+    <div className="px-3 py-2 flex items-center gap-3 flex-wrap border-t border-[var(--line)] text-[13px]" style={{ background: 'var(--bg-card-hi)' }}>
+      <button
+        type="button"
+        className="btn !py-1 !px-2.5 !text-[12px]"
+        style={{ borderColor: 'rgba(231,76,60,0.5)', color: 'var(--nr-red, #E74C3C)' }}
+        disabled={!canSave || busy}
+        onClick={handle}
+        title={!canSave
+          ? 'Requires a live Supabase connection'
+          : 'Permanently delete this incident from the database — for stray off-area rows only'}
+      >
+        <Trash2 size={11} />
+        {busy ? 'Removing…' : 'Remove from Insight'}
+      </button>
+      <span style={{ color: 'var(--ink-500)' }}>
+        Permanent — deletes the incident from the shared database. For completely off-area, irrelevant strays only.
       </span>
       {error && <span style={{ color: '#FF8077' }}>{error}</span>}
     </div>
@@ -5745,7 +5827,9 @@ function ReviewForm({
   const eventSignals = useMemo(() => parseEventSignals(incident.events), [incident.events])
 
   const initial: FormState = useMemo(() => ({
-    technical_conference_outcome: review?.technical_conference_outcome ?? null,
+    // Technical conference defaults to N/A — most incidents don't hold one,
+    // so the reviewer only has to change it in the cases that did.
+    technical_conference_outcome: review?.technical_conference_outcome ?? 'NA',
     commentary: review?.commentary ?? null,
     stranded_trains_occurred: review?.stranded_trains_occurred ?? null,
     stranded_trains: review?.stranded_trains ?? null,
@@ -5822,6 +5906,12 @@ function ReviewForm({
       }
       // Completing a review supersedes a "review not required" downgrade
       cleaned.review_not_required = false
+      // ITSR N/A ⇒ recovery doesn't apply: clear the fields so hidden stale
+      // values can't leak into the recovery-time stats
+      if (form.itsr_required === 'NA') {
+        cleaned.target_recovery_time = null
+        cleaned.actual_recovery_time = null
+      }
       // Drop any stranded entries that are completely blank so we don't
       // persist empty objects
       if (Array.isArray(cleaned.stranded_trains)) {
@@ -5856,14 +5946,14 @@ function ReviewForm({
   }
 
   return (
-    <div className="border-t border-[var(--line)] p-4 text-xs space-y-5" style={{ background: 'var(--bg-card-hi)' }}>
+    <div className="border-t border-[var(--line)] p-4 text-sm space-y-5" style={{ background: 'var(--bg-card-hi)' }}>
       <CcilDetailBlock incident={incident} />
 
       <IncidentEventsBlock events={incident.events ?? []} signals={eventSignals} />
 
       {teamMembers.length > 0 && (
         <div className="border-t border-[var(--line)] pt-4">
-          <div className="label-micro mb-2" style={{ color: 'var(--ink-400)' }}>Team on Duty</div>
+          <div className="label-micro text-[11px] mb-2" style={{ color: 'var(--ink-400)' }}>Team on Duty</div>
           <div className="flex flex-wrap gap-2">
             {teamMembers.map(m => (
               <div key={m.id} className="flex items-center gap-1.5 rounded border border-[var(--line)] px-2 py-1" style={{ background: 'var(--bg-card)' }}>
@@ -5871,7 +5961,7 @@ function ReviewForm({
                 <span style={{ color: 'var(--ink-400)' }}>·</span>
                 <span style={{ color: 'var(--ink-300)' }}>{m.role}</span>
                 <span
-                  className="pill text-[9px] ml-1"
+                  className="pill text-[11px] ml-1"
                   style={m.shift === 'day'
                     ? { background: 'rgba(243,156,18,0.12)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.3)' }
                     : { background: 'rgba(74,111,165,0.12)', color: 'var(--nr-blue)', borderColor: 'rgba(74,111,165,0.3)' }}
@@ -5886,9 +5976,9 @@ function ReviewForm({
 
       <div className="border-t border-[var(--line)] pt-4 space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h4 className="label-micro" style={{ color: 'var(--nr-orange)' }}>SNDM Review · all fields optional</h4>
+          <h4 className="label-micro text-[11px]" style={{ color: 'var(--nr-orange)' }}>SNDM Review · all fields optional</h4>
           {review?.reviewed_at && (
-            <span className="numeric-mono text-[9px]" style={{ color: 'var(--ink-500)' }}>
+            <span className="numeric-mono text-[11px]" style={{ color: 'var(--ink-500)' }}>
               Last saved {new Date(review.reviewed_at).toLocaleString()}
               {review.reviewed_by ? ` · ${review.reviewed_by}` : ''}
             </span>
@@ -5939,7 +6029,7 @@ function ReviewForm({
               {strandedList.map((entry, idx) => (
                 <div key={idx} className="border border-[var(--line)] rounded-sm p-3" style={{ background: 'var(--bg-card)' }}>
                   <div className="flex items-center justify-between mb-2">
-                    <span className="label-micro text-[9px]" style={{ color: 'var(--ink-400)' }}>Train #{idx + 1}</span>
+                    <span className="label-micro text-[11px]" style={{ color: 'var(--ink-400)' }}>Train #{idx + 1}</span>
                     <button type="button" onClick={() => removeStrandedTrain(idx)} className="btn !py-1 !px-2"><X size={10} /> Remove</button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -5988,21 +6078,25 @@ function ReviewForm({
           )}
         </FieldGroup>
 
-        {/* Row 5 — Recovery */}
-        <FieldGroup label="Recovery">
-          <Field label="Target Recovery Time">
-            <input className="input" type="time" value={form.target_recovery_time ?? ''} onChange={e => set('target_recovery_time', e.target.value || null)} />
-          </Field>
-          <Field label="Actual Recovery Time">
-            <input className="input" type="time" value={form.actual_recovery_time ?? ''} onChange={e => set('actual_recovery_time', e.target.value || null)} />
-          </Field>
-          <Field label="Time to Recover">
-            <ReadOnlyValue
-              value={liveTimeToRecover != null ? fmtMins(liveTimeToRecover) : '—'}
-              hint="Auto from incident start → actual recovery"
-            />
-          </Field>
-        </FieldGroup>
+        {/* Row 5 — Recovery. Hidden when ITSR is N/A: no ITSR means no
+            recovery targets to record, and saving clears the fields so an
+            N/A incident can't carry stale recovery data into the stats. */}
+        {form.itsr_required !== 'NA' && (
+          <FieldGroup label="Recovery">
+            <Field label="Target Recovery Time">
+              <input className="input" type="time" value={form.target_recovery_time ?? ''} onChange={e => set('target_recovery_time', e.target.value || null)} />
+            </Field>
+            <Field label="Actual Recovery Time">
+              <input className="input" type="time" value={form.actual_recovery_time ?? ''} onChange={e => set('actual_recovery_time', e.target.value || null)} />
+            </Field>
+            <Field label="Time to Recover">
+              <ReadOnlyValue
+                value={liveTimeToRecover != null ? fmtMins(liveTimeToRecover) : '—'}
+                hint="Auto from incident start → actual recovery"
+              />
+            </Field>
+          </FieldGroup>
+        )}
 
         {/* Notes */}
         <Field label="Additional Notes">
@@ -6011,7 +6105,7 @@ function ReviewForm({
             {(incident.events?.length ?? 0) > 0 && (
               <button
                 type="button"
-                className="btn !py-1 !px-2 !text-[10px]"
+                className="btn !py-1 !px-2 !text-[12px]"
                 onClick={() => {
                   const draft = draftCommentaryFromEvents(incident)
                   if (!draft) return
@@ -6032,9 +6126,9 @@ function ReviewForm({
             onClick={() => setShowOverrides(v => !v)}
             className="w-full flex items-center justify-between px-3 py-2 text-left"
           >
-            <span className="label-micro">Refine CCIL Capture</span>
+            <span className="label-micro text-[11px]">Refine CCIL Capture</span>
             <span className="flex items-center gap-2">
-              <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>
+              <span className="text-[12px]" style={{ color: 'var(--ink-500)' }}>
                 Override any captured field — original row stays intact
               </span>
               <ChevronDown size={12} style={{ transform: showOverrides ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
@@ -6080,13 +6174,13 @@ function ReviewForm({
         </FieldGroup>
 
         {error && (
-          <div className="text-xs px-3 py-2 rounded-sm" style={{ background: 'rgba(231,76,60,0.1)', color: 'var(--nr-red)', border: '1px solid rgba(231,76,60,0.4)' }}>
+          <div className="text-sm px-3 py-2 rounded-sm" style={{ background: 'rgba(231,76,60,0.1)', color: 'var(--nr-red)', border: '1px solid rgba(231,76,60,0.4)' }}>
             {error}
           </div>
         )}
 
         <div className="flex items-center justify-between gap-3 pt-2 border-t border-[var(--line)]">
-          <div className="text-[10px]" style={{ color: 'var(--ink-500)' }}>
+          <div className="text-[12px]" style={{ color: 'var(--ink-500)' }}>
             {canSave ? 'Saves immediately to the incident_reviews table' : 'Saves disabled — Supabase not configured or demo data'}
           </div>
           <div className="flex items-center gap-2">
@@ -6149,12 +6243,12 @@ function CcilDetailBlock({ incident }: { incident: IncidentRow }) {
 
   return (
     <div>
-      <h4 className="label-micro mb-3" style={{ color: 'var(--ink-300)' }}>CCIL Captured Detail</h4>
+      <h4 className="label-micro text-[11px] mb-3" style={{ color: 'var(--ink-300)' }}>CCIL Captured Detail</h4>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2">
         {populated.map(r => (
           <div key={r.label} className="flex items-start gap-2">
-            <span className="label-micro text-[9px] shrink-0 w-32 truncate pt-0.5" title={r.label}>{r.label}</span>
-            <span className="text-[11px] break-words" style={{ color: 'var(--ink-200)' }}>{r.value}</span>
+            <span className="label-micro text-[11px] shrink-0 w-32 truncate pt-0.5" title={r.label}>{r.label}</span>
+            <span className="text-[13px] break-words" style={{ color: 'var(--ink-200)' }}>{r.value}</span>
           </div>
         ))}
       </div>
@@ -6179,19 +6273,19 @@ function EventLogRows({ events, signals }: { events: IncidentEvent[]; signals: E
         return (
           <div
             key={i}
-            className="flex items-start gap-2 text-[11px] rounded-sm px-2 py-1"
+            className="flex items-start gap-2 text-[13px] rounded-sm px-2 py-1"
             style={tag ? { background: 'var(--bg-card)', border: '1px solid var(--line)' } : undefined}
           >
-            <span className="numeric-mono text-[10px] shrink-0 pt-0.5" style={{ color: 'var(--ink-400)', minWidth: '4ch' }}>
+            <span className="numeric-mono text-[12px] shrink-0 pt-0.5" style={{ color: 'var(--ink-400)', minWidth: '4ch' }}>
               {e.time || '—'}
             </span>
             {e.company && (
-              <span className="label-micro text-[8px] shrink-0 pt-0.5" style={{ color: 'var(--ink-500)' }}>{e.company}</span>
+              <span className="label-micro text-[10px] shrink-0 pt-0.5" style={{ color: 'var(--ink-500)' }}>{e.company}</span>
             )}
             <span className="flex-1 break-words" style={{ color: 'var(--ink-200)' }}>{e.description || '—'}</span>
             {tag && (
               <span
-                className="pill text-[8px] shrink-0"
+                className="pill text-[10px] shrink-0"
                 style={{ background: `${tag.color}20`, color: tag.color, borderColor: `${tag.color}60` }}
               >
                 {tag.label}
@@ -6206,8 +6300,10 @@ function EventLogRows({ events, signals }: { events: IncidentEvent[]; signals: E
 
 function IncidentEventsBlock({ events, signals }: { events: IncidentEvent[]; signals: EventSignals }) {
   const [open, setOpen] = useState(false)
-  if (events.length === 0) return null
 
+  // Always rendered — an incident with nothing parsed still gets the
+  // dropdown, with an explicit empty state, so reviewers can trust that
+  // "no events shown" means none were captured rather than a hidden panel.
   const matchCount = [signals.itsr, signals.momDispatch, signals.momArrival].filter(Boolean).length
 
   return (
@@ -6217,23 +6313,29 @@ function IncidentEventsBlock({ events, signals }: { events: IncidentEvent[]; sig
         onClick={() => setOpen(v => !v)}
         className="w-full flex items-center justify-between px-3 py-2 text-left"
       >
-        <span className="label-micro flex items-center gap-2">
+        <span className="label-micro text-[11px] flex items-center gap-2">
           Incident Events Log
-          <span className="numeric-mono text-[9px]" style={{ color: 'var(--ink-500)' }}>{events.length}</span>
+          <span className="numeric-mono text-[11px]" style={{ color: 'var(--ink-500)' }}>{events.length}</span>
         </span>
         <span className="flex items-center gap-2">
           {matchCount > 0 && (
-            <span className="pill text-[8px]" style={{ background: 'rgba(243,156,18,0.14)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.4)' }}>
+            <span className="pill text-[10px]" style={{ background: 'rgba(243,156,18,0.14)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.4)' }}>
               {matchCount} auto-tag{matchCount !== 1 ? 's' : ''}
             </span>
           )}
-          <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>CCIL commentary</span>
+          <span className="text-[12px]" style={{ color: 'var(--ink-500)' }}>CCIL commentary</span>
           <ChevronDown size={12} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', color: 'var(--ink-400)' }} />
         </span>
       </button>
       {open && (
         <div className="px-3 pb-3 pt-1 border-t border-[var(--line)] space-y-1">
-          <EventLogRows events={events} signals={signals} />
+          {events.length === 0 ? (
+            <div className="text-[12px] py-2" style={{ color: 'var(--ink-500)', fontStyle: 'italic' }}>
+              No events captured in CCIL for this incident.
+            </div>
+          ) : (
+            <EventLogRows events={events} signals={signals} />
+          )}
         </div>
       )}
     </div>
@@ -6243,11 +6345,11 @@ function IncidentEventsBlock({ events, signals }: { events: IncidentEvent[]; sig
 function Field({ label, children, auto }: { label: string; children: React.ReactNode; auto?: boolean }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="label-micro text-[9px] flex items-center gap-1.5 flex-wrap">
+      <span className="label-micro text-[11px] flex items-center gap-1.5 flex-wrap">
         {label}
         {auto && (
           <span
-            className="pill text-[8px]"
+            className="pill text-[10px]"
             style={{ background: 'rgba(243,156,18,0.14)', color: 'var(--nr-amber)', borderColor: 'rgba(243,156,18,0.4)' }}
             title="Pre-filled from the incident events log — edit to override"
           >
@@ -6282,7 +6384,7 @@ function ReadOnlyValue({ value, hint }: { value: string; hint?: string }) {
       style={{ background: 'var(--bg-card)', color: 'var(--ink-200)', cursor: 'default' }}
     >
       <span className="numeric-mono">{value}</span>
-      {hint && <span className="label-micro text-[9px] ml-3 truncate" style={{ color: 'var(--ink-500)' }}>{hint}</span>}
+      {hint && <span className="label-micro text-[11px] ml-3 truncate" style={{ color: 'var(--ink-500)' }}>{hint}</span>}
     </div>
   )
 }
@@ -6290,7 +6392,7 @@ function ReadOnlyValue({ value, hint }: { value: string; hint?: string }) {
 function FieldGroup({ label, children }: { label?: string; children: React.ReactNode }) {
   return (
     <div>
-      {label && <div className="label-micro text-[10px] mb-2" style={{ color: 'var(--nr-orange)' }}>{label}</div>}
+      {label && <div className="label-micro text-[12px] mb-2" style={{ color: 'var(--nr-orange)' }}>{label}</div>}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">{children}</div>
     </div>
   )

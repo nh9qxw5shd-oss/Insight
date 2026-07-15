@@ -247,48 +247,60 @@ function buildItsr(
   const cur = filterAbove(curr)
   const pre = filterAbove(prev)
 
-  // Classify each current-window 300m+ incident by ITSR completion.
+  // Classify each current-window 300m+ incident by ITSR completion. A review
+  // of N/A means an ITSR does not APPLY to the incident — exempt, excluded
+  // from the adherence denominator rather than counted against it.
   const did: IncidentRow[]    = []
   const didnt: IncidentRow[]  = []
+  const exempt: IncidentRow[] = []
   const unrev: IncidentRow[]  = []
   for (const i of cur) {
     const r = curRevById.get(i.id)
     if (!r) { unrev.push(i); continue }
     if (r.itsr_required === 'YES') did.push(i)
+    else if (r.itsr_required === 'NA') exempt.push(i)
     else didnt.push(i)
   }
 
-  const itsrCount      = cur.length
+  const itsrExempt     = exempt.length
+  const itsrCount      = cur.length - itsrExempt   // applicable population
   const itsrCompleted  = did.length
   const itsrMissing    = didnt.length
   const itsrUnreviewed = unrev.length
-  // Adherence percentage uses the full 300m+ population as denominator —
+  // Adherence percentage uses the applicable 300m+ population as denominator —
   // an unreviewed incident counts against adherence so the number reflects
-  // the policy gate (every 300m+ event should have an ITSR completed).
+  // the policy gate (every applicable 300m+ event should have an ITSR
+  // completed); N/A-reviewed incidents are out of scope entirely.
   const itsrPct = itsrCount === 0 ? 100 : (itsrCompleted / itsrCount) * 100
 
-  // Same metric for previous week
+  // Same metric for previous week (N/A exempt there too)
   let prevDid = 0
+  let prevExempt = 0
   for (const i of pre) {
     const r = prevRevById.get(i.id)
     if (r?.itsr_required === 'YES') prevDid += 1
+    else if (r?.itsr_required === 'NA') prevExempt += 1
   }
-  const prevPct = pre.length === 0 ? 100 : (prevDid / pre.length) * 100
+  const prevApplicable = pre.length - prevExempt
+  const prevPct = prevApplicable === 0 ? 100 : (prevDid / prevApplicable) * 100
 
   const summary = summarise(cur, pre)
   const insights: string[] = []
-  insights.push(`${itsrCompleted} of ${itsrCount} (${itsrPct.toFixed(0)}%) of incidents above ${ITSR_THRESHOLD_MINS} minutes had an ITSR completed.`)
+  insights.push(`${itsrCompleted} of ${itsrCount} (${itsrPct.toFixed(0)}%) of applicable incidents above ${ITSR_THRESHOLD_MINS} minutes had an ITSR completed.`)
+  if (itsrExempt > 0)     insights.push(`${itsrExempt} incident${itsrExempt === 1 ? '' : 's'} reviewed as ITSR N/A — does not apply; excluded from the adherence calculation.`)
   if (itsrUnreviewed > 0) insights.push(`${itsrUnreviewed} incident${itsrUnreviewed === 1 ? '' : 's'} have no review on file — these count against adherence until reviewed.`)
-  if (itsrMissing > 0)   insights.push(`${itsrMissing} reviewed incident${itsrMissing === 1 ? '' : 's'} were marked as not requiring ITSR — verify the rationale.`)
-  if (pre.length > 0)    insights.push(`Previous week adherence: ${prevPct.toFixed(0)}% (${prevDid}/${pre.length}).`)
+  if (itsrMissing > 0)   insights.push(`${itsrMissing} reviewed incident${itsrMissing === 1 ? '' : 's'} without an ITSR completed — these count against adherence; verify the rationale.`)
+  if (prevApplicable > 0) insights.push(`Previous week adherence: ${prevPct.toFixed(0)}% (${prevDid}/${prevApplicable}).`)
 
-  // Primary table = with ITSR; secondary = without (didn't have + unreviewed)
+  // Primary table = with ITSR; secondary = without (didn't have + unreviewed
+  // + N/A-exempt, the last listed for transparency but not counted)
   const primary = did
     .sort((a, b) => effectiveDelay(b) - effectiveDelay(a))
     .map(i => toPmcRow(i, 'ITSR completed'))
   const noItsr = [
-    ...didnt.map(i => ({ inc: i, note: 'Reviewed · ITSR not required' as string })),
+    ...didnt.map(i => ({ inc: i, note: 'Reviewed · no ITSR completed' as string })),
     ...unrev.map(i => ({ inc: i, note: 'Not yet reviewed' as string })),
+    ...exempt.map(i => ({ inc: i, note: 'Reviewed · ITSR N/A — exempt from adherence' as string })),
   ].sort((a, b) => effectiveDelay(b.inc) - effectiveDelay(a.inc))
 
   return {
@@ -308,6 +320,7 @@ function buildItsr(
     itsrCompleted,
     itsrMissing,
     itsrUnreviewed,
+    itsrExempt,
   }
 }
 
@@ -571,7 +584,7 @@ function buildHeadline(plan: Omit<ControlPmcPlan, 'headline'>): ReportKpi[] {
     {
       label: 'ITSR adherence',
       value: `${itsr.itsrPct.toFixed(0)}%`,
-      hint: `${itsr.itsrCompleted}/${itsr.itsrCount} incidents > ${ITSR_THRESHOLD_MINS}m`,
+      hint: `${itsr.itsrCompleted}/${itsr.itsrCount} applicable incidents > ${ITSR_THRESHOLD_MINS}m`,
     },
   ]
 }
@@ -703,7 +716,7 @@ export function serialiseControlPmcCsv(plan: ControlPmcPlan, scopeLabel: string,
   const lines: string[] = []
   lines.push(`# Control PMC weekly report — ${scopeLabel}`)
   lines.push(`# Generated: ${generatedAt}`)
-  lines.push(`# ITSR adherence: ${plan.itsr.itsrPct.toFixed(1)}% (${plan.itsr.itsrCompleted}/${plan.itsr.itsrCount} incidents > ${ITSR_THRESHOLD_MINS}m)`)
+  lines.push(`# ITSR adherence: ${plan.itsr.itsrPct.toFixed(1)}% (${plan.itsr.itsrCompleted}/${plan.itsr.itsrCount} applicable incidents > ${ITSR_THRESHOLD_MINS}m; ${plan.itsr.itsrExempt} N/A exempt)`)
   lines.push(`# Top-5 historical lookup window: ${plan.topDelay.windowFrom} → ${plan.topDelay.windowTo}`)
   if (plan.topDelay.mode === 'flagged') {
     lines.push('# Deep-dive mode: manually flagged incidents (lowest → highest impact) — replaces the top-5-by-delay ranking')
