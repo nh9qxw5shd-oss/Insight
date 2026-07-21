@@ -258,11 +258,28 @@ The **Explore** tab slices a filtered segment into **cohorts** (e.g. by arrival-
 time band) and surfaces **insights** comparing each cohort to the whole segment.
 Use it to test links like "do incidents with slow arrival have worse delay?"
 
-### 2.8 Analytics tab — location × type links
+### 2.8 Analytics tab — the Incident Profile
 
-The **Analytics** tab lets you pick a **location** and an **incident type** and
-returns the average arrival and resolution times for that exact combination —
-the cleanest way to test a "this type at this place behaves differently" link.
+The **Analytics** tab lets you pick a **location** and an **incident type**.
+With both selected it builds an **Incident Profile** — "what usually happens
+with this type of incident at this place":
+
+- **Four widening scopes side by side**: the exact location; **within a 10 /
+  20 / 50-mile radius** (locations resolved by name against a built-in route
+  gazetteer — the matched-location count is always shown); the same EMCC
+  area; and route-wide. Each scope shows occurrences, frequency per 30 days,
+  **median / mean / P90 delay**, typical duration, typical responder arrival,
+  and cancellations per incident.
+- A **plain-English typical-outcome sentence** drawn from the tightest scope
+  with enough history (at least 3 occurrences), including how the location
+  compares to the route-wide typical for that type.
+- **History panels**: occurrences by month and time-of-day spread for the
+  local scope, so one-offs and seasonal patterns are visible.
+- **Pin** the whole profile to the Briefing.
+
+Median (not mean) leads because one monster incident can double a mean;
+P90 is the honest "bad day" figure. Widen the time window for deeper history —
+the profile respects the global window and filters like every other view.
 
 ### 2.9 Focus tab — single-incident links
 
@@ -571,6 +588,7 @@ Wherever you see a small **PIN** control, pressing it captures that finding:
 | **Patterns** — Day × Hour Heatmap header | The full 7-day × 24-hour grid. Pin it with a category filter active (e.g. safety classes) and the brief shows *that* slice, filter recorded in the provenance |
 | **Geography** — Top Hotspots header | The top-10 location ranking by delay, with incident counts |
 | **Distillation** — Duration vs delay scatter | The per-incident delay-vs-time-elapsed cloud with its correlation, plus whatever Distillation filters were active (e.g. Train Fault only) |
+| **Analytics** — Incident Profile header | The full four-scope profile table (this location / radius / area / route-wide) with its plain-English typical-outcome sentence |
 
 Every pin snapshots the **numbers**, the **window**, and the **active
 filters** at the moment you pressed it — so the brief stays honest even after

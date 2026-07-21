@@ -27,6 +27,7 @@ const KIND_META: Record<PinKind, { label: string; color: string }> = {
   'ranking':      { label: 'Ranking',   color: 'var(--nr-orange)' },
   'heatmap':      { label: 'Heatmap',   color: '#9B59B6' },
   'scatter':      { label: 'Scatter',   color: 'var(--nr-blue)' },
+  'profile':      { label: 'Profile',   color: '#5B9EA0' },
 }
 
 function fmtWindow(pin: BriefingPin): string {

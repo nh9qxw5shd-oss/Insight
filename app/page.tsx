@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, BookOpen, CalendarDays, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, ClipboardList, Clock, Cloud, Compass, Crosshair, Download, FileText, Filter, Flag, FlaskConical,
-  Gauge, GitBranch, GitCompare, Layers, List, MapPin, Minus, Monitor, Moon, Pin, RefreshCw, Route, Search, StickyNote,
+  Gauge, GitBranch, GitCompare, Info, Layers, List, MapPin, Minus, Monitor, Moon, Pin, RefreshCw, Route, Search, StickyNote,
   Sun, Table2, TrendingDown, TrendingUp, Train, Trash2, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -76,7 +76,8 @@ import { buildReportPlan } from '@/lib/reports/builder'
 import { renderReportDocument } from '@/lib/reports/html'
 import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/print'
 import { serialiseControlPmcCsv, controlPmcCsvFilename } from '@/lib/reports/controlPmc'
-import { addPin, describeFilters as describePinFilters, PinDraft, KpiPinPayload, TimelinePinPayload } from '@/lib/briefing'
+import { addPin, describeFilters as describePinFilters, PinDraft, KpiPinPayload, TimelinePinPayload, ProfileTier, ProfilePinPayload } from '@/lib/briefing'
+import { geocodeLocation, milesBetween } from '@/lib/geo'
 import { DistillationTab } from './distillation-tab'
 import { FocusTab } from './focus-tab'
 import { WeatherTab, PinButton } from './weather-tab'
@@ -829,7 +830,7 @@ export default function InsightDashboard() {
             {tab === 'routes'      && <RoutesTab lines={lines} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
             {tab === 'trends'      && <TrendsTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowDays={effectiveData.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'explore'     && <ExploreTab incidents={effectiveData.incidents} areaOptions={areas.map((a: any) => a.area)} />}
-            {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} />}
+            {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} windowDays={effectiveData.windowDays} onPin={pinsEnabled ? handlePin : undefined} />}
             {tab === 'weather'     && <WeatherTab incidents={effectiveData.incidents} weatherData={weatherData} lookahead={lookahead} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onPin={pinsEnabled ? handlePin : undefined} />}
             {tab === 'calendar'    && <CalendarTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onDrillDown={setDrillDown} />}
             {tab === 'compare'     && <CompareTab demoMode={demoMode} />}
@@ -8416,11 +8417,42 @@ function CompareTile({ label, a, b, unit, goodWhenLower }: {
 // Pick a location + incident type combination to see average response metrics
 // (time to arrive, time to restore) and the matched incident list.
 
-function AnalyticsTab({ incidents }: { incidents: IncidentRow[] }) {
+// Quantile over a pre-sorted ascending array.
+function sortedQuantile(sorted: number[], p: number): number | null {
+  if (!sorted.length) return null
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * p) - 1))
+  return sorted[idx]
+}
+
+// One row of the incident-profile comparison: what this incident type
+// typically does within the given scope, per the standard conventions
+// (effectiveDelay; non-continuation rows only — callers pre-filter).
+function profileTierStats(rows: IncidentRow[], windowDays: number, label: string, note?: string): ProfileTier {
+  const delays    = rows.map(effectiveDelay).sort((a, b) => a - b)
+  const durations = rows.map(i => i.incident_duration).filter((v): v is number => v != null && v > 0 && v < 1440).sort((a, b) => a - b)
+  const arrivals  = rows.map(effectiveMinsToArrival).filter((v): v is number => v != null).sort((a, b) => a - b)
+  const cancels   = rows.reduce((s, i) => s + (i.cancelled || 0) + (i.part_cancelled || 0), 0)
+  const n = rows.length
+  return {
+    label, note, n,
+    per30d: windowDays > 0 ? (n / windowDays) * 30 : 0,
+    medianDelay: sortedQuantile(delays, 0.5),
+    meanDelay: n ? delays.reduce((s, v) => s + v, 0) / n : null,
+    p90Delay: sortedQuantile(delays, 0.9),
+    medianDuration: sortedQuantile(durations, 0.5),
+    medianArrival: sortedQuantile(arrivals, 0.5),
+    cancelsPerInc: n ? cancels / n : null,
+  }
+}
+
+const PROFILE_RADII = [10, 20, 50]
+
+function AnalyticsTab({ incidents, windowDays, onPin }: { incidents: IncidentRow[]; windowDays: number; onPin?: (draft: PinDraft) => void }) {
   const [selectedLocation, setSelectedLocation] = useState<string | null>(null)
   const [selectedType, setSelectedType]         = useState<string | null>(null)
   const [locationSearch, setLocationSearch]     = useState('')
   const [typeSearch, setTypeSearch]             = useState('')
+  const [radius, setRadius]                     = useState(20)
 
   // Derive sorted unique locations
   const locations = useMemo(() => {
@@ -8464,6 +8496,111 @@ function AnalyticsTab({ incidents }: { incidents: IncidentRow[] }) {
       : null
     return { avgArrival, avgDuration, arrivalN: withArrival.length, durationN: withDuration.length }
   }, [matchedIncidents])
+
+  // ─── Incident profile: "what usually happens with this type, here" ────────
+  // Four widening scopes for the selected type: this exact location, within
+  // an R-mile radius (route gazetteer, name-matched), the same EMCC area,
+  // and route-wide — so a local figure always sits next to its context.
+  const profileView = useMemo(() => {
+    if (!selectedType || !selectedLocation) return null
+    const typeLabelOf = (i: IncidentRow) => i.incident_type_label ?? CATEGORY_CONFIG[i.category]?.label ?? i.category
+    const typed = incidents.filter(i => !i.is_continuation && typeLabelOf(i) === selectedType)
+
+    const exact = typed.filter(i => i.location === selectedLocation)
+    const anchor = geocodeLocation(selectedLocation)
+    let nearby: IncidentRow[] | null = null
+    let nearbyLocs: string[] = []
+    if (anchor) {
+      nearby = typed.filter(i => {
+        const g = geocodeLocation(i.location)
+        return g != null && milesBetween(anchor, g) <= radius
+      })
+      nearbyLocs = Array.from(new Set(nearby.map(i => i.location ?? ''))).filter(Boolean)
+    }
+    const anchorArea =
+      exact.find(i => i.area)?.area ??
+      incidents.find(i => i.location === selectedLocation && i.area)?.area ?? null
+    const areaRows = anchorArea ? typed.filter(i => i.area === anchorArea) : null
+
+    const tiers: ProfileTier[] = [
+      profileTierStats(exact, windowDays, 'This location'),
+      ...(nearby != null
+        ? [profileTierStats(nearby, windowDays, `Within ${radius} mi`, `${nearbyLocs.length} matched location${nearbyLocs.length === 1 ? '' : 's'}, incl. here`)]
+        : []),
+      ...(areaRows != null
+        ? [profileTierStats(areaRows, windowDays, `Area · ${anchorArea}`)]
+        : []),
+      profileTierStats(typed, windowDays, 'Route-wide'),
+    ]
+
+    const exactStats = tiers[0]
+    const routeStats = tiers[tiers.length - 1]
+    const nearbyStats = nearby != null ? tiers[1] : null
+
+    // Plain-English "typical outcome", from the tightest scope with enough
+    // history to be worth quoting.
+    const base =
+      exactStats.n >= 3 ? { where: 'at this location', st: exactStats } :
+      nearbyStats && nearbyStats.n >= 3 ? { where: `within ${radius} miles`, st: nearbyStats } : null
+    let narrative: string
+    if (!base) {
+      narrative = `Only ${exactStats.n} occurrence${exactStats.n === 1 ? '' : 's'} of ${selectedType} recorded at this location in the current window — too few to profile reliably on their own. The wider scopes below are the best available guide; widen the time window for deeper history.`
+    } else {
+      const st = base.st
+      const bits: string[] = []
+      if (st.medianDelay != null) bits.push(`typically costs ${Math.round(st.medianDelay)} delay minutes (mean ${Math.round(st.meanDelay ?? 0)}, worst-case P90 ${Math.round(st.p90Delay ?? 0)})`)
+      if (st.medianDuration != null) bits.push(`runs for about ${Math.round(st.medianDuration)} minutes`)
+      if (st.medianArrival != null) bits.push(`responder on scene in about ${Math.round(st.medianArrival)} minutes`)
+      if (st.cancelsPerInc != null && st.cancelsPerInc >= 0.05) bits.push(`${st.cancelsPerInc.toFixed(1)} cancellations per incident`)
+      const ratio = routeStats.medianDelay && routeStats.medianDelay > 0 && st.medianDelay != null
+        ? st.medianDelay / routeStats.medianDelay : null
+      narrative =
+        `Based on ${st.n} occurrences ${base.where} in this window, a ${selectedType} ${bits.join(', ')}.` +
+        (ratio != null ? ` That is ${ratio.toFixed(1)}× the route-wide typical delay for this type.` : '')
+    }
+
+    // Local history: monthly load and time-of-day spread for the widest
+    // local scope available (radius, else area, else the location itself).
+    const scopeRows = nearby ?? areaRows ?? exact
+    const scopeLabel = nearby ? `within ${radius} mi` : anchorArea ? `area ${anchorArea}` : 'this location'
+    const byMonth = new Map<string, { n: number; delay: number }>()
+    for (const i of scopeRows) {
+      const k = i.report_date.slice(0, 7)
+      const c = byMonth.get(k) ?? { n: 0, delay: 0 }
+      c.n += 1; c.delay += effectiveDelay(i)
+      byMonth.set(k, c)
+    }
+    const months = Array.from(byMonth.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+    const bands = [0, 0, 0, 0]
+    let bandKnown = 0
+    for (const i of scopeRows) {
+      let h = i.hour_of_day
+      if (h == null && i.incident_start) { const v = parseInt(i.incident_start.slice(0, 2), 10); if (!isNaN(v)) h = v }
+      if (h == null || h < 0 || h > 23) continue
+      bands[Math.floor(h / 6)] += 1; bandKnown += 1
+    }
+
+    return { anchor, tiers, narrative, nearbyLocs, months, bands, bandKnown, scopeLabel, scopeN: scopeRows.length }
+  }, [incidents, selectedType, selectedLocation, radius, windowDays])
+
+  const profilePin = onPin && profileView ? () => {
+    const exact = profileView.tiers[0]
+    const payload: ProfilePinPayload = {
+      typeLabel: selectedType!,
+      location: selectedLocation!,
+      radiusMiles: profileView.anchor ? radius : null,
+      tiers: profileView.tiers,
+      narrative: profileView.narrative,
+    }
+    onPin({
+      kind: 'profile',
+      title: exact.medianDelay != null && exact.n >= 3
+        ? `${selectedType} at ${selectedLocation}: typically ${Math.round(exact.medianDelay)}m delay per incident`
+        : `${selectedType} at ${selectedLocation} — incident profile`,
+      source_label: 'Analytics · Incident Profile',
+      payload,
+    })
+  } : undefined
 
   const filteredLocations = locationSearch
     ? locations.filter(l => l.toLowerCase().includes(locationSearch.toLowerCase()))
@@ -8603,6 +8740,139 @@ function AnalyticsTab({ incidents }: { incidents: IncidentRow[] }) {
           </div>
         </div>
       </div>
+
+      {/* Incident profile — shown when both a type and a location are picked */}
+      {profileView && (
+        <div className="card p-5">
+          <div className="mb-4 flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Incident Profile</h3>
+              <p className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+                {selectedType} at {selectedLocation} · what history says usually happens · respects the current window and filters
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="label-micro text-[9px] mr-0.5" style={{ color: 'var(--ink-500)' }}>RADIUS</span>
+              {PROFILE_RADII.map(r => (
+                <button
+                  key={r}
+                  onClick={() => setRadius(r)}
+                  disabled={!profileView.anchor}
+                  className={`btn !py-1 !px-2 !text-[10px] ${radius === r && profileView.anchor ? 'btn-active' : ''}`}
+                  style={!profileView.anchor ? { opacity: 0.4, cursor: 'not-allowed' } : {}}
+                >
+                  {r} mi
+                </button>
+              ))}
+              {profilePin && <PinButton onPin={profilePin} label="Pin this profile to Briefing" />}
+            </div>
+          </div>
+
+          <p className="text-sm leading-relaxed mb-4" style={{ color: 'var(--ink-200)', maxWidth: '82ch' }}>
+            {profileView.narrative}
+          </p>
+
+          {!profileView.anchor && (
+            <div className="text-[10px] mb-3" style={{ color: 'var(--ink-500)' }}>
+              This location isn&apos;t in the route gazetteer, so the radius scope is unavailable — same-area and route-wide context shown instead.
+            </div>
+          )}
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs" style={{ minWidth: 740 }}>
+              <thead>
+                <tr className="text-right" style={{ color: 'var(--ink-500)' }}>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-left">Scope</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3">n</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3" title="Occurrences per 30 days at this scope">/30d</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3">Median delay</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3">Mean</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3" title="90% of incidents cost less than this">P90</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3">Duration</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3">Arrival</th>
+                  <th className="label-micro text-[9px] font-normal pb-2">Cancels/inc</th>
+                </tr>
+              </thead>
+              <tbody>
+                {profileView.tiers.map((t, ti) => {
+                  const num = (v: number | null, f: (x: number) => string) => (v == null ? '—' : f(v))
+                  const hi = ti === 0
+                  return (
+                    <tr key={t.label} className="border-t text-right numeric-mono" style={{ borderColor: 'var(--line)', background: hi ? 'rgba(224,82,6,0.06)' : undefined }}>
+                      <td className="py-2.5 pr-3 text-left" style={{ color: hi ? 'var(--nr-orange)' : 'var(--ink-200)', fontFamily: 'inherit' }}>
+                        {t.label}
+                        {t.note && <div className="text-[9px]" style={{ color: 'var(--ink-500)' }}>{t.note}</div>}
+                      </td>
+                      <td className="py-2.5 pr-3" style={{ color: 'var(--ink-300)' }}>{t.n.toLocaleString()}</td>
+                      <td className="py-2.5 pr-3" style={{ color: 'var(--ink-300)' }}>{t.per30d.toFixed(1)}</td>
+                      <td className="py-2.5 pr-3" style={{ color: 'var(--ink-100)' }}>{num(t.medianDelay, x => fmtMins(Math.round(x)))}</td>
+                      <td className="py-2.5 pr-3" style={{ color: 'var(--ink-300)' }}>{num(t.meanDelay, x => fmtMins(Math.round(x)))}</td>
+                      <td className="py-2.5 pr-3" style={{ color: 'var(--ink-300)' }}>{num(t.p90Delay, x => fmtMins(Math.round(x)))}</td>
+                      <td className="py-2.5 pr-3" style={{ color: 'var(--ink-300)' }}>{num(t.medianDuration, x => fmtMins(Math.round(x)))}</td>
+                      <td className="py-2.5 pr-3" style={{ color: 'var(--ink-300)' }}>{num(t.medianArrival, x => fmtMins(Math.round(x)))}</td>
+                      <td className="py-2.5" style={{ color: 'var(--ink-300)' }}>{num(t.cancelsPerInc, x => x.toFixed(1))}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Local history — monthly load + time-of-day spread */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mt-5">
+            <div>
+              <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>
+                OCCURRENCES BY MONTH · {profileView.scopeLabel} ({profileView.scopeN})
+              </div>
+              {profileView.months.length === 0 ? (
+                <div className="text-[10px] py-4" style={{ color: 'var(--ink-500)' }}>No occurrences in scope</div>
+              ) : (
+                <div className="flex items-end gap-1" style={{ height: 72 }}>
+                  {profileView.months.map(([month, v]) => {
+                    const max = Math.max(...profileView.months.map(([, m]) => m.n), 1)
+                    return (
+                      <div key={month} className="flex-1 flex flex-col items-center gap-1" title={`${month}: ${v.n} incidents · ${Math.round(v.delay).toLocaleString()} delay min`}>
+                        <div className="w-full rounded-sm" style={{ height: Math.max(3, (v.n / max) * 52), background: 'var(--nr-orange)', opacity: 0.8 }} />
+                        <span className="numeric-mono text-[8px]" style={{ color: 'var(--ink-500)' }}>{month.slice(5)}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>
+                TIME OF DAY · {profileView.bandKnown} of {profileView.scopeN} with recorded hour
+              </div>
+              <div className="space-y-1.5">
+                {['00–06', '06–12', '12–18', '18–24'].map((label, bi) => {
+                  const max = Math.max(...profileView.bands, 1)
+                  const v = profileView.bands[bi]
+                  return (
+                    <div key={label} className="grid items-center gap-2" style={{ gridTemplateColumns: '44px 1fr 30px' }}>
+                      <span className="numeric-mono text-[9px]" style={{ color: 'var(--ink-400)' }}>{label}</span>
+                      <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--line)' }}>
+                        <div className="h-full rounded-full" style={{ width: `${(v / max) * 100}%`, background: 'var(--nr-blue)' }} />
+                      </div>
+                      <span className="numeric-mono text-[9px] text-right" style={{ color: 'var(--ink-300)' }}>{v}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2 mt-4">
+            <Info size={11} style={{ color: 'var(--ink-500)', flexShrink: 0, marginTop: 1 }} />
+            <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>
+              Radius scope matches locations by name against a route gazetteer with approximate coordinates — precise
+              enough for {radius}-mile bucketing, and the matched-location count is shown so coverage is never hidden.
+              Delay figures follow the standard conventions (per-incident, off-route excluded). Widen the time window
+              for deeper history.
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Results */}
       {!hasSelection ? (

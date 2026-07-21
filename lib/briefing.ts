@@ -13,7 +13,7 @@ import { WeatherLevel, weatherLevelLabel, LOOKAHEAD_COVERAGE_START } from './wea
 
 export type PinKind =
   | 'kpi' | 'timeline' | 'level-impact' | 'risk-impact' | 'duration' | 'incident'
-  | 'ranking' | 'heatmap' | 'scatter'
+  | 'ranking' | 'heatmap' | 'scatter' | 'profile'
 
 export interface KpiPinPayload {
   value: string                 // formatted headline value, e.g. "74,381 min"
@@ -65,6 +65,27 @@ export interface ScatterPinPayload {
   yLabel: string
   points: { x: number; y: number }[]   // capped at capture time (~400)
   note?: string
+}
+
+export interface ProfileTier {
+  label: string
+  n: number
+  per30d: number
+  medianDelay: number | null
+  meanDelay: number | null
+  p90Delay: number | null
+  medianDuration: number | null
+  medianArrival: number | null
+  cancelsPerInc: number | null
+  note?: string
+}
+
+export interface ProfilePinPayload {
+  typeLabel: string
+  location: string
+  radiusMiles: number | null      // null = anchor location not geocodable
+  tiers: ProfileTier[]
+  narrative: string | null
 }
 
 export interface IncidentPinPayload {
@@ -450,6 +471,34 @@ function renderScatter(pin: BriefingPin): string {
   </div>`
 }
 
+function renderProfile(pin: BriefingPin): string {
+  const p = pin.payload as ProfilePinPayload
+  const tiers = p.tiers ?? []
+  if (!tiers.length) return ''
+  const num = (v: number | null, f: (x: number) => string) => (v == null ? '—' : f(v))
+  const rows = tiers.map(t => `<tr>
+    <td class="tierlbl">${esc(t.label)}${t.note ? `<div class="tiernote">${esc(t.note)}</div>` : ''}</td>
+    <td>${t.n.toLocaleString()}</td>
+    <td>${t.per30d.toFixed(1)}</td>
+    <td>${num(t.medianDelay, x => fmtMinsFull(x))}</td>
+    <td>${num(t.meanDelay, x => fmtMinsFull(x))}</td>
+    <td>${num(t.p90Delay, x => fmtMinsFull(x))}</td>
+    <td>${num(t.medianDuration, x => fmtMinsFull(x))}</td>
+    <td>${num(t.medianArrival, x => fmtMinsFull(x))}</td>
+    <td>${num(t.cancelsPerInc, x => x.toFixed(1))}</td>
+  </tr>`).join('')
+  return `<div class="card">
+    <h3>${esc(pin.title)}</h3>
+    ${p.narrative ? `<p class="ctx" style="font-size:12.5px;max-width:78ch">${esc(p.narrative)}</p>` : ''}
+    ${commentHtml(pin)}
+    <div style="overflow-x:auto;margin-top:11px"><table class="proftable mono">
+      <thead><tr><th>Scope</th><th>n</th><th>/30d</th><th>Median delay</th><th>Mean</th><th>P90</th><th>Duration</th><th>Arrival</th><th>Cancels/inc</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    ${provenance(pin)}
+  </div>`
+}
+
 export interface BriefingMeta {
   title: string
   subtitle?: string
@@ -490,6 +539,7 @@ export function buildBriefingHtml(meta: BriefingMeta, pins: BriefingPin[]): stri
       pin.kind === 'timeline' ? renderTimeline(pin) :
       pin.kind === 'heatmap'  ? renderHeatmap(pin) :
       pin.kind === 'scatter'  ? renderScatter(pin) :
+      pin.kind === 'profile'  ? renderProfile(pin) :
       renderDuration(pin),
     )
     i++
@@ -535,6 +585,12 @@ export function buildBriefingHtml(meta: BriefingMeta, pins: BriefingPin[]): stri
   .lvrow .bar i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px 3px 3px 2px; }
   .lvrow .val { text-align: right; }
   .riskvals { font-size: 11.5px; } .riskvals em { color: ${C.ink3}; font-style: normal; }
+  .proftable { width: 100%; border-collapse: collapse; font-size: 10.5px; min-width: 640px; }
+  .proftable th { text-align: right; font-weight: 400; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: ${C.ink3}; padding: 0 8px 6px; }
+  .proftable th:first-child { text-align: left; padding-left: 0; }
+  .proftable td { text-align: right; padding: 6px 8px; border-top: 1px solid ${C.line}; }
+  .proftable td.tierlbl { text-align: left; padding-left: 0; color: ${C.ink1}; font-family: ${SANS}; font-size: 11.5px; }
+  .proftable .tiernote { font-size: 9px; color: ${C.ink3}; }
   .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; font-size: 10px; color: ${C.ink2}; }
   .legend span { display: inline-flex; align-items: center; gap: 5px; }
   .sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
