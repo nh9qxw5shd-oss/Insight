@@ -593,14 +593,23 @@ incident cards flow into a two-column grid; timeline and duration panels run
 full-width — all in the order you set. Every export carries a fixed method
 footnote (per-day normalisation, delay conventions, correlation caveat).
 
-### 4.4 A worked example
+### 4.4 A worked example — built in
 
-During a heatwave: pin **Total Incidents** and **Total Delay** on Overview,
-pin the **Daily Activity** timeline, then on Weather pin **Incidents / day**
-and **Delay / day** from the level table, the **Max Temp** row from the risk
-table, and the **Duration Effect** panel. Open Briefing, headline it
-*"Fourteen days at Extreme"*, write three sentences, press **Print / PDF** —
-that is the whole workflow.
+Press **Example** in the Briefing tab (or **Load worked example** from the
+empty state) to load the July 2026 heatwave brief: nine real pins — the
+event stats, the banded timeline, the duration-effect curves, two by-level
+findings and the worst single incident — plus the headline and narrative
+that go with them. Each card's provenance line says which view it was
+pinned from. Edit, reorder and **Print / PDF** it to see exactly what the
+export produces; nothing in example mode touches the shared pin board or
+your own draft, and **Back to my pins** returns you to your real working
+set.
+
+To build the same thing yourself during an event: pin **Total Incidents**
+and **Total Delay** on Overview, pin the **Daily Activity** timeline, then
+on Weather pin **Incidents / day** from the level table, a row from the
+risk table, and the **Duration Effect** panel — headline it, write three
+sentences, export.
 
 ---
 

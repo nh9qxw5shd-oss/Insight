@@ -1,10 +1,11 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Pin, Printer, Download, Trash2, ChevronUp, ChevronDown, RefreshCw, Info } from 'lucide-react'
+import { Pin, Printer, Download, Trash2, ChevronUp, ChevronDown, RefreshCw, Info, GraduationCap, X } from 'lucide-react'
 import {
   BriefingPin, PinKind, fetchPins, updatePin, deletePin, buildBriefingHtml,
 } from '@/lib/briefing'
+import { HEATWAVE_EXAMPLE_META, HEATWAVE_EXAMPLE_PINS } from '@/lib/briefingExample'
 import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/print'
 
 // ─── Briefing composer ───────────────────────────────────────────────────────
@@ -36,6 +37,9 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
   const [subtitle, setSubtitle] = useState('')
   const [intro, setIntro] = useState('')
   const metaLoaded = useRef(false)
+  // Worked example — everything renders and exports normally, but nothing is
+  // read from or written to the shared pin board while it's active.
+  const [exampleMode, setExampleMode] = useState(false)
 
   // Draft headline/narrative survive tab switches and reloads per browser.
   useEffect(() => {
@@ -51,12 +55,39 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
     metaLoaded.current = true
   }, [])
   useEffect(() => {
-    if (!metaLoaded.current) return
+    // The example's headline/narrative must never clobber the user's draft.
+    if (!metaLoaded.current || exampleMode) return
     try { localStorage.setItem(META_KEY, JSON.stringify({ title, subtitle, intro })) } catch { /* storage full */ }
-  }, [title, subtitle, intro])
+  }, [title, subtitle, intro, exampleMode])
 
   const load = async () => {
+    setExampleMode(false)
     setPins(await fetchPins())
+  }
+
+  const loadExample = () => {
+    setExampleMode(true)
+    setPins(HEATWAVE_EXAMPLE_PINS.map(p => ({ ...p })))
+    setTitle(HEATWAVE_EXAMPLE_META.title)
+    setSubtitle(HEATWAVE_EXAMPLE_META.subtitle ?? '')
+    setIntro(HEATWAVE_EXAMPLE_META.intro ?? '')
+  }
+
+  const exitExample = () => {
+    setExampleMode(false)
+    setPins(null)
+    // Restore the user's own draft headline/narrative.
+    try {
+      const raw = localStorage.getItem(META_KEY)
+      const m = raw ? JSON.parse(raw) : {}
+      setTitle(typeof m.title === 'string' && m.title ? m.title : 'Operations Briefing')
+      setSubtitle(typeof m.subtitle === 'string' ? m.subtitle : '')
+      setIntro(typeof m.intro === 'string' ? m.intro : '')
+    } catch {
+      setTitle('Operations Briefing'); setSubtitle(''); setIntro('')
+    }
+    if (supabaseConfigured && !demoMode) fetchPins().then(setPins)
+    else setPins([])
   }
   useEffect(() => {
     if (supabaseConfigured && !demoMode) load()
@@ -75,12 +106,12 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
     setPins(renumbered)
     // Persist the whole order — pin counts are small, and rewriting every
     // index keeps epoch-seeded positions from new pins consistent.
-    Promise.all(renumbered.map(p => updatePin(p.id, { position: p.position }))).catch(() => {})
+    if (!exampleMode) Promise.all(renumbered.map(p => updatePin(p.id, { position: p.position }))).catch(() => {})
   }
 
   const remove = async (id: string) => {
     setPins(ps => (ps ?? []).filter(p => p.id !== id))
-    await deletePin(id)
+    if (!exampleMode) await deletePin(id)
   }
 
   const patchLocal = (id: string, patch: Partial<BriefingPin>) => {
@@ -96,12 +127,15 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
 
   const canExport = ordered.length > 0
 
-  if (!supabaseConfigured || demoMode) {
+  if ((!supabaseConfigured || demoMode) && !exampleMode) {
     return (
       <div className="card p-5">
         <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Briefing</h3>
-        <div className="py-12 text-center text-xs" style={{ color: 'var(--ink-500)' }}>
-          Pinned findings are stored in the shared database — connect a live database to use the Briefing composer.
+        <div className="py-12 flex flex-col items-center gap-4 text-center text-xs" style={{ color: 'var(--ink-500)' }}>
+          <span>Pinned findings are stored in the shared database — connect a live database to use the Briefing composer.</span>
+          <button onClick={loadExample} className="btn flex items-center gap-1.5">
+            <GraduationCap size={12} /> Load worked example
+          </button>
         </div>
       </div>
     )
@@ -109,6 +143,23 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
 
   return (
     <div className="space-y-6">
+
+      {exampleMode && (
+        <div
+          className="flex items-center gap-3 px-4 py-2.5 rounded border text-xs"
+          style={{ borderColor: 'var(--nr-amber)', background: 'var(--bg-card)', color: 'var(--ink-300)' }}
+        >
+          <GraduationCap size={14} style={{ color: 'var(--nr-amber)', flexShrink: 0 }} />
+          <span>
+            <b style={{ color: 'var(--nr-amber)' }}>Worked example</b> — the July 2026 heatwave brief, built from the
+            pins described in each card&apos;s provenance line. Edit, reorder and export freely: nothing here touches the
+            shared pin board or your own draft.
+          </span>
+          <button onClick={exitExample} className="btn !py-1 !px-2 !text-[10px] ml-auto shrink-0 flex items-center gap-1">
+            <X size={10} /> Back to my pins
+          </button>
+        </div>
+      )}
 
       {/* ── Composer header ──────────────────────────────────────────────── */}
       <div className="card p-5">
@@ -120,6 +171,11 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {!exampleMode && (
+              <button onClick={loadExample} className="btn flex items-center gap-1.5" title="Load the July-heatwave worked example — shows what pins look like and what the export produces, without touching the shared pin board">
+                <GraduationCap size={11} /> Example
+              </button>
+            )}
             <button onClick={load} className="btn flex items-center gap-1.5" title="Reload pins">
               <RefreshCw size={11} /> Refresh
             </button>
@@ -182,6 +238,9 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
               Duration Effect panel on <b>Weather</b>. Each pin captures the numbers plus the window and filters it was
               read under, then appears here ready to compose.
             </div>
+            <button onClick={loadExample} className="btn flex items-center gap-1.5 mt-1">
+              <GraduationCap size={12} /> Load worked example — the July heatwave brief
+            </button>
           </div>
         </div>
       ) : (
@@ -201,7 +260,7 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
                       className="input w-full !text-sm"
                       value={pin.title}
                       onChange={e => patchLocal(pin.id, { title: e.target.value })}
-                      onBlur={e => updatePin(pin.id, { title: e.target.value })}
+                      onBlur={e => { if (!exampleMode) updatePin(pin.id, { title: e.target.value }) }}
                       title="The claim as it will appear on the brief — edit freely"
                     />
                     <input
@@ -210,7 +269,7 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
                       value={pin.comment ?? ''}
                       placeholder="Optional supporting sentence shown under the claim…"
                       onChange={e => patchLocal(pin.id, { comment: e.target.value })}
-                      onBlur={e => updatePin(pin.id, { comment: e.target.value || null } as any)}
+                      onBlur={e => { if (!exampleMode) updatePin(pin.id, { comment: e.target.value || null } as any) }}
                     />
                     <div className="text-[10px] numeric-mono" style={{ color: 'var(--ink-500)' }}>
                       ⚲ {pin.source_label || 'Insight'} · {fmtWindow(pin)} · filters: {pin.filters_summary || 'none'}
