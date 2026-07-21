@@ -31,6 +31,9 @@ Filter bar applies globally:
 - **Areas** (Derby, Leicester, Lincoln, Bedford, …)
 - **Categories** (multi-select across all 21 incident classes)
 - **Severity** (CRITICAL / HIGH / MEDIUM / LOW / INFO)
+- **Weather** — operational statement level (Normal / Aware / Adverse / Extreme)
+  and named risk types from `weather_lookahead`, plus observed Open-Meteo
+  conditions and numeric ranges
 - **Search** (title, location, fault number, train ID, CCIL ref)
 - **Chart type** swap on every trend chart (line / area / bar)
 - **Distribution type** swap on every breakdown (donut / bar / treemap)

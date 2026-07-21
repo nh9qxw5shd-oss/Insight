@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useMemo } from 'react'
-import { CloudRain, SlidersHorizontal, LayoutGrid, TrendingUp, Info } from 'lucide-react'
+import { CloudRain, SlidersHorizontal, LayoutGrid, TrendingUp, Info, Zap } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid,
@@ -9,6 +9,10 @@ import {
 import { IncidentRow, CATEGORY_CONFIG, IncidentCategory } from '@/lib/types'
 import { effectiveDelay, nonContinuation } from '@/lib/queries'
 import { WeatherDay, CONDITION_GROUPS, conditionGroup } from '@/lib/weather'
+import {
+  WeatherLookaheadDay, WeatherLevel, WEATHER_LEVELS, WEATHER_LEVEL_CONFIG,
+  LOOKAHEAD_COVERAGE_START, lookaheadProvenance, weatherLevelLabel,
+} from '@/lib/weatherLookahead'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -140,16 +144,562 @@ function BandTip({ active, payload, label }: any) {
   )
 }
 
+// ─── Operational weather statement impact ────────────────────────────────────
+// Analyses what the route's operational weather classification
+// (weather_lookahead — DLog2's 5 Day Look Ahead / EM morning statements) does
+// to operations. Day counts per level are very unequal, so every comparison
+// is normalised per day at that level — never raw totals. The unit here is
+// the route-day (one calendar date), unlike the observed-weather sections
+// below which work in area-days.
+
+type RegionView = 'overall' | 'east_midlands' | 'london_north'
+
+const REGION_OPTIONS: { key: RegionView; label: string }[] = [
+  { key: 'overall',       label: 'Route' },
+  { key: 'east_midlands', label: 'East Midlands' },
+  { key: 'london_north',  label: 'London North' },
+]
+
+interface DayLoad { inc: number; delay: number; cancelled: number }
+
+interface LevelStat {
+  level:     WeatherLevel
+  days:      number
+  incidents: number
+  delay:     number
+  cancelled: number
+  incRate:   number
+  delayRate: number
+  cancRate:  number
+}
+
+interface RiskStat {
+  risk:             string
+  daysWith:         number
+  daysWithout:      number
+  incRateWith:      number
+  incRateWithout:   number
+  delayRateWith:    number
+  delayRateWithout: number
+}
+
+// Share of a level's incidents needed before the weather-sensitivity badge
+// can fire, and the elevated-vs-Normal share lift that fires it.
+const SENSITIVE_MIN_COUNT = 3
+const SENSITIVE_LIFT = 1.5
+
+function fmtPct(n: number): string {
+  return `${(n * 100).toFixed(0)}%`
+}
+
+function LookaheadImpact({
+  lookahead,
+  incidents,
+  windowFrom,
+  windowTo,
+}: {
+  lookahead:  WeatherLookaheadDay[]
+  incidents:  IncidentRow[]
+  windowFrom: string
+  windowTo:   string
+}) {
+  const [region, setRegion] = useState<RegionView>('overall')
+
+  // Statement rows inside the window, keyed by date
+  const days = useMemo(
+    () => lookahead.filter(d => d.weather_date >= windowFrom && d.weather_date <= windowTo),
+    [lookahead, windowFrom, windowTo],
+  )
+  const byDate = useMemo(() => {
+    const m = new Map<string, WeatherLookaheadDay>()
+    days.forEach(d => m.set(d.weather_date, d))
+    return m
+  }, [days])
+
+  // Region view: reclassify each day by the selected region's level / risks.
+  // Incidents are always route-wide — the toggle changes day classification only.
+  const levelOf = useMemo(() => (d: WeatherLookaheadDay): WeatherLevel | null => (
+    region === 'east_midlands' ? d.east_midlands_level :
+    region === 'london_north'  ? d.london_north_level :
+    d.overall_level
+  ), [region])
+
+  const risksOf = useMemo(() => (d: WeatherLookaheadDay): string[] => (
+    region === 'east_midlands' ? Object.keys(d.east_midlands_risks ?? {}) :
+    region === 'london_north'  ? Object.keys(d.london_north_risks ?? {}) :
+    (d.risk_types ?? [])
+  ), [region])
+
+  // Per-route-day incident load. Codebase aggregation conventions:
+  // continuations excluded from incident counts but their delay_delta counts,
+  // off-route delay excluded entirely (both via effectiveDelay).
+  const perDay = useMemo(() => {
+    const m = new Map<string, DayLoad>()
+    incidents.forEach(i => {
+      const cur = m.get(i.report_date) ?? { inc: 0, delay: 0, cancelled: 0 }
+      cur.delay     += effectiveDelay(i)
+      cur.cancelled += (i.cancelled || 0) + (i.part_cancelled || 0)
+      if (!i.is_continuation) cur.inc += 1
+      m.set(i.report_date, cur)
+    })
+    return m
+  }, [incidents])
+
+  // All dates in the window, for the timeline strip + coverage note
+  const allDates = useMemo(() => {
+    const out: string[] = []
+    const end = new Date(windowTo + 'T00:00:00Z').getTime()
+    for (let t = new Date(windowFrom + 'T00:00:00Z').getTime(); t <= end; t += 86_400_000) {
+      out.push(new Date(t).toISOString().slice(0, 10))
+    }
+    return out
+  }, [windowFrom, windowTo])
+
+  const uncoveredDays = allDates.length - days.length
+
+  // ── 1 · Impact by level ─────────────────────────────────────────────────────
+  const levelStats = useMemo<LevelStat[]>(() => {
+    const acc = new Map<WeatherLevel, { days: number; inc: number; delay: number; cancelled: number }>()
+    days.forEach(d => {
+      const level = levelOf(d)
+      if (!level) return
+      const cur  = acc.get(level) ?? { days: 0, inc: 0, delay: 0, cancelled: 0 }
+      const load = perDay.get(d.weather_date) ?? { inc: 0, delay: 0, cancelled: 0 }
+      cur.days      += 1
+      cur.inc       += load.inc
+      cur.delay     += load.delay
+      cur.cancelled += load.cancelled
+      acc.set(level, cur)
+    })
+    return WEATHER_LEVELS
+      .map(level => {
+        const v = acc.get(level) ?? { days: 0, inc: 0, delay: 0, cancelled: 0 }
+        return {
+          level,
+          days:      v.days,
+          incidents: v.inc,
+          delay:     v.delay,
+          cancelled: v.cancelled,
+          incRate:   v.days ? v.inc / v.days : 0,
+          delayRate: v.days ? v.delay / v.days : 0,
+          cancRate:  v.days ? v.cancelled / v.days : 0,
+        }
+      })
+      .filter(s => s.days > 0)
+  }, [days, perDay, levelOf])
+
+  const normalStat = levelStats.find(s => s.level === 'GREEN') ?? null
+
+  // ── 2 · Category mix by level ───────────────────────────────────────────────
+  const catMix = useMemo(() => {
+    const catTotals  = new Map<IncidentCategory, number>()
+    const cells      = new Map<string, number>()          // `${category}::${level}` → count
+    const levelTotal = new Map<WeatherLevel, number>()    // incidents per level
+    nonContinuation(incidents).forEach(i => {
+      const d = byDate.get(i.report_date)
+      const level = d ? levelOf(d) : null
+      if (!level) return
+      catTotals.set(i.category, (catTotals.get(i.category) ?? 0) + 1)
+      levelTotal.set(level, (levelTotal.get(level) ?? 0) + 1)
+      const key = `${i.category}::${level}`
+      cells.set(key, (cells.get(key) ?? 0) + 1)
+    })
+    const topCats = [...catTotals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([cat]) => cat)
+    const cols = levelStats.map(s => s.level)
+
+    // Weather-sensitive marker, derived from the data: a category whose share
+    // of incidents on Adverse+Extreme days is well above its Normal-day share.
+    const normShareOf = (cat: IncidentCategory): number => {
+      const n = levelTotal.get('GREEN') ?? 0
+      return n > 0 ? (cells.get(`${cat}::GREEN`) ?? 0) / n : 0
+    }
+    const sensitive = new Set<IncidentCategory>()
+    const elevatedTotal = (levelTotal.get('ADVERSE') ?? 0) + (levelTotal.get('EXTREME') ?? 0)
+    if (elevatedTotal > 0 && (levelTotal.get('GREEN') ?? 0) > 0) {
+      topCats.forEach(cat => {
+        const elevatedCount = (cells.get(`${cat}::ADVERSE`) ?? 0) + (cells.get(`${cat}::EXTREME`) ?? 0)
+        const elevatedShare = elevatedCount / elevatedTotal
+        const normShare = normShareOf(cat)
+        if (elevatedCount >= SENSITIVE_MIN_COUNT &&
+            (normShare === 0 ? elevatedShare > 0 : elevatedShare / normShare >= SENSITIVE_LIFT)) {
+          sensitive.add(cat)
+        }
+      })
+    }
+    return { topCats, cols, cells, levelTotal, sensitive }
+  }, [incidents, byDate, levelOf, levelStats])
+
+  // ── 3 · Impact by risk type ─────────────────────────────────────────────────
+  const riskStats = useMemo<RiskStat[]>(() => {
+    const out: RiskStat[] = []
+    // Universe = covered days only, so "days without" isn't polluted by
+    // dates that simply have no statement.
+    const universe = days
+    for (const risk of Array.from(new Set(universe.flatMap(d => risksOf(d)))).sort()) {
+      let dWith = 0, dWithout = 0
+      const withLoad    = { inc: 0, delay: 0 }
+      const withoutLoad = { inc: 0, delay: 0 }
+      universe.forEach(d => {
+        const load = perDay.get(d.weather_date) ?? { inc: 0, delay: 0, cancelled: 0 }
+        if (risksOf(d).includes(risk)) {
+          dWith += 1; withLoad.inc += load.inc; withLoad.delay += load.delay
+        } else {
+          dWithout += 1; withoutLoad.inc += load.inc; withoutLoad.delay += load.delay
+        }
+      })
+      if (dWith === 0) continue
+      out.push({
+        risk,
+        daysWith:         dWith,
+        daysWithout:      dWithout,
+        incRateWith:      dWith    ? withLoad.inc / dWith : 0,
+        incRateWithout:   dWithout ? withoutLoad.inc / dWithout : 0,
+        delayRateWith:    dWith    ? withLoad.delay / dWith : 0,
+        delayRateWithout: dWithout ? withoutLoad.delay / dWithout : 0,
+      })
+    }
+    return out.sort((a, b) => b.delayRateWith - a.delayRateWith)
+  }, [days, perDay, risksOf])
+
+  const regionToggle = (
+    <div className="flex items-center gap-1 flex-wrap">
+      {REGION_OPTIONS.map(o => (
+        <button
+          key={o.key}
+          onClick={() => setRegion(o.key)}
+          className={o.key === region ? 'btn btn-active' : 'btn'}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+
+  // ── Empty state ─────────────────────────────────────────────────────────────
+  if (days.length === 0) {
+    return (
+      <div className="card p-5">
+        <div className="mb-4">
+          <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Operational Weather Impact</h3>
+          <p className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+            {windowFrom} – {windowTo}
+          </p>
+        </div>
+        <div className="py-10 flex flex-col items-center gap-2 text-center">
+          <CloudRain size={24} style={{ color: 'var(--ink-500)' }} />
+          <div className="text-sm" style={{ color: 'var(--ink-400)' }}>
+            No operational weather statements in this window
+          </div>
+          <div className="text-[11px] max-w-sm" style={{ color: 'var(--ink-500)' }}>
+            Statements cover {LOOKAHEAD_COVERAGE_START} onwards — written by DLog2 on report save
+            and backfilled from the EM State of the Route morning messages.
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const maxIncRate = Math.max(...levelStats.map(s => s.incRate), 0.0001)
+  const greenShare = (cat: IncidentCategory): number => {
+    const n = catMix.levelTotal.get('GREEN') ?? 0
+    return n > 0 ? (catMix.cells.get(`${cat}::GREEN`) ?? 0) / n : 0
+  }
+
+  return (
+    <>
+      {/* ── 1 · Impact by weather level ─────────────────────────────────────── */}
+      <div className="card p-5">
+        <div className="mb-4 flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Impact by Weather Level</h3>
+            <p className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+              Operational statement ({region === 'overall' ? 'route overall level' : `${REGION_OPTIONS.find(o => o.key === region)?.label} level`}) ·
+              all figures per day at that level · {windowFrom} – {windowTo}
+            </p>
+          </div>
+          {regionToggle}
+        </div>
+
+        {/* Timeline strip — one cell per day, coloured by that day's level */}
+        <div className="mb-4">
+          <div className="flex items-stretch h-3.5 rounded-sm overflow-hidden">
+            {allDates.map(date => {
+              const d = byDate.get(date)
+              const level = d ? levelOf(d) : null
+              const cfg = level ? WEATHER_LEVEL_CONFIG[level] : null
+              const title = d
+                ? `${date} · ${weatherLevelLabel(levelOf(d))}${region === 'overall' ? ` (EM ${weatherLevelLabel(d.east_midlands_level)} / LN ${weatherLevelLabel(d.london_north_level)})` : ''}` +
+                  `${risksOf(d).length ? ` · ${risksOf(d).join(', ')}` : ''} · ${lookaheadProvenance(d)}${d.risk_note ? `\n${d.risk_note}` : ''}`
+                : `${date} · no statement`
+              return (
+                <div
+                  key={date}
+                  className="flex-1"
+                  title={title}
+                  style={{ background: cfg ? cfg.color : 'var(--line)', opacity: cfg ? 0.85 : 0.4, minWidth: 1 }}
+                />
+              )
+            })}
+          </div>
+          <div className="flex items-center gap-4 mt-1.5 flex-wrap">
+            {WEATHER_LEVELS.map(l => (
+              <div key={l} className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-sm" style={{ background: WEATHER_LEVEL_CONFIG[l].color }} />
+                <span className="text-[9px]" style={{ color: 'var(--ink-500)' }}>{WEATHER_LEVEL_CONFIG[l].label}</span>
+              </div>
+            ))}
+            <span className="text-[9px] ml-auto" style={{ color: 'var(--ink-500)' }}>
+              Hover a day for risks, source statement and provenance
+              {uncoveredDays > 0 ? ` · ${uncoveredDays} day${uncoveredDays === 1 ? '' : 's'} without a statement (coverage from ${LOOKAHEAD_COVERAGE_START})` : ''}
+            </span>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs" style={{ minWidth: 680 }}>
+            <thead>
+              <tr className="text-left" style={{ color: 'var(--ink-500)' }}>
+                <th className="label-micro text-[9px] font-normal pb-2 pr-3">Level</th>
+                <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Days</th>
+                <th className="label-micro text-[9px] font-normal pb-2 pr-3" style={{ width: '24%' }}>Incidents / day</th>
+                <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Delay / day</th>
+                <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right" title="Full + part cancellations per day at this level">Cancels / day</th>
+                <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Incident lift</th>
+                <th className="label-micro text-[9px] font-normal pb-2 text-right">Delay lift</th>
+              </tr>
+            </thead>
+            <tbody>
+              {levelStats.map(s => {
+                const cfg = WEATHER_LEVEL_CONFIG[s.level]
+                const isBaseline = s.level === 'GREEN'
+                const lowSample  = s.days < MIN_SAMPLE
+                const incLift   = normalStat && normalStat.incRate   > 0 ? s.incRate   / normalStat.incRate   : null
+                const delayLift = normalStat && normalStat.delayRate > 0 ? s.delayRate / normalStat.delayRate : null
+                return (
+                  <tr key={s.level} className="border-t" style={{ borderColor: 'var(--line)' }}>
+                    <td className="py-2.5 pr-3">
+                      <span className="inline-flex items-center gap-2" style={{ color: cfg.color }}>
+                        <span className="w-2 h-2 rounded-sm inline-block" style={{ background: cfg.color }} />
+                        {cfg.label}
+                      </span>
+                      {isBaseline && (
+                        <span className="ml-1.5 text-[9px]" style={{ color: 'var(--ink-500)' }}>baseline</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: 'var(--ink-300)' }}>
+                      {s.days.toLocaleString()}
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--line)' }}>
+                          <div
+                            className="h-full rounded-full"
+                            style={{ width: `${Math.min(100, (s.incRate / maxIncRate) * 100)}%`, background: cfg.color }}
+                          />
+                        </div>
+                        <span className="numeric-mono w-10 text-right" style={{ color: 'var(--ink-200)' }}>{fmtRate(s.incRate)}</span>
+                      </div>
+                    </td>
+                    <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: 'var(--ink-200)' }}>
+                      {fmtMin(s.delayRate)}
+                    </td>
+                    <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: 'var(--ink-200)' }}>
+                      {fmtRate(s.cancRate)}
+                    </td>
+                    {isBaseline ? (
+                      <td colSpan={2} className="py-2.5 text-right text-[10px]" style={{ color: 'var(--ink-500)' }}>1.00× reference</td>
+                    ) : lowSample ? (
+                      <td colSpan={2} className="py-2.5 text-right text-[10px]" style={{ color: 'var(--ink-500)' }}>low sample (&lt;{MIN_SAMPLE} days)</td>
+                    ) : (
+                      <>
+                        <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: incLift != null ? liftColor(incLift) : 'var(--ink-500)' }}>
+                          {incLift != null ? fmtLift(incLift) : '—'}
+                        </td>
+                        <td className="py-2.5 text-right numeric-mono" style={{ color: delayLift != null ? liftColor(delayLift) : 'var(--ink-500)' }}>
+                          {delayLift != null ? fmtLift(delayLift) : '—'}
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex items-start gap-2 mt-3">
+          <Info size={11} style={{ color: 'var(--ink-500)', flexShrink: 0, marginTop: 1 }} />
+          <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>
+            Cancellations include part-cancellations. Region views reclassify the <em>day</em> by that
+            region&apos;s level — incidents are always route-wide.
+            {!normalStat && ' No Normal days in this window — lift columns unavailable.'}
+            {normalStat && normalStat.days < MIN_SAMPLE && ` Only ${normalStat.days} Normal day${normalStat.days === 1 ? '' : 's'} in this window — treat lifts as indicative.`}
+          </span>
+        </div>
+      </div>
+
+      {/* ── 2 · Category mix by level ───────────────────────────────────────── */}
+      <div className="card p-5">
+        <div className="mb-4">
+          <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Category Mix by Weather Level</h3>
+          <p className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+            Share of each level&apos;s incidents by category — heat shows the shift vs the Normal-day mix ·
+            <Zap size={9} className="inline mx-1" style={{ color: 'var(--nr-amber)', verticalAlign: '-1px' }} />
+            marks categories over-represented on Adverse / Extreme days
+          </p>
+        </div>
+
+        {catMix.topCats.length === 0 ? (
+          <div className="py-10 text-center text-xs" style={{ color: 'var(--ink-500)' }}>
+            Not enough statement-joined incidents to build the matrix
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs" style={{ minWidth: 520 }}>
+              <thead>
+                <tr>
+                  <th className="label-micro text-[9px] font-normal text-left pb-2 pr-3" style={{ color: 'var(--ink-500)' }}>Category</th>
+                  {catMix.cols.map(level => (
+                    <th key={level} className="label-micro text-[9px] font-normal text-right pb-2 px-2" style={{ color: WEATHER_LEVEL_CONFIG[level].color }}>
+                      {WEATHER_LEVEL_CONFIG[level].label}
+                      <div className="text-[8px] normal-case" style={{ color: 'var(--ink-500)' }}>
+                        {(catMix.levelTotal.get(level) ?? 0).toLocaleString()} inc
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {catMix.topCats.map(cat => {
+                  const cfg = CATEGORY_CONFIG[cat]
+                  const baseShare = greenShare(cat)
+                  return (
+                    <tr key={cat} className="border-t" style={{ borderColor: 'var(--line)' }}>
+                      <td className="py-2 pr-3 whitespace-nowrap" style={{ color: cfg?.color ?? 'var(--ink-200)' }}>
+                        {cfg?.label ?? cat}
+                        {catMix.sensitive.has(cat) && (
+                          <Zap size={9} className="inline ml-1.5" style={{ color: 'var(--nr-amber)', verticalAlign: '-1px' }} />
+                        )}
+                      </td>
+                      {catMix.cols.map(level => {
+                        const total = catMix.levelTotal.get(level) ?? 0
+                        const count = catMix.cells.get(`${cat}::${level}`) ?? 0
+                        const share = total > 0 ? count / total : 0
+                        const ratio = baseShare > 0 ? share / baseShare : (share > 0 ? 3 : 0)
+                        const alpha = level === 'GREEN' ? 0 : Math.min(0.7, Math.max(0, (ratio - 1)) * 0.35)
+                        return (
+                          <td
+                            key={level}
+                            className="py-2 px-2 text-right numeric-mono"
+                            title={`${cfg?.label ?? cat} · ${WEATHER_LEVEL_CONFIG[level].label}: ${count} of ${total} incidents = ${fmtPct(share)}${baseShare > 0 && level !== 'GREEN' ? ` (${ratio.toFixed(2)}× the Normal-day share of ${fmtPct(baseShare)})` : ''}`}
+                            style={{
+                              background: alpha > 0 ? `rgba(224, 82, 6, ${alpha})` : 'transparent',
+                              color: 'var(--ink-200)',
+                            }}
+                          >
+                            {total > 0 ? fmtPct(share) : '—'}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            <div className="flex items-center gap-2 mt-3">
+              <LayoutGrid size={10} style={{ color: 'var(--ink-500)' }} />
+              <span className="text-[9px]" style={{ color: 'var(--ink-500)' }}>
+                Shares are within-level (each column sums to ~100% over all categories) · hover a cell for exact numbers
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── 3 · Impact by risk type ─────────────────────────────────────────── */}
+      <div className="card p-5">
+        <div className="mb-4">
+          <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Impact by Risk Type</h3>
+          <p className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+            Days carrying each named risk vs statement days without it — rates per day, so unequal day
+            counts compare fairly{region !== 'overall' ? ` · ${REGION_OPTIONS.find(o => o.key === region)?.label} risks` : ''}
+          </p>
+        </div>
+
+        {riskStats.length === 0 ? (
+          <div className="py-10 text-center text-xs" style={{ color: 'var(--ink-500)' }}>
+            No named risks in this window
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs" style={{ minWidth: 720 }}>
+              <thead>
+                <tr className="text-left" style={{ color: 'var(--ink-500)' }}>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3">Risk</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Days</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Inc / day (risk days)</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Inc / day (other days)</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Inc lift</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Delay / day (risk days)</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Delay / day (other days)</th>
+                  <th className="label-micro text-[9px] font-normal pb-2 text-right">Delay lift</th>
+                </tr>
+              </thead>
+              <tbody>
+                {riskStats.map(r => {
+                  const lowSample = r.daysWith < MIN_SAMPLE || r.daysWithout < MIN_SAMPLE
+                  const incLift   = r.incRateWithout   > 0 ? r.incRateWith   / r.incRateWithout   : null
+                  const delayLift = r.delayRateWithout > 0 ? r.delayRateWith / r.delayRateWithout : null
+                  return (
+                    <tr key={r.risk} className="border-t" style={{ borderColor: 'var(--line)' }}>
+                      <td className="py-2.5 pr-3" style={{ color: 'var(--ink-200)' }}>{r.risk}</td>
+                      <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: 'var(--ink-300)' }}>
+                        {r.daysWith.toLocaleString()}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: 'var(--ink-200)' }}>{fmtRate(r.incRateWith)}</td>
+                      <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: 'var(--ink-400)' }}>{fmtRate(r.incRateWithout)}</td>
+                      <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: lowSample ? 'var(--ink-500)' : incLift != null ? liftColor(incLift) : 'var(--ink-500)' }}>
+                        {incLift != null ? fmtLift(incLift) : '—'}{lowSample && incLift != null ? '*' : ''}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: 'var(--ink-200)' }}>{fmtMin(r.delayRateWith)}</td>
+                      <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: 'var(--ink-400)' }}>{fmtMin(r.delayRateWithout)}</td>
+                      <td className="py-2.5 text-right numeric-mono" style={{ color: lowSample ? 'var(--ink-500)' : delayLift != null ? liftColor(delayLift) : 'var(--ink-500)' }}>
+                        {delayLift != null ? fmtLift(delayLift) : '—'}{lowSample && delayLift != null ? '*' : ''}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            <div className="flex items-center gap-2 mt-3">
+              <Info size={10} style={{ color: 'var(--ink-500)' }} />
+              <span className="text-[9px]" style={{ color: 'var(--ink-500)' }}>
+                &quot;Other days&quot; = statement days not carrying the risk · * low sample (&lt;{MIN_SAMPLE} days on one side) ·
+                a day can carry several risks, so rows overlap · correlation, not cause
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
 // ─── WeatherTab ───────────────────────────────────────────────────────────────
 
 export function WeatherTab({
   incidents,
   weatherData,
+  lookahead = [],
   windowFrom,
   windowTo,
 }: {
   incidents:   IncidentRow[]
   weatherData: WeatherDay[]
+  lookahead?:  WeatherLookaheadDay[]
   windowFrom:  string
   windowTo:    string
 }) {
@@ -272,40 +822,53 @@ export function WeatherTab({
     return { windowTotalDelay, adverseAreaDays, adverseDelay, baselineRate, excess, sharePct }
   }, [incidents, groupStats, baseline])
 
-  // ── Empty state ─────────────────────────────────────────────────────────────
-
-  if (weatherData.length === 0) {
-    return (
-      <div className="space-y-6">
-        <div className="card p-5">
-          <div className="mb-4">
-            <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Weather Impact</h3>
-            <p className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
-              {windowFrom} – {windowTo}
-            </p>
-          </div>
-          <div className="py-14 flex flex-col items-center gap-3 text-center">
-            <CloudRain size={28} style={{ color: 'var(--ink-500)' }} />
-            <div className="text-sm" style={{ color: 'var(--ink-400)' }}>
-              Weather data hasn&apos;t synced for this window yet
-            </div>
-            <div className="text-[11px] max-w-sm" style={{ color: 'var(--ink-500)' }}>
-              Daily weather is fetched per area on load and cached. If you&apos;re in demo mode,
-              weather sync is disabled — connect a live database to enable this tab.
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   const maxIncRate = Math.max(...groupStats.map(g => g.incRate), 0.0001)
   const clearAreaDays = matrix.cols.find(c => c.group === BASELINE)?.areaDays ?? 0
 
   // ── Render ──────────────────────────────────────────────────────────────────
+  // Operational statement analysis first — it's the classification the route
+  // was actually working to — then the observed Open-Meteo sections.
+
+  const observedEmpty = (
+    <div className="card p-5">
+      <div className="mb-4">
+        <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Observed Weather Impact</h3>
+        <p className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+          {windowFrom} – {windowTo}
+        </p>
+      </div>
+      <div className="py-14 flex flex-col items-center gap-3 text-center">
+        <CloudRain size={28} style={{ color: 'var(--ink-500)' }} />
+        <div className="text-sm" style={{ color: 'var(--ink-400)' }}>
+          Weather data hasn&apos;t synced for this window yet
+        </div>
+        <div className="text-[11px] max-w-sm" style={{ color: 'var(--ink-500)' }}>
+          Daily weather is fetched per area on load and cached. If you&apos;re in demo mode,
+          weather sync is disabled — connect a live database to enable this tab.
+        </div>
+      </div>
+    </div>
+  )
 
   return (
     <div className="space-y-6">
+
+      {/* ═══ Operational weather statement (weather_lookahead) ═══════════════ */}
+      <div className="label-micro" style={{ color: 'var(--ink-500)' }}>
+        Operational weather statement · DLog2 5 Day Look Ahead / EM morning messages
+      </div>
+      <LookaheadImpact
+        lookahead={lookahead}
+        incidents={incidents}
+        windowFrom={windowFrom}
+        windowTo={windowTo}
+      />
+
+      {/* ═══ Observed weather (Open-Meteo) ═══════════════════════════════════ */}
+      <div className="label-micro pt-2" style={{ color: 'var(--ink-500)' }}>
+        Observed weather · Open-Meteo per-area readings
+      </div>
+      {weatherData.length === 0 ? observedEmpty : (<>
 
       {/* ── 1 · Condition impact ─────────────────────────────────────────── */}
       <div className="card p-5">
@@ -603,6 +1166,7 @@ export function WeatherTab({
           </>
         )}
       </div>
+      </>)}
     </div>
   )
 }

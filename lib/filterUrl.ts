@@ -29,6 +29,8 @@ export function decodeFilters(s: string): AnalyticsFilters | null {
       const merged = { ...DEFAULT_FILTERS, ...parsed }
       // Ensure array fields added post-encoding are never null/undefined
       if (!Array.isArray(merged.staffNames)) merged.staffNames = []
+      if (!Array.isArray(merged.weatherLevels)) merged.weatherLevels = []
+      if (!Array.isArray(merged.weatherRisks)) merged.weatherRisks = []
       return merged as AnalyticsFilters
     }
     return null

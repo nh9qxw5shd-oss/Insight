@@ -11,7 +11,7 @@ import {
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
   Pie, PieChart, PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart,
-  ReferenceDot, ReferenceLine, ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
+  ReferenceArea, ReferenceDot, ReferenceLine, ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
 } from 'recharts'
 import { isSupabaseConfigured } from '@/lib/supabase'
 import {
@@ -51,6 +51,7 @@ import {
   removeSearchToken, clearCustomDate, clearDelayFilter, toggleIncidentTypeFilter,
   toggleStaffFilter, clearStaffFilter,
   removeWeatherCondition, clearWeatherNumeric,
+  toggleWeatherLevelFilter, toggleWeatherRiskFilter,
   setOffRouteFilter,
 } from '@/lib/filterActions'
 import { generateSyntheticData } from '@/lib/syntheticData'
@@ -58,6 +59,11 @@ import {
   WeatherDay, WEATHER_LOCATIONS, CONDITION_GROUPS,
   fetchWeatherFromDB, syncWeather, conditionGroup,
 } from '@/lib/weather'
+import {
+  WeatherLookaheadDay, WeatherLevel, WEATHER_LEVELS, WEATHER_LEVEL_CONFIG,
+  WEATHER_RISK_TYPES, LOOKAHEAD_COVERAGE_START,
+  fetchWeatherLookahead, lookaheadDayQualifies, weatherLevelLabel,
+} from '@/lib/weatherLookahead'
 import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
 import { getFiltersFromUrl, setFiltersInUrl, clearFiltersFromUrl } from '@/lib/filterUrl'
 import { exportCSV } from '@/lib/export'
@@ -222,6 +228,10 @@ export default function InsightDashboard() {
   // Weather data synced from Open-Meteo via Supabase
   const [weatherData, setWeatherData] = useState<WeatherDay[]>([])
 
+  // Operational weather statements (weather_lookahead) — the daily risk
+  // classification the route was working to. Written by DLog2 on report save.
+  const [lookahead, setLookahead] = useState<WeatherLookaheadDay[]>([])
+
   // Notebook date annotations — rendered as markers on the Overview trend.
   // Refreshed on tab switches so notes added in the Notebook appear promptly.
   const [dateAnnotations, setDateAnnotations] = useState<InsightAnnotation[]>([])
@@ -284,6 +294,17 @@ export default function InsightDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.windowFrom, data?.windowTo, demoMode])
 
+  // Fetch operational weather statements whenever the analytics window changes.
+  useEffect(() => {
+    if (!isSupabaseConfigured() || demoMode || !data) return
+    let cancelled = false
+    fetchWeatherLookahead(data.windowFrom, data.windowTo)
+      .then(rows => { if (!cancelled) setLookahead(rows) })
+      .catch(() => { /* non-fatal — lookahead is supplemental context */ })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.windowFrom, data?.windowTo, demoMode])
+
   // Fetch on filter change
   useEffect(() => {
     let cancelled = false
@@ -332,9 +353,12 @@ export default function InsightDashboard() {
   // Client-side filters applied on top of server-filtered incidents:
   // 1. Staff filter — team members fetched for full window so all names are available.
   // 2. Weather conditions filter — maps each incident's (area, date) to its weather group.
+  // 3. Operational weather filters — restrict to report_dates whose
+  //    weather_lookahead statement matches the selected levels / risk types.
   const effectiveData = useMemo((): RawData | null => {
     if (!data) return null
     let incidents = data.incidents
+    let reports = data.reports
 
     if (filters.staffNames.length > 0) {
       const staffIncidentIds = new Set(
@@ -373,13 +397,27 @@ export default function InsightDashboard() {
       })
     }
 
-    if (incidents === data.incidents) return data
-    return { ...data, incidents }
+    const activeWxLevels = filters.weatherLevels ?? []
+    const activeWxRisks  = filters.weatherRisks ?? []
+    if (activeWxLevels.length > 0 || activeWxRisks.length > 0) {
+      // Date-level filter: a report_date qualifies when its statement matches
+      // every active weather dimension. Dates with no statement (pre-coverage
+      // and the gap days) drop out entirely — incidents and reports alike.
+      const byDate = new Map(lookahead.map(d => [d.weather_date, d]))
+      const dateQualifies = (date: string) =>
+        lookaheadDayQualifies(byDate.get(date), activeWxLevels, activeWxRisks)
+      incidents = incidents.filter(i => dateQualifies(i.report_date))
+      reports   = reports.filter(r => dateQualifies(r.report_date))
+    }
+
+    if (incidents === data.incidents && reports === data.reports) return data
+    return { ...data, incidents, reports }
   }, [data, filters.staffNames, filters.weatherConditions,
       filters.minRainfall, filters.maxRainfall,
       filters.minTempC, filters.maxTempC,
       filters.minWindKmh, filters.maxWindKmh,
-      weatherData])
+      filters.weatherLevels, filters.weatherRisks,
+      weatherData, lookahead])
 
   const availableStaff = useMemo(() => {
     if (!data) return []
@@ -647,6 +685,8 @@ export default function InsightDashboard() {
           (filters.minDelay != null || filters.maxDelay != null ? 1 : 0) +
           (filters.metricFocus === 'cancellations' ? 1 : 0) +
           (filters.weatherConditions?.length ?? 0) +
+          (filters.weatherLevels?.length ?? 0) +
+          (filters.weatherRisks?.length ?? 0) +
           (filters.minRainfall != null || filters.maxRainfall != null ? 1 : 0) +
           (filters.minTempC    != null || filters.maxTempC    != null ? 1 : 0) +
           (filters.minWindKmh  != null || filters.maxWindKmh  != null ? 1 : 0) +
@@ -670,6 +710,8 @@ export default function InsightDashboard() {
         onClearDelay={() => setFilters(f => clearDelayFilter(f))}
         onRemoveWeatherCondition={(g: string) => setFilters(f => removeWeatherCondition(f, g))}
         onClearWeatherNumeric={() => setFilters(f => clearWeatherNumeric(f))}
+        onRemoveWeatherLevel={(l: WeatherLevel) => setFilters(f => toggleWeatherLevelFilter(f, l))}
+        onRemoveWeatherRisk={(r: string) => setFilters(f => toggleWeatherRiskFilter(f, r))}
         onClearOffRoute={() => setFilters(f => setOffRouteFilter(f, 'include'))}
         onClearAll={handleResetFilters}
       />
@@ -695,7 +737,7 @@ export default function InsightDashboard() {
 
         {kpis && effectiveData && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} annotations={dateAnnotations.map(a => ({ date: a.anchor, note: a.note }))} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} annotations={dateAnnotations.map(a => ({ date: a.anchor, note: a.note }))} lookahead={lookahead} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={effectiveData} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
             {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} metricFocus={filters.metricFocus} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
@@ -705,7 +747,7 @@ export default function InsightDashboard() {
             {tab === 'trends'      && <TrendsTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowDays={effectiveData.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'explore'     && <ExploreTab incidents={effectiveData.incidents} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} />}
-            {tab === 'weather'     && <WeatherTab incidents={effectiveData.incidents} weatherData={weatherData} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
+            {tab === 'weather'     && <WeatherTab incidents={effectiveData.incidents} weatherData={weatherData} lookahead={lookahead} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
             {tab === 'calendar'    && <CalendarTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onDrillDown={setDrillDown} />}
             {tab === 'compare'     && <CompareTab demoMode={demoMode} />}
             {tab === 'pivot'       && <PivotTab incidents={effectiveData.incidents} />}
@@ -1145,7 +1187,27 @@ function HypothesisRow({ h, maxLift, onClick }: {
   )
 }
 
-function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, annotations }: any) {
+function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, annotations, lookahead }: any) {
+  // Timeline context: band the date axis by that day's operational weather
+  // level so spikes can be read against the classification at a glance.
+  // Normal (GREEN) days stay unbanded — only elevated levels are shaded.
+  const levelByDate = new Map<string, WeatherLevel>()
+  for (const d of (lookahead ?? []) as WeatherLookaheadDay[]) {
+    if (d.overall_level) levelByDate.set(d.weather_date, d.overall_level)
+  }
+  const trendWx = levelByDate.size
+    ? trend.map((p: any) => ({ ...p, weatherLevel: levelByDate.get(p.date) ?? null }))
+    : trend
+  const weatherBands: { x1: string; x2: string; level: WeatherLevel }[] = []
+  for (const p of trendWx as any[]) {
+    const level = p.weatherLevel
+    if (!level || level === 'GREEN') continue
+    const last = weatherBands[weatherBands.length - 1]
+    if (last && last.level === level && last.x2 === prevDay(p.date)) last.x2 = p.date
+    else weatherBands.push({ x1: p.date, x2: p.date, level })
+  }
+  const hasBands = weatherBands.length > 0
+
   return (
     <div className="space-y-6">
 
@@ -1206,9 +1268,21 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
 
       {/* Trend + breakdown row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card title="Daily Activity" subtitle={`${trend.length}-day rolling window · stability band shaded`} className="lg:col-span-2 tick-corners"
+        <Card title="Daily Activity" subtitle={`${trend.length}-day rolling window · stability band shaded${hasBands ? ' · axis banded by operational weather level' : ''}`} className="lg:col-span-2 tick-corners"
               right={<ChartTypeToggle value={chart} onChange={setChart} />}>
-          <TrendChart data={trend} kind={chart} onDateClick={onDateClick} changePoints={changePoints} showBaseline annotations={annotations} />
+          <TrendChart data={trendWx} kind={chart} onDateClick={onDateClick} changePoints={changePoints} showBaseline annotations={annotations} weatherBands={weatherBands} />
+          {hasBands && (
+            <div className="flex items-center gap-4 mt-2 flex-wrap">
+              {(['AWARE', 'ADVERSE', 'EXTREME'] as WeatherLevel[])
+                .filter(l => weatherBands.some(b => b.level === l))
+                .map(l => (
+                  <div key={l} className="flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 rounded-sm" style={{ background: WEATHER_LEVEL_CONFIG[l].color, opacity: 0.45 }} />
+                    <span className="text-[9px]" style={{ color: 'var(--ink-500)' }}>{WEATHER_LEVEL_CONFIG[l].label} weather day</span>
+                  </div>
+                ))}
+            </div>
+          )}
         </Card>
 
         <Card title="Category Mix" subtitle={`${cats.length} categories · click to pin filter`}
@@ -2843,7 +2917,7 @@ function DecompositionSection({ title, rows, fmt, totalDelta }: {
 // dimension below the header. Drives the cross-filter drill-down loop —
 // click anything in a chart, see it land here, click the X to remove.
 
-function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onRemoveIncidentType, onRemoveStaff, onClearDate, onClearDelay, onRemoveWeatherCondition, onClearWeatherNumeric, onClearOffRoute, onClearAll }: {
+function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSeverity, onRemoveSearch, onRemoveIncidentType, onRemoveStaff, onClearDate, onClearDelay, onRemoveWeatherCondition, onClearWeatherNumeric, onRemoveWeatherLevel, onRemoveWeatherRisk, onClearOffRoute, onClearAll }: {
   filters: AnalyticsFilters
   onRemoveCategory: (c: IncidentCategory) => void
   onRemoveArea: (a: string) => void
@@ -2855,6 +2929,8 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
   onClearDelay: () => void
   onRemoveWeatherCondition: (group: string) => void
   onClearWeatherNumeric: () => void
+  onRemoveWeatherLevel: (level: WeatherLevel) => void
+  onRemoveWeatherRisk: (risk: string) => void
   onClearOffRoute: () => void
   onClearAll: () => void
 }) {
@@ -2864,12 +2940,15 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
   const hasWxTemp        = filters.minTempC    != null || filters.maxTempC    != null
   const hasWxWind        = filters.minWindKmh  != null || filters.maxWindKmh  != null
   const weatherCondCount = filters.weatherConditions?.length ?? 0
+  const weatherLevelCount = filters.weatherLevels?.length ?? 0
+  const weatherRiskCount  = filters.weatherRisks?.length ?? 0
   const offRouteActive   = (filters.offRouteFilter ?? 'include') !== 'include'
   const total =
     filters.categories.length + filters.areas.length + filters.severities.length +
     filters.searches.length + filters.incidentTypes.length + filters.staffNames.length +
     (hasCustomDate ? 1 : 0) + (hasDelay ? 1 : 0) +
-    weatherCondCount + (hasWxRain ? 1 : 0) + (hasWxTemp ? 1 : 0) + (hasWxWind ? 1 : 0) +
+    weatherCondCount + weatherLevelCount + weatherRiskCount +
+    (hasWxRain ? 1 : 0) + (hasWxTemp ? 1 : 0) + (hasWxWind ? 1 : 0) +
     (offRouteActive ? 1 : 0)
   if (total === 0) return null
 
@@ -2935,6 +3014,18 @@ function ActiveFilterChips({ filters, onRemoveCategory, onRemoveArea, onRemoveSe
           {filters.incidentTypes.map(t => chip(`itype-${t}`, t, () => onRemoveIncidentType(t), 'var(--nr-orange)'))}
           {filters.staffNames.map(n => chip(`staff-${n}`, n, () => onRemoveStaff(n), 'var(--nr-blue)'))}
           {filters.searches.map(t => chip(`q-${t}`, `"${t}"`, () => onRemoveSearch(t), 'var(--ink-300)'))}
+          {(filters.weatherLevels ?? []).map(l => chip(
+            `wx-level-${l}`, `Wx ${weatherLevelLabel(l)}`,
+            () => onRemoveWeatherLevel(l),
+            WEATHER_LEVEL_CONFIG[l]?.color,
+            `Remove weather level: ${weatherLevelLabel(l)} (operational statement)`,
+          ))}
+          {(filters.weatherRisks ?? []).map(r => chip(
+            `wx-risk-${r}`, `Risk: ${r}`,
+            () => onRemoveWeatherRisk(r),
+            '#5B9EA0',
+            `Remove weather risk: ${r} (operational statement)`,
+          ))}
           {(filters.weatherConditions ?? []).map(g => chip(
             `wx-cond-${g}`, `☁ ${g}`,
             () => onRemoveWeatherCondition(g),
@@ -3020,7 +3111,7 @@ const ROLLING_KEY: Record<string, string> = {
   safetyCritical: 'rolling7SafetyAvg',
 }
 
-function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick, changePoints, showBaseline, annotations }: any) {
+function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick, changePoints, showBaseline, annotations, weatherBands }: any) {
   const stroke = gradient === 'orange' ? '#E05206' : '#4A6FA5'
   const gradientId = `grad-${dataKey}-${gradient}`
 
@@ -3120,6 +3211,22 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
       ))
     : null
 
+  // Operational weather level bands — vertical shading behind everything so
+  // daily spikes can be read against the route's weather classification.
+  const wxBandAreas = ((weatherBands ?? []) as { x1: string; x2: string; level: WeatherLevel }[])
+    .filter(b => dateSet.has(b.x1) && dateSet.has(b.x2))
+    .map((b, i) => (
+      <ReferenceArea
+        key={`wx-${i}`}
+        x1={b.x1}
+        x2={b.x2}
+        fill={WEATHER_LEVEL_CONFIG[b.level]?.color}
+        fillOpacity={b.level === 'EXTREME' ? 0.13 : b.level === 'ADVERSE' ? 0.09 : 0.06}
+        stroke="none"
+        ifOverflow="extendDomain"
+      />
+    ))
+
   const mainSeries = kind === 'bar'
     ? <Bar dataKey={dataKey} fill={stroke} radius={[2, 2, 0, 0]} />
     : kind === 'line'
@@ -3136,6 +3243,7 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="2 6" />
+        {wxBandAreas}
         <XAxis dataKey="date" tickFormatter={shortDate} />
         <YAxis />
         <Tooltip content={<CustomTooltip footer="Click to focus this date" />} position={{ x: 65, y: 8 }} />
@@ -4326,7 +4434,78 @@ function FilterDrawer({ open, onClose, filters, onApply, onReset, availableAreas
             </div>
           </FilterGroup>
 
-          <FilterGroup label="Weather">
+          <FilterGroup label="Route Weather Statement">
+            <p className="text-[10px] mb-3" style={{ color: 'var(--ink-500)' }}>
+              The operational weather classification the route was working to —
+              DLog2&apos;s 5 Day Look Ahead, backfilled from the EM morning statements.
+            </p>
+
+            {/* Weather level (overall_level; GREEN shown as Normal) */}
+            <div className="mb-3">
+              <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>WEATHER LEVEL</div>
+              <div className="flex flex-wrap gap-2">
+                {WEATHER_LEVELS.map((level: WeatherLevel) => (
+                  <Chip
+                    key={level}
+                    label={WEATHER_LEVEL_CONFIG[level].label}
+                    color={WEATHER_LEVEL_CONFIG[level].color}
+                    active={(draft.weatherLevels ?? []).includes(level)}
+                    onToggle={() => {
+                      const current = draft.weatherLevels ?? []
+                      setDraft({
+                        ...draft,
+                        weatherLevels: current.includes(level)
+                          ? current.filter((x: WeatherLevel) => x !== level)
+                          : [...current, level],
+                      })
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Weather risk types (risk_types membership; selections OR together) */}
+            <div className="mb-3">
+              <div className="label-micro text-[9px] mb-2" style={{ color: 'var(--ink-500)' }}>WEATHER RISK</div>
+              <div className="flex flex-wrap gap-2">
+                {WEATHER_RISK_TYPES.map((risk: string) => (
+                  <Chip
+                    key={risk}
+                    label={risk}
+                    color="#5B9EA0"
+                    active={(draft.weatherRisks ?? []).includes(risk)}
+                    onToggle={() => {
+                      const current = draft.weatherRisks ?? []
+                      setDraft({
+                        ...draft,
+                        weatherRisks: current.includes(risk)
+                          ? current.filter((x: string) => x !== risk)
+                          : [...current, risk],
+                      })
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <p className="text-[10px]" style={{ color: 'var(--ink-500)' }}>
+              Statements cover <strong style={{ color: 'var(--ink-300)' }}>{LOOKAHEAD_COVERAGE_START}</strong> onwards.
+              While either filter is active, dates without a statement — everything earlier, plus a
+              handful of gap days — are excluded from every view.
+            </p>
+
+            {((draft.weatherLevels ?? []).length > 0 || (draft.weatherRisks ?? []).length > 0) && (
+              <button
+                onClick={() => setDraft({ ...draft, weatherLevels: [], weatherRisks: [] })}
+                className="text-xs mt-2"
+                style={{ color: 'var(--ink-400)' }}
+              >
+                Clear route weather filters
+              </button>
+            )}
+          </FilterGroup>
+
+          <FilterGroup label="Observed Weather">
             {/* Location mapping info */}
             <div className="mb-3">
               <button
@@ -4709,9 +4888,22 @@ function Chip({ label, fullLabel, color, active, onToggle }: any) {
 
 function CustomTooltip({ active, payload, label, footer }: any) {
   if (!active || !payload?.length) return null
+  // Operational weather level for the hovered day — present only on trend
+  // points that carry a weather_lookahead statement.
+  const wxLevel: WeatherLevel | null = payload[0]?.payload?.weatherLevel ?? null
   return (
     <div className="card !bg-[var(--bg-card-hi)] !border-[var(--line-hi)] p-2.5 text-xs">
-      <div className="label-micro mb-1.5">{label}</div>
+      <div className="label-micro mb-1.5 flex items-center gap-2">
+        <span>{label}</span>
+        {wxLevel && (
+          <span
+            className="numeric-mono normal-case tracking-normal px-1.5 rounded-sm text-[9px]"
+            style={{ background: `${WEATHER_LEVEL_CONFIG[wxLevel]?.color}25`, color: WEATHER_LEVEL_CONFIG[wxLevel]?.color }}
+          >
+            {weatherLevelLabel(wxLevel)}
+          </span>
+        )}
+      </div>
       {payload.map((p: any, i: number) => (
         <div key={i} className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-sm" style={{ background: p.color || p.fill }} />
@@ -8397,6 +8589,10 @@ function shortDate(d: string): string {
   const dt = new Date(d)
   if (isNaN(dt.getTime())) return d
   return dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
+}
+
+function prevDay(iso: string): string {
+  return new Date(new Date(iso + 'T00:00:00Z').getTime() - 86_400_000).toISOString().slice(0, 10)
 }
 
 const AREA_PALETTE = ['#E05206', '#4A6FA5', '#27AE60', '#F39C12', '#9B59B6', '#5B7FA8']

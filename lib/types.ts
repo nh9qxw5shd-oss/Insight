@@ -1,5 +1,7 @@
 // ─── Shared types (kept narrow — only what analytics consumes) ───────────────
 
+import type { WeatherLevel } from './weatherLookahead'
+
 export type IncidentCategory =
   | 'FATALITY' | 'PERSON_STRUCK' | 'SPAD' | 'TPWS'
   | 'IRREGULAR_WORKING' | 'BRIDGE_STRIKE' | 'NEAR_MISS'
@@ -306,6 +308,11 @@ export interface AnalyticsFilters {
   maxDelay?: number               // inclusive upper bound on per-incident delay minutes
   metricFocus: 'delay' | 'cancellations'  // which primary metric drives charts & tables
   weatherConditions?: string[]    // condition group labels (Clear / Dry, Rain, Snow, …); empty = all
+  // Operational weather statement filters (weather_lookahead, date-level).
+  // A report_date qualifies when its statement matches; dates with no
+  // statement (pre-coverage and the few gap days) drop out while active.
+  weatherLevels?: WeatherLevel[]  // overall_level values (GREEN shown as "Normal"); empty = all
+  weatherRisks?: string[]         // canonical risk names matched against risk_types; empty = all
   minRainfall?: number            // rainfall_mm >= this (mm); incident day must have ≥ this rainfall
   maxRainfall?: number            // rainfall_mm <= this (mm)
   minTempC?: number               // min_temp_c >= this (°C); incident day's LOW at least X (warm nights)
@@ -330,6 +337,8 @@ export const DEFAULT_FILTERS: AnalyticsFilters = {
   searchMode: 'or',
   metricFocus: 'delay',
   weatherConditions: [],
+  weatherLevels: [],
+  weatherRisks: [],
   offRouteFilter: 'include',
 }
 
