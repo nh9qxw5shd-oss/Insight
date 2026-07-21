@@ -19,6 +19,8 @@ import {
   searchMatch, effectiveDelay, effectiveMinsToArrival, effectiveDuration,
   SLA_THRESHOLD_MINS,
 } from '@/lib/queries'
+import { PinDraft, ScatterPinPayload } from '@/lib/briefing'
+import { PinButton } from './weather-tab'
 
 // ─── Filter shape ─────────────────────────────────────────────────────────────
 
@@ -472,10 +474,12 @@ export function DistillationTab({
   incidents,
   windowFrom,
   windowTo,
+  onPin,
 }: {
   incidents:  IncidentRow[]
   windowFrom: string
   windowTo:   string
+  onPin?:     (draft: PinDraft) => void
 }) {
   const [filters, setFilters] = useState<DistillationFilters>(EMPTY_FILTERS)
   const [page, setPage]       = useState(0)
@@ -1265,7 +1269,45 @@ export function DistillationTab({
                       more delay — supporting the access &amp; fix hypothesis.
                     </div>
                   </div>
-                  <TrendingUp size={14} style={{ color: 'var(--ink-500)' }} />
+                  <div className="flex items-center gap-2">
+                    {onPin && (
+                      <PinButton
+                        label="Pin this scatter to Briefing"
+                        onPin={() => {
+                          // Pearson r for the auto-claim; the distillation
+                          // filter set travels in the comment since these
+                          // filters are local to this tab.
+                          const n = scatterData.length
+                          const mx = scatterData.reduce((s, d) => s + d.x, 0) / n
+                          const my = scatterData.reduce((s, d) => s + d.y, 0) / n
+                          const cov = scatterData.reduce((s, d) => s + (d.x - mx) * (d.y - my), 0)
+                          const sx = Math.sqrt(scatterData.reduce((s, d) => s + (d.x - mx) ** 2, 0))
+                          const sy = Math.sqrt(scatterData.reduce((s, d) => s + (d.y - my) ** 2, 0))
+                          const r = sx > 0 && sy > 0 ? cov / (sx * sy) : 0
+                          const localParts: string[] = []
+                          if (filters.categories.length)     localParts.push(`categories: ${filters.categories.map(c => CATEGORY_CONFIG[c]?.short ?? c).join(', ')}`)
+                          if (filters.incidentTypes.length)  localParts.push(`types: ${filters.incidentTypes.join(', ')}`)
+                          if (filters.areas.length)          localParts.push(`areas: ${filters.areas.join(', ')}`)
+                          if (filters.trainCompanies.length) localParts.push(`operators: ${filters.trainCompanies.join(', ')}`)
+                          if (filters.searches.length)       localParts.push(`search: ${filters.searches.join(', ')}`)
+                          const payload: ScatterPinPayload = {
+                            xLabel: 'Incident duration (min)',
+                            yLabel: 'Delay minutes',
+                            points: scatterData.slice(0, 400).map(d => ({ x: d.x, y: d.y })),
+                            note: `Each point is one incident (${n} plotted${n > 400 ? ', first 400 exported' : ''}). Correlation r = ${r.toFixed(2)} — near zero means time-on-site is a poor predictor of delay.`,
+                          }
+                          onPin({
+                            kind: 'scatter',
+                            title: `Delay vs time elapsed: r = ${r.toFixed(2)} across ${n} incidents${Math.abs(r) < 0.2 ? ' — damage is front-loaded, not time-driven' : ''}`,
+                            comment: localParts.length ? `Distillation filters — ${localParts.join(' · ')}` : null,
+                            source_label: 'Distillation · Duration vs delay',
+                            payload,
+                          })
+                        }}
+                      />
+                    )}
+                    <TrendingUp size={14} style={{ color: 'var(--ink-500)' }} />
+                  </div>
                 </div>
                 <ResponsiveContainer width="100%" height={280}>
                   <ScatterChart margin={{ left: 0, right: 8, top: 12, bottom: 0 }}>

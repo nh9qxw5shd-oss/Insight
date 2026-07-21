@@ -823,8 +823,8 @@ export default function InsightDashboard() {
             {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} annotations={dateAnnotations.map(a => ({ date: a.anchor, note: a.note }))} lookahead={lookahead} onPin={pinsEnabled ? handlePin : undefined} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={effectiveData} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
             {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} metricFocus={filters.metricFocus} />}
-            {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
-            {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} staffPatterns={staffPatterns} />}
+            {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onPin={pinsEnabled ? handlePin : undefined} />}
+            {tab === 'patterns'    && <PatternsTab heat={heat} cats={cats} staffPatterns={staffPatterns} onPin={pinsEnabled ? handlePin : undefined} />}
             {tab === 'assets'      && <AssetsTab repeatAssets={repeatAssets} infraMix={infraMix} cats={cats} incidents={effectiveData.incidents} onDrillDown={setDrillDown} chains={chains} />}
             {tab === 'routes'      && <RoutesTab lines={lines} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
             {tab === 'trends'      && <TrendsTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowDays={effectiveData.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
@@ -862,7 +862,7 @@ export default function InsightDashboard() {
             )}
             {tab === 'reports'      && <ReportsTab data={effectiveData} filters={filters} demoMode={demoMode} />}
             {tab === 'briefing'     && <BriefingTab supabaseConfigured={isSupabaseConfigured()} demoMode={demoMode} />}
-            {tab === 'distillation' && <DistillationTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
+            {tab === 'distillation' && <DistillationTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onPin={pinsEnabled ? handlePin : undefined} />}
           </>
         )}
       </div>
@@ -1835,10 +1835,21 @@ function RotateCcwIconFallback() {
 
 // ─── Geography tab ───────────────────────────────────────────────────────────
 
-function GeographyTab({ hots, delayDensity, incidents, onDrillDown }: any) {
+function GeographyTab({ hots, delayDensity, incidents, onDrillDown, onPin }: any) {
   const routeAvg = delayDensity.length
     ? delayDensity.reduce((s: number, d: any) => s + d.avgDelayDensity, 0) / delayDensity.length
     : null
+  const hotspotsPin = onPin && hots.length ? () => onPin({
+    kind: 'ranking',
+    title: `Top locations by delay: ${hots[0].location} leads with ${fmtMins(hots[0].delayMins)}`,
+    source_label: 'Geography · Top Hotspots',
+    payload: {
+      valueLabel: 'Delay minutes', unit: 'mins',
+      rows: hots.slice(0, 10).map((h: any) => ({
+        label: h.location, value: Math.round(h.delayMins), secondary: `${h.count} inc`,
+      })),
+    },
+  }) : undefined
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -1855,7 +1866,7 @@ function GeographyTab({ hots, delayDensity, incidents, onDrillDown }: any) {
         >
           <DelayDensityTable data={delayDensity} incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
-        <Card title="Top 12 Hotspots" subtitle="By total delay">
+        <Card title="Top 12 Hotspots" subtitle="By total delay" right={hotspotsPin && <PinButton onPin={hotspotsPin} label="Pin hotspot ranking to Briefing" />}>
           <LocationLeaderboard data={hots} compact incidents={incidents} onDrillDown={onDrillDown} />
         </Card>
       </div>
@@ -1881,14 +1892,31 @@ function GeographyTab({ hots, delayDensity, incidents, onDrillDown }: any) {
 
 // ─── Patterns tab ────────────────────────────────────────────────────────────
 
-function PatternsTab({ heat, cats, staffPatterns }: { heat: any[]; cats: any[]; staffPatterns: StaffPatternDatum[] }) {
+function PatternsTab({ heat, cats, staffPatterns, onPin }: { heat: any[]; cats: any[]; staffPatterns: StaffPatternDatum[]; onPin?: any }) {
   const totalDay   = staffPatterns.reduce((s, p) => s + p.dayShifts, 0)
   const totalNight = staffPatterns.reduce((s, p) => s + p.nightShifts, 0)
   const totalShifts = totalDay + totalNight
 
+  // Heatmap pin — a 7×24 grid snapshot. Pinned under an active category /
+  // area filter this becomes e.g. "safety incidents by day and hour", with
+  // the filter recorded in the pin's provenance automatically.
+  const heatmapPin = onPin && heat.some((c: any) => c.count > 0) ? () => {
+    const rows: number[][] = Array.from({ length: 7 }, () => Array(24).fill(0))
+    for (const c of heat) rows[c.dow][c.hour] = c.count
+    const peak = heat.reduce((a: any, c: any) => (c.count > a.count ? c : a), heat[0])
+    const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+    onPin({
+      kind: 'heatmap',
+      title: `Incidents by day × hour — peak ${DOW[peak.dow]} ${String(peak.hour).padStart(2, '0')}:00 (${peak.count})`,
+      source_label: 'Patterns · Day × Hour Heatmap',
+      payload: { rows, cellLabel: 'incidents' },
+    })
+  } : undefined
+
   return (
     <div className="space-y-6">
-      <Card title="Day × Hour Heatmap" subtitle="When incidents happen" className="tick-corners">
+      <Card title="Day × Hour Heatmap" subtitle="When incidents happen" className="tick-corners"
+            right={heatmapPin && <PinButton onPin={heatmapPin} label="Pin this heatmap to Briefing" />}>
         <Heatmap cells={heat} />
       </Card>
 

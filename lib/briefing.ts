@@ -11,7 +11,9 @@ import { WeatherLevel, weatherLevelLabel, LOOKAHEAD_COVERAGE_START } from './wea
 // it through the existing print pipeline. Snapshots are stored whole so a
 // brief renders identically later, even after the live window moves on.
 
-export type PinKind = 'kpi' | 'timeline' | 'level-impact' | 'risk-impact' | 'duration' | 'incident'
+export type PinKind =
+  | 'kpi' | 'timeline' | 'level-impact' | 'risk-impact' | 'duration' | 'incident'
+  | 'ranking' | 'heatmap' | 'scatter'
 
 export interface KpiPinPayload {
   value: string                 // formatted headline value, e.g. "74,381 min"
@@ -44,6 +46,25 @@ export interface DurationPinPayload {
   positions: string[]           // "Day 1" … "Day 5+"
   nDays: number[]               // sample size per position
   panels: { label: string; values: number[]; unit: 'count' | 'mins' }[]
+}
+
+export interface RankingPinPayload {
+  valueLabel: string            // "Delay minutes", "Incidents"
+  unit: 'count' | 'mins'
+  rows: { label: string; value: number; secondary?: string }[]
+}
+
+export interface HeatmapPinPayload {
+  // rows[dow][hour] — dow 0=Sun … 6=Sat, hour 0–23
+  rows: number[][]
+  cellLabel: string             // what a cell counts, e.g. "incidents"
+}
+
+export interface ScatterPinPayload {
+  xLabel: string
+  yLabel: string
+  points: { x: number; y: number }[]   // capped at capture time (~400)
+  note?: string
 }
 
 export interface IncidentPinPayload {
@@ -343,6 +364,92 @@ function renderIncident(pin: BriefingPin): string {
   </div>`
 }
 
+function renderRanking(pin: BriefingPin): string {
+  const p = pin.payload as RankingPinPayload
+  const rows = (p.rows ?? []).slice(0, 10)
+  if (!rows.length) return ''
+  const max = Math.max(...rows.map(r => r.value), 0.0001)
+  const fv = (v: number) => (p.unit === 'mins' ? fmtMinsFull(v) : Math.round(v).toLocaleString())
+  const bars = rows.map(r =>
+    `<div class="lvrow rank"><span class="lbl" title="${esc(r.label)}">${esc(r.label)}</span>` +
+    `<span class="bar"><i style="width:${(r.value / max) * 100}%;background:${C.accent}"></i></span>` +
+    `<span class="val">${fv(r.value)}${r.secondary ? `<em class="sec">${esc(r.secondary)}</em>` : ''}</span></div>`,
+  ).join('')
+  return `<div class="card finding">
+    <h3>${esc(pin.title)}</h3>
+    ${commentHtml(pin)}
+    <div class="lvbars mono" style="margin-top:11px">${bars}</div>
+    <div class="ctx" style="margin-top:8px">${esc(p.valueLabel)} per location, largest first.</div>
+    ${provenance(pin)}
+  </div>`
+}
+
+function renderHeatmap(pin: BriefingPin): string {
+  const p = pin.payload as HeatmapPinPayload
+  const rows = p.rows ?? []
+  if (rows.length !== 7) return ''
+  const max = Math.max(...rows.flat(), 1)
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  const cell = 30, gap = 3, padL = 40, padT = 6
+  const W = padL + 24 * (cell + gap), H = padT + 7 * (cell + gap) + 22
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img">`
+  rows.forEach((row, dow) => {
+    s += `<text x="${padL - 8}" y="${padT + dow * (cell + gap) + cell / 2 + 3}" text-anchor="end" font-size="10" fill="${C.ink2}" font-family='${MONO}'>${DOW[dow]}</text>`
+    row.forEach((v, h) => {
+      const alpha = v > 0 ? 0.12 + 0.88 * (v / max) : 0
+      s += `<rect x="${padL + h * (cell + gap)}" y="${padT + dow * (cell + gap)}" width="${cell}" height="${cell}" rx="3" `
+         + `fill="${v > 0 ? C.accent : C.line}" opacity="${v > 0 ? alpha.toFixed(2) : 0.5}">`
+         + `<title>${DOW[dow]} ${String(h).padStart(2, '0')}:00 · ${v} ${esc(p.cellLabel)}</title></rect>`
+    })
+  })
+  for (let h = 0; h < 24; h += 3) {
+    s += `<text x="${padL + h * (cell + gap) + cell / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="${C.ink3}" font-family='${MONO}'>${String(h).padStart(2, '0')}</text>`
+  }
+  s += `</svg>`
+  return `<div class="card">
+    <h3>${esc(pin.title)}</h3>
+    ${commentHtml(pin)}
+    <div style="margin-top:10px">${s}</div>
+    <div class="ctx" style="margin-top:6px">Darker cells carry more ${esc(p.cellLabel)} · peak cell: ${max}.</div>
+    ${provenance(pin)}
+  </div>`
+}
+
+function renderScatter(pin: BriefingPin): string {
+  const p = pin.payload as ScatterPinPayload
+  const pts = (p.points ?? []).filter(q => isFinite(q.x) && isFinite(q.y))
+  if (!pts.length) return ''
+  const W = 860, H = 300, padL = 56, padR = 14, padT = 12, padB = 40
+  const maxX = Math.max(...pts.map(q => q.x)) * 1.04
+  const maxY = Math.max(...pts.map(q => q.y)) * 1.06
+  const x = (v: number) => padL + (v / maxX) * (W - padL - padR)
+  const y = (v: number) => padT + (1 - v / maxY) * (H - padT - padB)
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img">`
+  for (let i = 1; i <= 4; i++) {
+    const gy = padT + (i / 4) * (H - padT - padB)
+    const val = Math.round(maxY * (1 - i / 4))
+    s += `<line x1="${padL}" x2="${W - padR}" y1="${gy}" y2="${gy}" stroke="${C.line}" stroke-width="1"/>`
+       + `<text x="${padL - 8}" y="${gy + 3}" text-anchor="end" font-size="9" fill="${C.ink3}" font-family='${MONO}'>${val.toLocaleString()}</text>`
+  }
+  for (let i = 0; i <= 4; i++) {
+    const vx = maxX * (i / 4)
+    s += `<text x="${x(vx)}" y="${H - padB + 16}" text-anchor="middle" font-size="9" fill="${C.ink3}" font-family='${MONO}'>${Math.round(vx).toLocaleString()}</text>`
+  }
+  pts.forEach(q => {
+    s += `<circle cx="${x(q.x).toFixed(1)}" cy="${y(q.y).toFixed(1)}" r="3.5" fill="${C.accent}" opacity="0.45"/>`
+  })
+  s += `<text x="${(padL + W - padR) / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="${C.ink2}" font-family='${MONO}'>${esc(p.xLabel)}</text>`
+     + `<text x="12" y="${(padT + H - padB) / 2}" text-anchor="middle" font-size="10" fill="${C.ink2}" font-family='${MONO}' transform="rotate(-90 12 ${(padT + H - padB) / 2})">${esc(p.yLabel)}</text>`
+  s += `</svg>`
+  return `<div class="card">
+    <h3>${esc(pin.title)}</h3>
+    ${commentHtml(pin)}
+    <div style="margin-top:10px">${s}</div>
+    ${p.note ? `<div class="ctx" style="margin-top:6px">${esc(p.note)}</div>` : ''}
+    ${provenance(pin)}
+  </div>`
+}
+
 export interface BriefingMeta {
   title: string
   subtitle?: string
@@ -365,16 +472,26 @@ export function buildBriefingHtml(meta: BriefingMeta, pins: BriefingPin[]): stri
       blocks.push(renderKpiStrip(group))
       continue
     }
-    if (pin.kind === 'level-impact' || pin.kind === 'risk-impact' || pin.kind === 'incident') {
+    if (['level-impact', 'risk-impact', 'incident', 'ranking'].includes(pin.kind)) {
       const group: string[] = []
-      while (i < ordered.length && ['level-impact', 'risk-impact', 'incident'].includes(ordered[i].kind)) {
+      while (i < ordered.length && ['level-impact', 'risk-impact', 'incident', 'ranking'].includes(ordered[i].kind)) {
         const p2 = ordered[i++]
-        group.push(p2.kind === 'level-impact' ? renderLevelImpact(p2) : p2.kind === 'risk-impact' ? renderRiskImpact(p2) : renderIncident(p2))
+        group.push(
+          p2.kind === 'level-impact' ? renderLevelImpact(p2) :
+          p2.kind === 'risk-impact'  ? renderRiskImpact(p2) :
+          p2.kind === 'ranking'      ? renderRanking(p2) :
+          renderIncident(p2),
+        )
       }
       blocks.push(`<div class="grid2">${group.join('')}</div>`)
       continue
     }
-    blocks.push(pin.kind === 'timeline' ? renderTimeline(pin) : renderDuration(pin))
+    blocks.push(
+      pin.kind === 'timeline' ? renderTimeline(pin) :
+      pin.kind === 'heatmap'  ? renderHeatmap(pin) :
+      pin.kind === 'scatter'  ? renderScatter(pin) :
+      renderDuration(pin),
+    )
     i++
   }
 
@@ -410,6 +527,9 @@ export function buildBriefingHtml(meta: BriefingMeta, pins: BriefingPin[]): stri
   .prov { margin-top: 11px; padding-top: 8px; border-top: 1px solid ${C.line}; font-size: 9.5px; color: ${C.ink3}; letter-spacing: .04em; font-family: ${MONO}; }
   .lvbars { display: flex; flex-direction: column; gap: 5px; margin-top: 11px; }
   .lvrow { display: grid; grid-template-columns: 70px 1fr 48px; align-items: center; gap: 8px; font-size: 10.5px; }
+  .lvrow.rank { grid-template-columns: minmax(90px, 38%) 1fr auto; }
+  .lvrow.rank .lbl { text-transform: none; letter-spacing: 0; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lvrow .sec { color: ${C.ink3}; font-style: normal; margin-left: 6px; font-size: 9px; }
   .lvrow .lbl { color: ${C.ink2}; letter-spacing: .06em; text-transform: uppercase; font-size: 9.5px; }
   .lvrow .bar { height: 8px; border-radius: 2px 3px 3px 2px; background: ${C.line}; position: relative; overflow: hidden; }
   .lvrow .bar i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px 3px 3px 2px; }

@@ -568,11 +568,20 @@ Wherever you see a small **PIN** control, pressing it captures that finding:
 | **Weather** — Impact by Weather Level column headers | That metric's per-day rate at each level (Normal → Extreme), with lift vs Normal |
 | **Weather** — Impact by Risk Type rows | That risk's incidents/delay per day on risk days vs statement days without it |
 | **Weather** — Duration Effect header | The consecutive-day escalation curves (incidents, delay, train defects per day by position in an Extreme spell) |
+| **Patterns** — Day × Hour Heatmap header | The full 7-day × 24-hour grid. Pin it with a category filter active (e.g. safety classes) and the brief shows *that* slice, filter recorded in the provenance |
+| **Geography** — Top Hotspots header | The top-10 location ranking by delay, with incident counts |
+| **Distillation** — Duration vs delay scatter | The per-incident delay-vs-time-elapsed cloud with its correlation, plus whatever Distillation filters were active (e.g. Train Fault only) |
 
 Every pin snapshots the **numbers**, the **window**, and the **active
 filters** at the moment you pressed it — so the brief stays honest even after
 the live window moves on, and a finding read under filters says so. Pins are
 stored in the shared database: colleagues see the same working set.
+
+Because pins capture the filter context, briefs are not weather-specific:
+filter to the safety categories and pin the Patterns heatmap and Geography
+hotspots for a *safety × location × time-of-day* brief, or filter
+Distillation to Train Fault and pin the duration-vs-delay scatter to ask
+whether delay actually grows with time elapsed.
 
 ### 4.2 Composing
 
