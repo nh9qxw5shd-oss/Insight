@@ -96,15 +96,34 @@ means "don't filter on this".
 | **Categories** | Multi-select across the 21 incident classes (SPAD, TPWS, Near Miss, Infrastructure, …). Chips are colour-coded. |
 | **CCIL Incident Type** | The finer-grained CCIL type label (e.g. "Points Failure"). Search the box to find a type; the count next to each shows how many incidents carry it in the window. |
 | **Severity** | CRITICAL / HIGH / MEDIUM / LOW / INFO. |
-| **Weather** | Filter incidents by the weather on their report date — see 1.4. |
+| **Route Weather Statement** | Filter by the operational weather classification the route was working to (Normal / Aware / Adverse / Extreme, plus named risks) — see 1.4. |
+| **Observed Weather** | Filter incidents by the observed weather on their report date — see 1.4. |
 | **Delay Range (minutes)** | Keep only incidents whose per-incident delay is at/above **Min** and/or at/below **Max**. Good for isolating the big-hitters (e.g. Min = 1000). |
 | **Custom Date Range** | Exact **From / To** dates. Overrides the rolling window. Use "Clear → use rolling window" to go back to presets. |
 
 ### 1.4 Weather filters
 
-Weather is supplemental context fetched from Open-Meteo. Each EMCC area is
-matched to one representative measurement point, and weather is joined to
-incidents **by area name and report date**.
+There are two independent weather filter groups.
+
+**Route Weather Statement** — the *operational* classification (DLog2's 5 Day
+Look Ahead, backfilled from the EM State of the Route morning messages). One
+statement per calendar date, matched to incidents by **report date**:
+
+- **Weather level** — Normal / Aware / Adverse / Extreme, matched on the
+  route's overall level for the day (the worse of East Midlands and London
+  North).
+- **Weather risk** — the named risks the statement carried (Wind, Heavy Rain,
+  Convective Rainfall, Lightning, Snow, Frost, Min Temp, Max Temp, Temp Range,
+  Ice Day). Selecting several keeps days carrying *any* of them.
+
+> Statements cover **2025-04-29 onwards**. While either filter is active,
+> dates without a statement — everything earlier, plus a handful of gap days —
+> are excluded from every view. That is why older data disappears when these
+> filters are on.
+
+**Observed Weather** — supplemental context fetched from Open-Meteo. Each EMCC
+area is matched to one representative measurement point, and weather is joined
+to incidents **by area name and report date**.
 
 - **Conditions** — condition groups (Clear / Dry, Rain, Snow, …).
 - **Rainfall (mm)**, **Daily High Temperature (°C)**, **Max Wind Speed (km/h)**
@@ -270,11 +289,18 @@ enough to isolate the population you want to study.
 
 ### 2.x Additional analysis views
 
-- **Weather** — condition-impact table (incident and delay rate per area-day
-  vs the Clear/Dry baseline, with lift), a category × condition matrix, a
-  threshold explorer (rainfall / wind / temperature bands), and an estimated
-  weather-attributable excess delay for the window. All figures are
-  correlations against the synced Open-Meteo record, not causes.
+- **Weather** — two blocks. *Operational statement* (weather_lookahead): a
+  per-day level timeline (hover for risks, the source statement and its
+  provenance), impact-by-level and impact-by-risk-type tables and a category
+  mix by level — every figure normalised **per day at that level**, never raw
+  totals, because day counts per level are very unequal; a Route / East
+  Midlands / London North toggle reclassifies days by the regional level.
+  *Observed weather* (Open-Meteo): condition-impact table (incident and delay
+  rate per area-day vs the Clear/Dry baseline, with lift), a category ×
+  condition matrix, a threshold explorer (rainfall / wind / temperature
+  bands), and an estimated weather-attributable excess delay for the window.
+  All figures are correlations, not causes. The Overview "Daily Activity"
+  chart is also banded by each day's operational weather level.
 - **Calendar** — month grids coloured by daily delay or incident load; click a
   day to open its **timeline**: incidents drawn as bars on a 00:00–24:00 axis,
   one lane per area, so concurrency and compounding disruption are visible.

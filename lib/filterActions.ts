@@ -1,6 +1,7 @@
 'use client'
 
 import { AnalyticsFilters, IncidentCategory, Severity } from './types'
+import type { WeatherLevel } from './weatherLookahead'
 
 // Pure helpers that return a new AnalyticsFilters with one value toggled or
 // added. Used by chart click-handlers to drive the cross-filter drill-down
@@ -77,6 +78,26 @@ export function removeWeatherCondition(f: AnalyticsFilters, group: string): Anal
 export function clearWeatherNumeric(f: AnalyticsFilters): AnalyticsFilters {
   const { minRainfall: _a, maxRainfall: _b, minTempC: _c, maxTempC: _d, minWindKmh: _e, maxWindKmh: _f, ...rest } = f
   return { ...rest }
+}
+
+export function toggleWeatherLevelFilter(f: AnalyticsFilters, level: WeatherLevel): AnalyticsFilters {
+  const current = f.weatherLevels ?? []
+  return {
+    ...f,
+    weatherLevels: current.includes(level)
+      ? current.filter(x => x !== level)
+      : [...current, level],
+  }
+}
+
+export function toggleWeatherRiskFilter(f: AnalyticsFilters, risk: string): AnalyticsFilters {
+  const current = f.weatherRisks ?? []
+  return {
+    ...f,
+    weatherRisks: current.includes(risk)
+      ? current.filter(x => x !== risk)
+      : [...current, risk],
+  }
 }
 
 export function setOffRouteFilter(f: AnalyticsFilters, value: 'include' | 'only' | 'exclude'): AnalyticsFilters {
