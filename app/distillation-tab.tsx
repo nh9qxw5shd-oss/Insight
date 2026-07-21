@@ -1294,7 +1294,9 @@ export function DistillationTab({
                             xLabel: 'Incident duration (min)',
                             yLabel: 'Delay minutes',
                             points: scatterData.slice(0, 400).map(d => ({ x: d.x, y: d.y })),
-                            note: `Each point is one incident (${n} plotted${n > 400 ? ', first 400 exported' : ''}). Correlation r = ${r.toFixed(2)} — near zero means time-on-site is a poor predictor of delay.`,
+                            note: `Each point is one incident (${n} plotted${n > 400 ? ', first 400 exported' : ''}). Correlation r = ${r.toFixed(2)}.` +
+                              (Math.abs(r) < 0.2 ? ' Near zero — time elapsed is a poor predictor of delay; the damage is front-loaded.' :
+                               r >= 0.5 ? ' Positive slope — longer-open incidents accumulate more delay in this slice.' : ''),
                           }
                           onPin({
                             kind: 'scatter',
