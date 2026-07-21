@@ -80,21 +80,39 @@ function previousWindow(f: AnalyticsFilters): { from: string; to: string } {
 // ─── Pagination helper ───────────────────────────────────────────────────────
 // PostgREST's server-side max-rows cap (default 1 000) cannot be overridden
 // by the client — .limit() is silently clamped. We page through in 1 000-row
-// chunks and stop when a partial page (or empty page) is returned.
+// chunks, requesting several pages concurrently per wave so wide windows cost
+// a couple of round-trips instead of one per 1 000 rows. Pages are appended
+// in range order (Promise.all preserves order), and the wave stops at the
+// first partial/empty page — with a stable total ordering (callers must
+// include a unique tiebreaker in their .order()) later pages are empty.
 
 async function fetchAllRows<T>(
   queryFn: () => { range: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> },
   pageSize = 1000,
+  concurrency = 6,
 ): Promise<T[]> {
   const all: T[] = []
   let from = 0
+  // First wave is a single page: most fetches fit in one, and a full first
+  // page tells us to start firing whole waves.
+  let waveSize = 1
   while (true) {
-    const { data, error } = await queryFn().range(from, from + pageSize - 1)
-    if (error) throw new Error(error.message)
-    const rows = (data ?? []) as T[]
-    all.push(...rows)
-    if (rows.length < pageSize) break
-    from += pageSize
+    const pages = await Promise.all(
+      Array.from({ length: waveSize }, (_, i) => {
+        const start = from + i * pageSize
+        return queryFn().range(start, start + pageSize - 1)
+      }),
+    )
+    let sawPartial = false
+    for (const { data, error } of pages) {
+      if (error) throw new Error(error.message)
+      const rows = (data ?? []) as T[]
+      all.push(...rows)
+      if (rows.length < pageSize) { sawPartial = true; break }
+    }
+    if (sawPartial) break
+    from += waveSize * pageSize
+    waveSize = concurrency
   }
   return all
 }
@@ -137,42 +155,48 @@ export async function fetchAnalytics(f: AnalyticsFilters): Promise<RawData | nul
   // fetch by date / area / severity / label, reclassify every row from
   // its label, then apply the user's category filter on the trusted value.
 
-  // Current window — paginate to bypass the PostgREST server-side max-rows cap
-  const curRows = await fetchAllRows<IncidentRow>(() => {
+  // All window fetches run concurrently — wall-clock is the slowest query,
+  // not the sum. The .order() includes id as a unique tiebreaker so parallel
+  // pagination sees one stable total ordering (report_date alone leaves
+  // within-day order unspecified, which can duplicate/drop rows across
+  // page boundaries).
+  const incidentQuery = (win: { from: string; to: string }) => () => {
     let q = sb!.from('incidents').select(INCIDENT_COLS)
-      .gte('report_date', cur.from)
-      .lte('report_date', cur.to)
+      .gte('report_date', win.from)
+      .lte('report_date', win.to)
       .order('report_date', { ascending: true })
+      .order('id', { ascending: true })
     if (f.areas.length)          q = q.in('area', f.areas)
     if (f.severities.length)     q = q.in('severity', f.severities)
     if (f.incidentTypes.length)  q = q.in('incident_type_label', f.incidentTypes)
     return q
-  })
+  }
 
-  // Previous window — same filters as current window for accurate delta calc
-  const prevRows = await fetchAllRows<IncidentRow>(() => {
-    let q = sb!.from('incidents').select(INCIDENT_COLS)
-      .gte('report_date', prev.from)
-      .lte('report_date', prev.to)
-      .order('report_date', { ascending: true })
-    if (f.areas.length)          q = q.in('area', f.areas)
-    if (f.severities.length)     q = q.in('severity', f.severities)
-    if (f.incidentTypes.length)  q = q.in('incident_type_label', f.incidentTypes)
-    return q
-  })
+  // Team members are only needed up front when a staff filter is active —
+  // the filter must be applied to this very result set. Otherwise the caller
+  // lazy-loads them on demand (filter drawer / Patterns tab), which skips
+  // the widest fetch of the lot (~200 rows/day) on every ordinary load.
+  const needMembers = f.staffNames.length > 0
 
-  // Reports row count (for "reports covered" KPI) and team members — fetched in parallel
-  const [reportRows, memberRows] = await Promise.all([
+  const [curRows, prevRows, reportRows, memberRows] = await Promise.all([
+    fetchAllRows<IncidentRow>(incidentQuery(cur)),
+    fetchAllRows<IncidentRow>(incidentQuery(prev)),
     fetchAllRows<ReportRow>(() =>
       sb!.from('reports').select('*')
         .gte('report_date', cur.from)
         .lte('report_date', cur.to)
+        .order('report_date', { ascending: true })
+        .order('id', { ascending: true })
     ),
-    fetchAllRows<IncidentTeamMember>(() =>
-      sb!.from('incident_team_members').select(TEAM_MEMBER_COLS)
-        .gte('report_date', cur.from)
-        .lte('report_date', cur.to)
-    ),
+    needMembers
+      ? fetchAllRows<IncidentTeamMember>(() =>
+          sb!.from('incident_team_members').select(TEAM_MEMBER_COLS)
+            .gte('report_date', cur.from)
+            .lte('report_date', cur.to)
+            .order('report_date', { ascending: true })
+            .order('id', { ascending: true })
+        )
+      : Promise.resolve([] as IncidentTeamMember[]),
   ])
 
   // Apply free-text filter client-side
@@ -1451,7 +1475,8 @@ export async function fetchIncidentsForRange(from: string, to: string): Promise<
       .gte('report_date', from)
       .lte('report_date', to)
       .order('report_date', { ascending: true })
-      .order('incident_start', { ascending: true, nullsFirst: false }),
+      .order('incident_start', { ascending: true, nullsFirst: false })
+      .order('id', { ascending: true }),
   )
   return normaliseCats(rows)
 }
@@ -1481,7 +1506,8 @@ export async function fetchReportsForRange(from: string, to: string): Promise<Re
     sb!.from('reports').select(REPORT_COLS)
       .gte('report_date', from)
       .lte('report_date', to)
-      .order('report_date', { ascending: true }),
+      .order('report_date', { ascending: true })
+      .order('id', { ascending: true }),
   )
 }
 
@@ -1491,7 +1517,8 @@ export async function fetchReviewsForRange(from: string, to: string): Promise<In
   return fetchAllRows<IncidentReview>(() =>
     sb!.from('incident_reviews').select(REVIEW_COLS)
       .gte('report_date', from)
-      .lte('report_date', to),
+      .lte('report_date', to)
+      .order('id', { ascending: true }),
   )
 }
 
@@ -1504,7 +1531,8 @@ export async function fetchTeamMembersForRange(from: string, to: string): Promis
     sb!.from('incident_team_members').select(TEAM_MEMBER_COLS)
       .gte('report_date', from)
       .lte('report_date', to)
-      .order('report_date', { ascending: true }),
+      .order('report_date', { ascending: true })
+      .order('id', { ascending: true }),
   )
 }
 
@@ -1632,7 +1660,8 @@ export async function fetchPmcFlagsForRange(from: string, to: string): Promise<P
   return fetchAllRows<PmcFlag>(() =>
     sb!.from('incident_pmc_flags').select(PMC_FLAG_COLS)
       .gte('report_date', from)
-      .lte('report_date', to),
+      .lte('report_date', to)
+      .order('incident_id', { ascending: true }),
   )
 }
 
@@ -1688,7 +1717,8 @@ export async function fetchPerfSnapshots(from: string, to: string): Promise<Perf
       .gte('metrics_for_date', from)
       .lte('metrics_for_date', to)
       .order('metrics_for_date', { ascending: true })
-      .order('slot', { ascending: true }),
+      .order('slot', { ascending: true })
+      .order('id', { ascending: true }),
   )
   // Defensive: metrics may be null/non-array on legacy rows.
   return rows.map(r => ({ ...r, metrics: Array.isArray(r.metrics) ? r.metrics : [] }))
@@ -1720,7 +1750,8 @@ export async function fetchIncidentsSlim(from: string, to: string): Promise<Slim
       .select('report_date, category, minutes_delay, trains_delayed, cancelled, part_cancelled, is_continuation, delay_delta, is_off_route, train_company')
       .gte('report_date', from)
       .lte('report_date', to)
-      .order('report_date', { ascending: true }),
+      .order('report_date', { ascending: true })
+      .order('id', { ascending: true }),
   )
 }
 
@@ -1733,7 +1764,8 @@ export async function fetchAnnotations(): Promise<InsightAnnotation[]> {
   if (!sb) return []
   return fetchAllRows<InsightAnnotation>(() =>
     sb!.from('insight_annotations').select(ANNOTATION_COLS)
-      .order('created_at', { ascending: false }),
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true }),
   )
 }
 
@@ -1765,7 +1797,8 @@ export async function fetchWatchlist(): Promise<WatchlistEntry[]> {
   if (!sb) return []
   return fetchAllRows<WatchlistEntry>(() =>
     sb!.from('insight_watchlist').select(WATCHLIST_COLS)
-      .order('created_at', { ascending: false }),
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true }),
   )
 }
 

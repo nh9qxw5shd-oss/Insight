@@ -31,7 +31,7 @@ import {
 } from '@/lib/railwayCalendar'
 import {
   fetchAnalytics, deriveKPIs, deriveTrend, deriveCategorySplit,
-  deriveLocationHotspots, deriveRepeatFaults, deriveRepeatAssets,
+  deriveLocationHotspots, deriveRepeatAssets,
   deriveInfraFailureMix, deriveDelayDensity, deriveResponderLoad,
   deriveOperatorImpact, deriveHeatmap, deriveAreaList, deriveResponseDistribution,
   deriveSignals, deriveLineBreakdown, deriveDelayAttribution, deriveContinuationChains,
@@ -232,6 +232,13 @@ export default function InsightDashboard() {
   // classification the route was working to. Written by DLog2 on report save.
   const [lookahead, setLookahead] = useState<WeatherLookaheadDay[]>([])
 
+  // Team members are the widest per-window fetch (~200 rows/day) but only
+  // feed the staff filter list and the Patterns staff panel, so they load
+  // on demand. When a staff filter is ACTIVE, fetchAnalytics fetches them
+  // itself so the filter is applied to a complete set — this lazy path only
+  // covers browsing (drawer open / Patterns tab) with no staff filter set.
+  const [lazyMembers, setLazyMembers] = useState<{ key: string; rows: IncidentTeamMember[] } | null>(null)
+
   // Notebook date annotations — rendered as markers on the Overview trend.
   // Refreshed on tab switches so notes added in the Notebook appear promptly.
   const [dateAnnotations, setDateAnnotations] = useState<InsightAnnotation[]>([])
@@ -294,6 +301,35 @@ export default function InsightDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.windowFrom, data?.windowTo, demoMode])
 
+  // Lazy team-member fetch — fires the first time the drawer opens or the
+  // Patterns tab is visited for a given window. Skipped when fetchAnalytics
+  // already brought them in (active staff filter) or in demo mode.
+  const membersWanted = filtersOpen || tab === 'patterns'
+  useEffect(() => {
+    if (!membersWanted || !isSupabaseConfigured() || demoMode || !data) return
+    if (data.teamMembers.length > 0) return
+    const key = `${data.windowFrom}::${data.windowTo}`
+    if (lazyMembers?.key === key) return
+    let cancelled = false
+    fetchTeamMembersForRange(data.windowFrom, data.windowTo)
+      .then(rows => { if (!cancelled) setLazyMembers({ key, rows }) })
+      .catch(() => { /* non-fatal — staff list simply stays empty */ })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [membersWanted, data, demoMode, lazyMembers?.key])
+
+  // Base dataset with lazily-fetched team members merged in. Everything
+  // downstream (filters, derivers) reads from this so results are identical
+  // to the old eager fetch once the rows arrive.
+  const baseData = useMemo((): RawData | null => {
+    if (!data) return null
+    if (data.teamMembers.length > 0) return data
+    if (lazyMembers && lazyMembers.key === `${data.windowFrom}::${data.windowTo}` && lazyMembers.rows.length > 0) {
+      return { ...data, teamMembers: lazyMembers.rows }
+    }
+    return data
+  }, [data, lazyMembers])
+
   // Fetch operational weather statements whenever the analytics window changes.
   useEffect(() => {
     if (!isSupabaseConfigured() || demoMode || !data) return
@@ -351,18 +387,19 @@ export default function InsightDashboard() {
   }, [filters])
 
   // Client-side filters applied on top of server-filtered incidents:
-  // 1. Staff filter — team members fetched for full window so all names are available.
+  // 1. Staff filter — team members fetched with the window whenever this
+  //    filter is active, so the full set is always present here.
   // 2. Weather conditions filter — maps each incident's (area, date) to its weather group.
   // 3. Operational weather filters — restrict to report_dates whose
   //    weather_lookahead statement matches the selected levels / risk types.
   const effectiveData = useMemo((): RawData | null => {
-    if (!data) return null
-    let incidents = data.incidents
-    let reports = data.reports
+    if (!baseData) return null
+    let incidents = baseData.incidents
+    let reports = baseData.reports
 
     if (filters.staffNames.length > 0) {
       const staffIncidentIds = new Set(
-        data.teamMembers
+        baseData.teamMembers
           .filter(tm => filters.staffNames.includes(tm.name))
           .map(tm => tm.incident_id),
       )
@@ -410,9 +447,9 @@ export default function InsightDashboard() {
       reports   = reports.filter(r => dateQualifies(r.report_date))
     }
 
-    if (incidents === data.incidents && reports === data.reports) return data
-    return { ...data, incidents, reports }
-  }, [data, filters.staffNames, filters.weatherConditions,
+    if (incidents === baseData.incidents && reports === baseData.reports) return baseData
+    return { ...baseData, incidents, reports }
+  }, [baseData, filters.staffNames, filters.weatherConditions,
       filters.minRainfall, filters.maxRainfall,
       filters.minTempC, filters.maxTempC,
       filters.minWindKmh, filters.maxWindKmh,
@@ -420,9 +457,9 @@ export default function InsightDashboard() {
       weatherData, lookahead])
 
   const availableStaff = useMemo(() => {
-    if (!data) return []
-    return Array.from(new Set(data.teamMembers.map(tm => tm.name))).sort()
-  }, [data])
+    if (!baseData) return []
+    return Array.from(new Set(baseData.teamMembers.map(tm => tm.name))).sort()
+  }, [baseData])
 
   const availableWeatherConditionGroups = useMemo(() => {
     if (!weatherData.length) return []
@@ -430,28 +467,44 @@ export default function InsightDashboard() {
     return CONDITION_GROUPS.map(g => g.label).filter(l => present.has(l))
   }, [weatherData])
 
-  // Derived — use effectiveData so all analytics respect the staff filter
+  // Derived — use effectiveData so all analytics respect the staff filter.
+  // Each deriver is gated to the tabs that consume it, so the mounted view
+  // computes only what it renders. The flags (rather than `tab` itself) keep
+  // memos stable when switching between two tabs that share a deriver, and
+  // the numbers are identical either way — this changes when work happens,
+  // not what is computed. kpis / areas / incidentTypeList stay ungated: kpis
+  // gates the whole tab area, the other two feed the always-present drawer.
+  const needsTrend  = tab === 'overview' || tab === 'safety' || tab === 'performance'
+  const needsCats   = tab === 'overview' || tab === 'safety' || tab === 'patterns' || tab === 'assets'
+  const needsHots   = tab === 'overview' || tab === 'performance' || tab === 'geography'
+  const needsAssets = tab === 'overview' || tab === 'assets'
+  const perfTab     = tab === 'performance'
+  const assetsTab   = tab === 'assets'
+  const geoTab      = tab === 'geography'
+  const patternsTab = tab === 'patterns'
+  const routesTab   = tab === 'routes'
+
   const kpis         = useMemo(() => effectiveData ? deriveKPIs(effectiveData) : null, [effectiveData])
-  const trend        = useMemo(() => effectiveData ? deriveTrend(effectiveData) : [], [effectiveData])
-  const cats         = useMemo(() => effectiveData ? deriveCategorySplit(effectiveData) : [], [effectiveData])
-  const hots         = useMemo(() => effectiveData ? deriveLocationHotspots(effectiveData) : [], [effectiveData])
-  const faults       = useMemo(() => effectiveData ? deriveRepeatFaults(effectiveData) : [], [effectiveData])
-  const repeatAssets = useMemo(() => effectiveData ? deriveRepeatAssets(effectiveData) : [], [effectiveData])
-  const infraMix     = useMemo(() => effectiveData ? deriveInfraFailureMix(effectiveData) : [], [effectiveData])
-  const delayDensity = useMemo(() => effectiveData ? deriveDelayDensity(effectiveData) : [], [effectiveData])
-  const resp         = useMemo(() => effectiveData ? deriveResponderLoad(effectiveData) : [], [effectiveData])
-  const ops          = useMemo(() => effectiveData ? deriveOperatorImpact(effectiveData) : [], [effectiveData])
-  const heat         = useMemo(() => effectiveData ? deriveHeatmap(effectiveData) : [], [effectiveData])
+  const trend        = useMemo(() => needsTrend && effectiveData ? deriveTrend(effectiveData) : [], [effectiveData, needsTrend])
+  const cats         = useMemo(() => needsCats && effectiveData ? deriveCategorySplit(effectiveData) : [], [effectiveData, needsCats])
+  const hots         = useMemo(() => needsHots && effectiveData ? deriveLocationHotspots(effectiveData) : [], [effectiveData, needsHots])
+  const repeatAssets = useMemo(() => needsAssets && effectiveData ? deriveRepeatAssets(effectiveData) : [], [effectiveData, needsAssets])
+  const infraMix     = useMemo(() => assetsTab && effectiveData ? deriveInfraFailureMix(effectiveData) : [], [effectiveData, assetsTab])
+  const delayDensity = useMemo(() => geoTab && effectiveData ? deriveDelayDensity(effectiveData) : [], [effectiveData, geoTab])
+  const resp         = useMemo(() => perfTab && effectiveData ? deriveResponderLoad(effectiveData) : [], [effectiveData, perfTab])
+  const ops          = useMemo(() => perfTab && effectiveData ? deriveOperatorImpact(effectiveData) : [], [effectiveData, perfTab])
+  const heat         = useMemo(() => patternsTab && effectiveData ? deriveHeatmap(effectiveData) : [], [effectiveData, patternsTab])
   const areas        = useMemo(() => data ? deriveAreaList(data) : [], [data])
   const incidentTypeList = useMemo(() => data ? deriveIncidentTypeList(data) : [], [data])
-  const respDist     = useMemo(() => effectiveData ? deriveResponseDistribution(effectiveData) : null, [effectiveData])
-  const lines        = useMemo(() => effectiveData ? deriveLineBreakdown(effectiveData) : [], [effectiveData])
-  const attribution  = useMemo(() => effectiveData ? deriveDelayAttribution(effectiveData) : [], [effectiveData])
-  const chains       = useMemo(() => effectiveData ? deriveContinuationChains(effectiveData) : [], [effectiveData])
+  const respDist     = useMemo(() => perfTab && effectiveData ? deriveResponseDistribution(effectiveData) : null, [effectiveData, perfTab])
+  const lines        = useMemo(() => routesTab && effectiveData ? deriveLineBreakdown(effectiveData) : [], [effectiveData, routesTab])
+  const attribution  = useMemo(() => perfTab && effectiveData ? deriveDelayAttribution(effectiveData) : [], [effectiveData, perfTab])
+  const chains       = useMemo(() => assetsTab && effectiveData ? deriveContinuationChains(effectiveData) : [], [effectiveData, assetsTab])
   const changePoints = useMemo(() => deriveChangePoints(trend), [trend])
-  // Staff patterns — always from full data so the Patterns tab shows everyone,
-  // regardless of which staff members are currently pinned in the filter.
-  const staffPatterns = useMemo(() => data ? deriveStaffPatterns(data) : [], [data])
+  // Staff patterns — always from the full dataset so the Patterns tab shows
+  // everyone regardless of pinned staff filters. baseData carries the
+  // lazily-fetched team members, which the Patterns tab itself triggers.
+  const staffPatterns = useMemo(() => patternsTab && baseData ? deriveStaffPatterns(baseData) : [], [baseData, patternsTab])
 
   // Decomposition lookup for KPI cards — uses effectiveData so deltas respect staff filter.
   const decompose = useMemo(
