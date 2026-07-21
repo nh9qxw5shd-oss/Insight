@@ -24,6 +24,7 @@ Seven views, all driven by a shared filter set:
 | **Patterns** | Day × hour heatmap, hour-of-day profile, weekday profile, category-by-time |
 | **Assets** | Asset-failure mix, repeat-fault ranking — engineering review priority |
 | **Operators** | Per-TOC/FOC delay, MOM/responder workload distribution |
+| **Briefing** | Pin findings from any view (KPIs, timeline, weather impact, duration effect) and compose them into a one-page executive brief with provenance — print/PDF or HTML export |
 
 Filter bar applies globally:
 

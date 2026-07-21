@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, BookOpen, CalendarDays, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, ClipboardList, Clock, Cloud, Compass, Crosshair, Download, FileText, Filter, Flag, FlaskConical,
-  Gauge, GitBranch, GitCompare, Layers, List, MapPin, Minus, Monitor, Moon, RefreshCw, Route, Search, StickyNote,
+  Gauge, GitBranch, GitCompare, Layers, List, MapPin, Minus, Monitor, Moon, Pin, RefreshCw, Route, Search, StickyNote,
   Sun, Table2, TrendingDown, TrendingUp, Train, Trash2, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -31,7 +31,7 @@ import {
 } from '@/lib/railwayCalendar'
 import {
   fetchAnalytics, deriveKPIs, deriveTrend, deriveCategorySplit,
-  deriveLocationHotspots, deriveRepeatFaults, deriveRepeatAssets,
+  deriveLocationHotspots, deriveRepeatAssets,
   deriveInfraFailureMix, deriveDelayDensity, deriveResponderLoad,
   deriveOperatorImpact, deriveHeatmap, deriveAreaList, deriveResponseDistribution,
   deriveSignals, deriveLineBreakdown, deriveDelayAttribution, deriveContinuationChains,
@@ -76,9 +76,11 @@ import { buildReportPlan } from '@/lib/reports/builder'
 import { renderReportDocument } from '@/lib/reports/html'
 import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/print'
 import { serialiseControlPmcCsv, controlPmcCsvFilename } from '@/lib/reports/controlPmc'
+import { addPin, describeFilters as describePinFilters, PinDraft, KpiPinPayload, TimelinePinPayload } from '@/lib/briefing'
 import { DistillationTab } from './distillation-tab'
 import { FocusTab } from './focus-tab'
-import { WeatherTab } from './weather-tab'
+import { WeatherTab, PinButton } from './weather-tab'
+import { BriefingTab } from './briefing-tab'
 import { PerformanceFeedPanel } from './performance-feed'
 import { PerformanceAnalyticsPanel } from './performance-analytics'
 import { SearchTab } from './search-tab'
@@ -93,7 +95,7 @@ import { QualityTab } from './quality-tab'
 type Tab =
   | 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes'
   | 'trends' | 'explore' | 'analytics' | 'weather' | 'calendar' | 'compare' | 'pivot' | 'search'
-  | 'focus' | 'review' | 'reports' | 'distillation' | 'notebook' | 'quality'
+  | 'focus' | 'review' | 'reports' | 'briefing' | 'distillation' | 'notebook' | 'quality'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -113,6 +115,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'focus',        label: 'Focus',        icon: Crosshair },
   { id: 'review',       label: 'Review',       icon: ClipboardCheck },
   { id: 'reports',      label: 'Reports',      icon: FileText },
+  { id: 'briefing',     label: 'Briefing',     icon: Pin },
   { id: 'distillation', label: 'Distillation', icon: FlaskConical },
   { id: 'notebook',     label: 'Notebook',     icon: StickyNote },
   { id: 'quality',      label: 'Quality',      icon: Gauge },
@@ -232,6 +235,13 @@ export default function InsightDashboard() {
   // classification the route was working to. Written by DLog2 on report save.
   const [lookahead, setLookahead] = useState<WeatherLookaheadDay[]>([])
 
+  // Team members are the widest per-window fetch (~200 rows/day) but only
+  // feed the staff filter list and the Patterns staff panel, so they load
+  // on demand. When a staff filter is ACTIVE, fetchAnalytics fetches them
+  // itself so the filter is applied to a complete set — this lazy path only
+  // covers browsing (drawer open / Patterns tab) with no staff filter set.
+  const [lazyMembers, setLazyMembers] = useState<{ key: string; rows: IncidentTeamMember[] } | null>(null)
+
   // Notebook date annotations — rendered as markers on the Overview trend.
   // Refreshed on tab switches so notes added in the Notebook appear promptly.
   const [dateAnnotations, setDateAnnotations] = useState<InsightAnnotation[]>([])
@@ -294,6 +304,35 @@ export default function InsightDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.windowFrom, data?.windowTo, demoMode])
 
+  // Lazy team-member fetch — fires the first time the drawer opens or the
+  // Patterns tab is visited for a given window. Skipped when fetchAnalytics
+  // already brought them in (active staff filter) or in demo mode.
+  const membersWanted = filtersOpen || tab === 'patterns'
+  useEffect(() => {
+    if (!membersWanted || !isSupabaseConfigured() || demoMode || !data) return
+    if (data.teamMembers.length > 0) return
+    const key = `${data.windowFrom}::${data.windowTo}`
+    if (lazyMembers?.key === key) return
+    let cancelled = false
+    fetchTeamMembersForRange(data.windowFrom, data.windowTo)
+      .then(rows => { if (!cancelled) setLazyMembers({ key, rows }) })
+      .catch(() => { /* non-fatal — staff list simply stays empty */ })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [membersWanted, data, demoMode, lazyMembers?.key])
+
+  // Base dataset with lazily-fetched team members merged in. Everything
+  // downstream (filters, derivers) reads from this so results are identical
+  // to the old eager fetch once the rows arrive.
+  const baseData = useMemo((): RawData | null => {
+    if (!data) return null
+    if (data.teamMembers.length > 0) return data
+    if (lazyMembers && lazyMembers.key === `${data.windowFrom}::${data.windowTo}` && lazyMembers.rows.length > 0) {
+      return { ...data, teamMembers: lazyMembers.rows }
+    }
+    return data
+  }, [data, lazyMembers])
+
   // Fetch operational weather statements whenever the analytics window changes.
   useEffect(() => {
     if (!isSupabaseConfigured() || demoMode || !data) return
@@ -351,18 +390,19 @@ export default function InsightDashboard() {
   }, [filters])
 
   // Client-side filters applied on top of server-filtered incidents:
-  // 1. Staff filter — team members fetched for full window so all names are available.
+  // 1. Staff filter — team members fetched with the window whenever this
+  //    filter is active, so the full set is always present here.
   // 2. Weather conditions filter — maps each incident's (area, date) to its weather group.
   // 3. Operational weather filters — restrict to report_dates whose
   //    weather_lookahead statement matches the selected levels / risk types.
   const effectiveData = useMemo((): RawData | null => {
-    if (!data) return null
-    let incidents = data.incidents
-    let reports = data.reports
+    if (!baseData) return null
+    let incidents = baseData.incidents
+    let reports = baseData.reports
 
     if (filters.staffNames.length > 0) {
       const staffIncidentIds = new Set(
-        data.teamMembers
+        baseData.teamMembers
           .filter(tm => filters.staffNames.includes(tm.name))
           .map(tm => tm.incident_id),
       )
@@ -410,9 +450,9 @@ export default function InsightDashboard() {
       reports   = reports.filter(r => dateQualifies(r.report_date))
     }
 
-    if (incidents === data.incidents && reports === data.reports) return data
-    return { ...data, incidents, reports }
-  }, [data, filters.staffNames, filters.weatherConditions,
+    if (incidents === baseData.incidents && reports === baseData.reports) return baseData
+    return { ...baseData, incidents, reports }
+  }, [baseData, filters.staffNames, filters.weatherConditions,
       filters.minRainfall, filters.maxRainfall,
       filters.minTempC, filters.maxTempC,
       filters.minWindKmh, filters.maxWindKmh,
@@ -420,9 +460,9 @@ export default function InsightDashboard() {
       weatherData, lookahead])
 
   const availableStaff = useMemo(() => {
-    if (!data) return []
-    return Array.from(new Set(data.teamMembers.map(tm => tm.name))).sort()
-  }, [data])
+    if (!baseData) return []
+    return Array.from(new Set(baseData.teamMembers.map(tm => tm.name))).sort()
+  }, [baseData])
 
   const availableWeatherConditionGroups = useMemo(() => {
     if (!weatherData.length) return []
@@ -430,28 +470,44 @@ export default function InsightDashboard() {
     return CONDITION_GROUPS.map(g => g.label).filter(l => present.has(l))
   }, [weatherData])
 
-  // Derived — use effectiveData so all analytics respect the staff filter
+  // Derived — use effectiveData so all analytics respect the staff filter.
+  // Each deriver is gated to the tabs that consume it, so the mounted view
+  // computes only what it renders. The flags (rather than `tab` itself) keep
+  // memos stable when switching between two tabs that share a deriver, and
+  // the numbers are identical either way — this changes when work happens,
+  // not what is computed. kpis / areas / incidentTypeList stay ungated: kpis
+  // gates the whole tab area, the other two feed the always-present drawer.
+  const needsTrend  = tab === 'overview' || tab === 'safety' || tab === 'performance'
+  const needsCats   = tab === 'overview' || tab === 'safety' || tab === 'patterns' || tab === 'assets'
+  const needsHots   = tab === 'overview' || tab === 'performance' || tab === 'geography'
+  const needsAssets = tab === 'overview' || tab === 'assets'
+  const perfTab     = tab === 'performance'
+  const assetsTab   = tab === 'assets'
+  const geoTab      = tab === 'geography'
+  const patternsTab = tab === 'patterns'
+  const routesTab   = tab === 'routes'
+
   const kpis         = useMemo(() => effectiveData ? deriveKPIs(effectiveData) : null, [effectiveData])
-  const trend        = useMemo(() => effectiveData ? deriveTrend(effectiveData) : [], [effectiveData])
-  const cats         = useMemo(() => effectiveData ? deriveCategorySplit(effectiveData) : [], [effectiveData])
-  const hots         = useMemo(() => effectiveData ? deriveLocationHotspots(effectiveData) : [], [effectiveData])
-  const faults       = useMemo(() => effectiveData ? deriveRepeatFaults(effectiveData) : [], [effectiveData])
-  const repeatAssets = useMemo(() => effectiveData ? deriveRepeatAssets(effectiveData) : [], [effectiveData])
-  const infraMix     = useMemo(() => effectiveData ? deriveInfraFailureMix(effectiveData) : [], [effectiveData])
-  const delayDensity = useMemo(() => effectiveData ? deriveDelayDensity(effectiveData) : [], [effectiveData])
-  const resp         = useMemo(() => effectiveData ? deriveResponderLoad(effectiveData) : [], [effectiveData])
-  const ops          = useMemo(() => effectiveData ? deriveOperatorImpact(effectiveData) : [], [effectiveData])
-  const heat         = useMemo(() => effectiveData ? deriveHeatmap(effectiveData) : [], [effectiveData])
+  const trend        = useMemo(() => needsTrend && effectiveData ? deriveTrend(effectiveData) : [], [effectiveData, needsTrend])
+  const cats         = useMemo(() => needsCats && effectiveData ? deriveCategorySplit(effectiveData) : [], [effectiveData, needsCats])
+  const hots         = useMemo(() => needsHots && effectiveData ? deriveLocationHotspots(effectiveData) : [], [effectiveData, needsHots])
+  const repeatAssets = useMemo(() => needsAssets && effectiveData ? deriveRepeatAssets(effectiveData) : [], [effectiveData, needsAssets])
+  const infraMix     = useMemo(() => assetsTab && effectiveData ? deriveInfraFailureMix(effectiveData) : [], [effectiveData, assetsTab])
+  const delayDensity = useMemo(() => geoTab && effectiveData ? deriveDelayDensity(effectiveData) : [], [effectiveData, geoTab])
+  const resp         = useMemo(() => perfTab && effectiveData ? deriveResponderLoad(effectiveData) : [], [effectiveData, perfTab])
+  const ops          = useMemo(() => perfTab && effectiveData ? deriveOperatorImpact(effectiveData) : [], [effectiveData, perfTab])
+  const heat         = useMemo(() => patternsTab && effectiveData ? deriveHeatmap(effectiveData) : [], [effectiveData, patternsTab])
   const areas        = useMemo(() => data ? deriveAreaList(data) : [], [data])
   const incidentTypeList = useMemo(() => data ? deriveIncidentTypeList(data) : [], [data])
-  const respDist     = useMemo(() => effectiveData ? deriveResponseDistribution(effectiveData) : null, [effectiveData])
-  const lines        = useMemo(() => effectiveData ? deriveLineBreakdown(effectiveData) : [], [effectiveData])
-  const attribution  = useMemo(() => effectiveData ? deriveDelayAttribution(effectiveData) : [], [effectiveData])
-  const chains       = useMemo(() => effectiveData ? deriveContinuationChains(effectiveData) : [], [effectiveData])
+  const respDist     = useMemo(() => perfTab && effectiveData ? deriveResponseDistribution(effectiveData) : null, [effectiveData, perfTab])
+  const lines        = useMemo(() => routesTab && effectiveData ? deriveLineBreakdown(effectiveData) : [], [effectiveData, routesTab])
+  const attribution  = useMemo(() => perfTab && effectiveData ? deriveDelayAttribution(effectiveData) : [], [effectiveData, perfTab])
+  const chains       = useMemo(() => assetsTab && effectiveData ? deriveContinuationChains(effectiveData) : [], [effectiveData, assetsTab])
   const changePoints = useMemo(() => deriveChangePoints(trend), [trend])
-  // Staff patterns — always from full data so the Patterns tab shows everyone,
-  // regardless of which staff members are currently pinned in the filter.
-  const staffPatterns = useMemo(() => data ? deriveStaffPatterns(data) : [], [data])
+  // Staff patterns — always from the full dataset so the Patterns tab shows
+  // everyone regardless of pinned staff filters. baseData carries the
+  // lazily-fetched team members, which the Patterns tab itself triggers.
+  const staffPatterns = useMemo(() => patternsTab && baseData ? deriveStaffPatterns(baseData) : [], [baseData, patternsTab])
 
   // Decomposition lookup for KPI cards — uses effectiveData so deltas respect staff filter.
   const decompose = useMemo(
@@ -502,6 +558,33 @@ export default function InsightDashboard() {
     setFilters(DEFAULT_FILTERS)
     clearFiltersFromUrl()
   }
+
+  // ─── Briefing pins ─────────────────────────────────────────────────────────
+  // Pin sites hand over a draft (kind, claim, payload); this submitter stamps
+  // it with the active window, a human-readable filter summary, and an
+  // epoch-seeded position so new pins land at the end of the composer order.
+  const [pinToast, setPinToast] = useState(0)
+  useEffect(() => {
+    if (!pinToast) return
+    const t = setTimeout(() => setPinToast(0), 2000)
+    return () => clearTimeout(t)
+  }, [pinToast])
+
+  const handlePin = (draft: PinDraft) => {
+    if (!isSupabaseConfigured() || demoMode || !effectiveData) return
+    addPin({
+      kind: draft.kind,
+      title: draft.title,
+      comment: draft.comment ?? null,
+      source_label: draft.source_label ?? null,
+      window_from: effectiveData.windowFrom,
+      window_to: effectiveData.windowTo,
+      filters_summary: describePinFilters(filters),
+      payload: draft.payload,
+      position: Math.floor(Date.now() / 1000),
+    }).then(pin => { if (pin) setPinToast(Date.now()) })
+  }
+  const pinsEnabled = isSupabaseConfigured() && !demoMode
 
   // ─── Review-tab data fetch ─────────────────────────────────────────────────
   // Resolves the same window the analytics tabs use, but bypasses category /
@@ -737,7 +820,7 @@ export default function InsightDashboard() {
 
         {kpis && effectiveData && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} annotations={dateAnnotations.map(a => ({ date: a.anchor, note: a.note }))} lookahead={lookahead} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} annotations={dateAnnotations.map(a => ({ date: a.anchor, note: a.note }))} lookahead={lookahead} onPin={pinsEnabled ? handlePin : undefined} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={effectiveData} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
             {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} metricFocus={filters.metricFocus} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
@@ -747,7 +830,7 @@ export default function InsightDashboard() {
             {tab === 'trends'      && <TrendsTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowDays={effectiveData.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'explore'     && <ExploreTab incidents={effectiveData.incidents} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} />}
-            {tab === 'weather'     && <WeatherTab incidents={effectiveData.incidents} weatherData={weatherData} lookahead={lookahead} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
+            {tab === 'weather'     && <WeatherTab incidents={effectiveData.incidents} weatherData={weatherData} lookahead={lookahead} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onPin={pinsEnabled ? handlePin : undefined} />}
             {tab === 'calendar'    && <CalendarTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onDrillDown={setDrillDown} />}
             {tab === 'compare'     && <CompareTab demoMode={demoMode} />}
             {tab === 'pivot'       && <PivotTab incidents={effectiveData.incidents} />}
@@ -778,6 +861,7 @@ export default function InsightDashboard() {
                   </>
             )}
             {tab === 'reports'      && <ReportsTab data={effectiveData} filters={filters} demoMode={demoMode} />}
+            {tab === 'briefing'     && <BriefingTab supabaseConfigured={isSupabaseConfigured()} demoMode={demoMode} />}
             {tab === 'distillation' && <DistillationTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
           </>
         )}
@@ -789,6 +873,15 @@ export default function InsightDashboard() {
           incidents={drillDown.incidents}
           onClose={() => setDrillDown(null)}
         />
+      )}
+
+      {pinToast > 0 && (
+        <div
+          className="fixed bottom-6 right-6 z-50 px-3 py-2 rounded border text-xs flex items-center gap-2 animate-fade-up"
+          style={{ background: 'var(--bg-card-hi)', borderColor: 'var(--nr-green)', color: 'var(--nr-green)', fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          <Pin size={12} /> Pinned to Briefing
+        </div>
       )}
 
       <FilterDrawer
@@ -1187,7 +1280,7 @@ function HypothesisRow({ h, maxLift, onClick }: {
   )
 }
 
-function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, annotations, lookahead }: any) {
+function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, annotations, lookahead, onPin }: any) {
   // Timeline context: band the date axis by that day's operational weather
   // level so spikes can be read against the classification at a glance.
   // Normal (GREEN) days stay unbanded — only elevated levels are shaded.
@@ -1208,6 +1301,30 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
   }
   const hasBands = weatherBands.length > 0
 
+  // KPI pin helper — captures the formatted value + delta as a self-contained
+  // snapshot; the page-level submitter adds window/filter context.
+  const kpiPin = onPin
+    ? (label: string, value: string, deltaPct: number | null, deltaInverted: boolean, caption?: string) =>
+        () => onPin({
+          kind: 'kpi', title: label,
+          source_label: 'Overview · KPI',
+          payload: { value, deltaPct, deltaInverted, caption } as KpiPinPayload,
+        })
+    : () => undefined
+
+  const timelinePin = onPin
+    ? () => onPin({
+        kind: 'timeline',
+        title: 'Daily incidents, banded by operational weather level',
+        source_label: 'Overview · Daily Activity',
+        payload: {
+          days: trendWx.map((p: any) => ({
+            date: p.date, incidents: p.incidents, delayMins: Math.round(p.delayMins), level: p.weatherLevel ?? null,
+          })),
+        } as TimelinePinPayload,
+      })
+    : undefined
+
   return (
     <div className="space-y-6">
 
@@ -1220,6 +1337,7 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           deltaInverted
           decompose={decompose}
           metric="incidents"
+          onPin={kpiPin('Total Incidents', kpis.totalIncidents.toLocaleString(), kpis.incidentsDeltaPct, true)}
           onListClick={() => onDrillDown({
             title: 'All Incidents',
             incidents: [...incidents].sort((a: any, b: any) => b.report_date.localeCompare(a.report_date)),
@@ -1234,6 +1352,7 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           accent
           decompose={decompose}
           metric="delay"
+          onPin={kpiPin('Total Delay', fmtMins(kpis.totalDelayMins), kpis.delayDeltaPct, true)}
         />
         <KPICard
           label="Safety-Critical"
@@ -1244,6 +1363,7 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           critical={kpis.safetyDeltaPct != null && kpis.safetyDeltaPct > 5}
           decompose={decompose}
           metric="safety"
+          onPin={kpiPin('Safety-Critical', kpis.safetyCriticalCount.toLocaleString(), kpis.safetyDeltaPct, true)}
         />
         <KPICard
           label="Avg Incident Duration"
@@ -1251,25 +1371,28 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           delta={kpis.durationDeltaPct}
           icon={Clock}
           deltaInverted
+          onPin={kpis.avgIncidentDuration ? kpiPin('Avg Incident Duration', fmtMins(Math.round(kpis.avgIncidentDuration)), kpis.durationDeltaPct, true) : undefined}
         />
         <KPICard
           label="Trains Delayed"
           value={kpis.totalTrainsDelayed != null ? kpis.totalTrainsDelayed.toLocaleString() : '—'}
           icon={Train}
           deltaInverted
+          onPin={kpis.totalTrainsDelayed != null ? kpiPin('Trains Delayed', kpis.totalTrainsDelayed.toLocaleString(), null, true) : undefined}
         />
         <KPICard
           label="Arrival SLA (≤45 min)"
           value={kpis.slaCompliancePct != null ? `${kpis.slaCompliancePct.toFixed(1)}%` : '—'}
           delta={kpis.slaBreachDeltaPct != null ? -kpis.slaBreachDeltaPct : null}
           icon={Clock}
+          onPin={kpis.slaCompliancePct != null ? kpiPin('Arrival SLA (≤45 min)', `${kpis.slaCompliancePct.toFixed(1)}%`, kpis.slaBreachDeltaPct != null ? -kpis.slaBreachDeltaPct : null, false, 'share of incidents where the responder arrived inside 45 minutes') : undefined}
         />
       </div>
 
       {/* Trend + breakdown row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card title="Daily Activity" subtitle={`${trend.length}-day rolling window · stability band shaded${hasBands ? ' · axis banded by operational weather level' : ''}`} className="lg:col-span-2 tick-corners"
-              right={<ChartTypeToggle value={chart} onChange={setChart} />}>
+              right={<div className="flex items-center gap-2">{timelinePin && <PinButton onPin={timelinePin} label="Pin this timeline to Briefing" />}<ChartTypeToggle value={chart} onChange={setChart} /></div>}>
           <TrendChart data={trendWx} kind={chart} onDateClick={onDateClick} changePoints={changePoints} showBaseline annotations={annotations} weatherBands={weatherBands} />
           {hasBands && (
             <div className="flex items-center gap-4 mt-2 flex-wrap">
@@ -2729,7 +2852,8 @@ function Card({ title, subtitle, children, className = '', right }: any) {
   )
 }
 
-function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, critical, accent, decompose, metric, onListClick }: any) {
+function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, critical, accent, decompose, metric, onListClick, onPin }: any) {
+  const [justPinned, setJustPinned] = useState(false)
   // delta: positive = up, negative = down. deltaInverted: up is bad (more delay = bad)
   const deltaColor = delta == null ? 'var(--ink-400)'
     : (delta > 0) === !!deltaInverted ? 'var(--nr-red)' : 'var(--nr-green)'
@@ -2756,6 +2880,17 @@ function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, cri
       <div className="flex items-center justify-between mb-3">
         <span className="label-micro">{label}</span>
         <div className="flex items-center gap-1.5">
+          {onPin && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onPin(); setJustPinned(true); setTimeout(() => setJustPinned(false), 1600) }}
+              title="Pin this KPI to the Briefing"
+              className={`transition-opacity ${justPinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'}`}
+              style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}
+            >
+              <Pin size={12} style={{ color: justPinned ? 'var(--nr-green)' : 'var(--ink-400)' }} />
+            </button>
+          )}
           {onListClick && (
             <List size={12} className="opacity-0 group-hover:opacity-60 transition-opacity" style={{ color: 'var(--ink-400)' }} />
           )}

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useMemo } from 'react'
-import { CloudRain, SlidersHorizontal, LayoutGrid, TrendingUp, Info, Zap } from 'lucide-react'
+import { CloudRain, SlidersHorizontal, LayoutGrid, TrendingUp, Info, Zap, Pin } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid,
@@ -11,8 +11,30 @@ import { effectiveDelay, nonContinuation } from '@/lib/queries'
 import { WeatherDay, CONDITION_GROUPS, conditionGroup } from '@/lib/weather'
 import {
   WeatherLookaheadDay, WeatherLevel, WEATHER_LEVELS, WEATHER_LEVEL_CONFIG,
-  LOOKAHEAD_COVERAGE_START, lookaheadProvenance, weatherLevelLabel,
+  LOOKAHEAD_COVERAGE_START, lookaheadProvenance, weatherLevelLabel, streakPositions,
 } from '@/lib/weatherLookahead'
+import { PinDraft, LevelImpactPinPayload, RiskImpactPinPayload, DurationPinPayload } from '@/lib/briefing'
+
+// Small "pin this finding to the Briefing" affordance, shared by the
+// operational-weather sections. Flashes to confirm the capture.
+export function PinButton({ onPin, label = 'Pin to Briefing' }: { onPin?: () => void; label?: string }) {
+  const [done, setDone] = useState(false)
+  if (!onPin) return null
+  return (
+    <button
+      onClick={() => { onPin(); setDone(true); setTimeout(() => setDone(false), 1600) }}
+      title={label}
+      className="inline-flex items-center gap-1 px-1.5 py-1 rounded-sm text-[9px] transition-colors hover:bg-[var(--bg-card-hi)]"
+      style={{
+        border: `1px solid ${done ? 'var(--nr-green)' : 'var(--line)'}`,
+        color: done ? 'var(--nr-green)' : 'var(--ink-400)',
+        fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.06em',
+      }}
+    >
+      <Pin size={10} />{done ? 'PINNED' : 'PIN'}
+    </button>
+  )
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -160,7 +182,7 @@ const REGION_OPTIONS: { key: RegionView; label: string }[] = [
   { key: 'london_north',  label: 'London North' },
 ]
 
-interface DayLoad { inc: number; delay: number; cancelled: number }
+interface DayLoad { inc: number; delay: number; cancelled: number; defects: number }
 
 interface LevelStat {
   level:     WeatherLevel
@@ -192,16 +214,56 @@ function fmtPct(n: number): string {
   return `${(n * 100).toFixed(0)}%`
 }
 
+// One small-multiple column chart for the duration analysis: a rate per
+// consecutive-day position, peak emphasised, sample size under the axis.
+function StreakPanel({ label, values, nDays, positions, unit }: {
+  label: string; values: number[]; nDays: number[]; positions: string[]; unit: 'count' | 'mins'
+}) {
+  const W = 260, top = 16, plotH = 92, axisY = top + plotH + 14, subY = axisY + 12, H = subY + 6
+  const max = Math.max(...values, 0.0001)
+  const peak = values.indexOf(Math.max(...values))
+  const n = values.length, bw = W / n
+  const fmt = (v: number) => unit === 'mins'
+    ? (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`)
+    : (v >= 10 ? v.toFixed(0) : v.toFixed(1))
+  return (
+    <div>
+      <div className="label-micro text-[9px] mb-1.5" style={{ color: 'var(--ink-400)' }}>{label}</div>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${label} by consecutive Extreme day`} style={{ display: 'block', width: '100%', height: 'auto' }}>
+        {values.map((v, i) => {
+          const bh = (v / max) * plotH
+          const x = i * bw + 10, w = bw - 20
+          return (
+            <g key={i}>
+              <rect x={x} y={top + plotH - bh} width={w} height={bh} rx={2.5} fill="var(--nr-orange)" opacity={i === peak ? 1 : 0.5}>
+                <title>{`${positions[i]} of an Extreme spell · ${label.toLowerCase()}: ${fmt(v)} · sample: ${nDays[i]} days`}</title>
+              </rect>
+              <text x={x + w / 2} y={top + plotH - bh - 5} textAnchor="middle" fontSize={10.5}
+                    fontWeight={i === peak ? 700 : 400} fill={i === peak ? 'var(--ink-100)' : 'var(--ink-300)'}
+                    fontFamily="JetBrains Mono, monospace">{fmt(v)}</text>
+              <text x={x + w / 2} y={axisY} textAnchor="middle" fontSize={9.5} fill="var(--ink-400)" fontFamily="JetBrains Mono, monospace">{positions[i]}</text>
+              <text x={x + w / 2} y={subY} textAnchor="middle" fontSize={8.5} fill="var(--ink-500)" fontFamily="JetBrains Mono, monospace">{nDays[i]}d</text>
+            </g>
+          )
+        })}
+        <line x1={4} x2={W - 4} y1={top + plotH} y2={top + plotH} stroke="var(--line-hi)" strokeWidth={1} />
+      </svg>
+    </div>
+  )
+}
+
 function LookaheadImpact({
   lookahead,
   incidents,
   windowFrom,
   windowTo,
+  onPin,
 }: {
   lookahead:  WeatherLookaheadDay[]
   incidents:  IncidentRow[]
   windowFrom: string
   windowTo:   string
+  onPin?:     (draft: PinDraft) => void
 }) {
   const [region, setRegion] = useState<RegionView>('overall')
 
@@ -236,10 +298,13 @@ function LookaheadImpact({
   const perDay = useMemo(() => {
     const m = new Map<string, DayLoad>()
     incidents.forEach(i => {
-      const cur = m.get(i.report_date) ?? { inc: 0, delay: 0, cancelled: 0 }
+      const cur = m.get(i.report_date) ?? { inc: 0, delay: 0, cancelled: 0, defects: 0 }
       cur.delay     += effectiveDelay(i)
       cur.cancelled += (i.cancelled || 0) + (i.part_cancelled || 0)
-      if (!i.is_continuation) cur.inc += 1
+      if (!i.is_continuation) {
+        cur.inc += 1
+        if ((i.incident_type_label ?? '').toLowerCase().includes('on train defect')) cur.defects += 1
+      }
       m.set(i.report_date, cur)
     })
     return m
@@ -264,7 +329,7 @@ function LookaheadImpact({
       const level = levelOf(d)
       if (!level) return
       const cur  = acc.get(level) ?? { days: 0, inc: 0, delay: 0, cancelled: 0 }
-      const load = perDay.get(d.weather_date) ?? { inc: 0, delay: 0, cancelled: 0 }
+      const load = perDay.get(d.weather_date) ?? { inc: 0, delay: 0, cancelled: 0, defects: 0 }
       cur.days      += 1
       cur.inc       += load.inc
       cur.delay     += load.delay
@@ -343,7 +408,7 @@ function LookaheadImpact({
       const withLoad    = { inc: 0, delay: 0 }
       const withoutLoad = { inc: 0, delay: 0 }
       universe.forEach(d => {
-        const load = perDay.get(d.weather_date) ?? { inc: 0, delay: 0, cancelled: 0 }
+        const load = perDay.get(d.weather_date) ?? { inc: 0, delay: 0, cancelled: 0, defects: 0 }
         if (risksOf(d).includes(risk)) {
           dWith += 1; withLoad.inc += load.inc; withLoad.delay += load.delay
         } else {
@@ -363,6 +428,96 @@ function LookaheadImpact({
     }
     return out.sort((a, b) => b.delayRateWith - a.delayRateWith)
   }, [days, perDay, risksOf])
+
+  // ── 4 · Duration effect ─────────────────────────────────────────────────────
+  // Rates by consecutive day at Extreme: does pressure build the longer a
+  // spell runs? Positions above the cap fold into the final "+" bucket.
+  const STREAK_CAP = 5
+  const streaks = useMemo(() => {
+    const pos = streakPositions(days, d => levelOf(d) === 'EXTREME')
+    const buckets = Array.from({ length: STREAK_CAP }, () => ({ days: 0, inc: 0, delay: 0, defects: 0 }))
+    days.forEach(d => {
+      const p = pos.get(d.weather_date)
+      if (!p) return
+      const b = buckets[Math.min(p, STREAK_CAP) - 1]
+      const load = perDay.get(d.weather_date) ?? { inc: 0, delay: 0, cancelled: 0, defects: 0 }
+      b.days += 1; b.inc += load.inc; b.delay += load.delay; b.defects += load.defects
+    })
+    // Trim empty trailing buckets so short windows show only what exists.
+    let last = buckets.length - 1
+    while (last > 0 && buckets[last].days === 0) last--
+    const used = buckets.slice(0, last + 1)
+    const positions = used.map((_, i) => `Day ${i + 1}${i === STREAK_CAP - 1 ? '+' : ''}`)
+    const rate = (f: (b: typeof used[number]) => number) => used.map(b => (b.days ? f(b) / b.days : 0))
+    return {
+      positions,
+      nDays: used.map(b => b.days),
+      incRates: rate(b => b.inc),
+      delayRates: rate(b => b.delay),
+      defectRates: rate(b => b.defects),
+      multiDay: used.length > 1 && used[1].days > 0,
+    }
+  }, [days, perDay, levelOf])
+
+  // ── Pin drafts ──────────────────────────────────────────────────────────────
+  const regionLabel = REGION_OPTIONS.find(o => o.key === region)?.label ?? 'Route'
+  const regionSuffix = region === 'overall' ? '' : ` (${regionLabel} level)`
+
+  const pinLevelMetric = (metricLabel: string, unit: 'count' | 'mins', rateOf: (s: LevelStat) => number) => {
+    if (!onPin) return undefined
+    return () => {
+      const rows = levelStats.map(s => ({ level: s.level, days: s.days, rate: rateOf(s) }))
+      const worst = rows[rows.length - 1]
+      const green = rows.find(r => r.level === 'GREEN')
+      const lift = green && green.rate > 0 && worst ? worst.rate / green.rate : null
+      const fmt = (v: number) => unit === 'mins' ? `${Math.round(v).toLocaleString()}m` : v.toFixed(1)
+      const liftTxt = lift == null ? '' : lift >= 2 ? ` (${lift.toFixed(1)}× Normal)` : ` (${lift - 1 >= 0 ? '+' : ''}${Math.round((lift - 1) * 100)}% vs Normal)`
+      const payload: LevelImpactPinPayload = { metricLabel, unit, rows }
+      onPin({
+        kind: 'level-impact',
+        // Neutral claim — the numbers say which way it went; a one-day
+        // baseline in a short window can legitimately sit above Extreme.
+        title: green && worst
+          ? `${metricLabel} per day: ${fmt(worst.rate)} on ${weatherLevelLabel(worst.level)} days vs ${fmt(green.rate)} on Normal${liftTxt}`
+          : `${metricLabel} per day by weather level`,
+        source_label: `Weather tab · Impact by Weather Level${regionSuffix}`,
+        payload,
+      })
+    }
+  }
+
+  const pinRisk = (r: RiskStat) => {
+    if (!onPin) return undefined
+    return () => {
+      const lift = r.delayRateWithout > 0 ? r.delayRateWith / r.delayRateWithout : null
+      const payload: RiskImpactPinPayload = { ...r }
+      onPin({
+        kind: 'risk-impact',
+        title: `${r.risk} days carry ${lift != null ? `${lift.toFixed(1)}× the delay of` : 'more delay than'} other statement days`,
+        source_label: `Weather tab · Impact by Risk Type${regionSuffix}`,
+        payload,
+      })
+    }
+  }
+
+  const pinDuration = onPin && streaks.multiDay ? () => {
+    const peakIdx = streaks.incRates.indexOf(Math.max(...streaks.incRates))
+    const payload: DurationPinPayload = {
+      positions: streaks.positions,
+      nDays: streaks.nDays,
+      panels: [
+        { label: 'Incidents / day',     values: streaks.incRates.map(v => +v.toFixed(1)),    unit: 'count' },
+        { label: 'Delay minutes / day', values: streaks.delayRates.map(v => Math.round(v)),  unit: 'mins' },
+        { label: 'Train defects / day', values: streaks.defectRates.map(v => +v.toFixed(1)), unit: 'count' },
+      ],
+    }
+    onPin({
+      kind: 'duration',
+      title: `Pressure builds with consecutive Extreme days — incidents peak on ${streaks.positions[peakIdx].toLowerCase()} of a spell`,
+      source_label: `Weather tab · Duration effect${regionSuffix}`,
+      payload,
+    })
+  } : undefined
 
   const regionToggle = (
     <div className="flex items-center gap-1 flex-wrap">
@@ -464,9 +619,15 @@ function LookaheadImpact({
               <tr className="text-left" style={{ color: 'var(--ink-500)' }}>
                 <th className="label-micro text-[9px] font-normal pb-2 pr-3">Level</th>
                 <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Days</th>
-                <th className="label-micro text-[9px] font-normal pb-2 pr-3" style={{ width: '24%' }}>Incidents / day</th>
-                <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Delay / day</th>
-                <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right" title="Full + part cancellations per day at this level">Cancels / day</th>
+                <th className="label-micro text-[9px] font-normal pb-2 pr-3" style={{ width: '24%' }}>
+                  <span className="inline-flex items-center gap-1.5">Incidents / day <PinButton onPin={pinLevelMetric('Incidents', 'count', s => s.incRate)} label="Pin incidents-by-level to Briefing" /></span>
+                </th>
+                <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">
+                  <span className="inline-flex items-center gap-1.5">Delay / day <PinButton onPin={pinLevelMetric('Delay minutes', 'mins', s => s.delayRate)} label="Pin delay-by-level to Briefing" /></span>
+                </th>
+                <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right" title="Full + part cancellations per day at this level">
+                  <span className="inline-flex items-center gap-1.5">Cancels / day <PinButton onPin={pinLevelMetric('Cancellations', 'count', s => s.cancRate)} label="Pin cancellations-by-level to Briefing" /></span>
+                </th>
                 <th className="label-micro text-[9px] font-normal pb-2 pr-3 text-right">Incident lift</th>
                 <th className="label-micro text-[9px] font-normal pb-2 text-right">Delay lift</th>
               </tr>
@@ -541,7 +702,35 @@ function LookaheadImpact({
         </div>
       </div>
 
-      {/* ── 2 · Category mix by level ───────────────────────────────────────── */}
+      {/* ── 2 · Duration effect ─────────────────────────────────────────────── */}
+      {streaks.multiDay && (
+        <div className="card p-5">
+          <div className="mb-4 flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Duration Effect — Consecutive Days at Extreme</h3>
+              <p className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
+                Per-day rates by position within an Extreme spell{regionSuffix} — does pressure build the longer it runs? Day-count per position under each axis
+              </p>
+            </div>
+            <PinButton onPin={pinDuration} />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+            <StreakPanel label="Incidents / day"     values={streaks.incRates}    nDays={streaks.nDays} positions={streaks.positions} unit="count" />
+            <StreakPanel label="Delay minutes / day" values={streaks.delayRates}  nDays={streaks.nDays} positions={streaks.positions} unit="mins" />
+            <StreakPanel label="Train defects / day" values={streaks.defectRates} nDays={streaks.nDays} positions={streaks.positions} unit="count" />
+          </div>
+          <div className="flex items-start gap-2 mt-3">
+            <Info size={11} style={{ color: 'var(--ink-500)', flexShrink: 0, marginTop: 1 }} />
+            <span className="text-[10px]" style={{ color: 'var(--ink-500)' }}>
+              A missing statement breaks a streak. Middle positions can be a handful of days — treat as indicative
+              until more spells accumulate. A fall-off in long spells is consistent with the route adapting
+              (amber working, heat speed restrictions) rather than the weather easing.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ── 3 · Category mix by level ───────────────────────────────────────── */}
       <div className="card p-5">
         <div className="mb-4">
           <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Category Mix by Weather Level</h3>
@@ -655,7 +844,9 @@ function LookaheadImpact({
                   const delayLift = r.delayRateWithout > 0 ? r.delayRateWith / r.delayRateWithout : null
                   return (
                     <tr key={r.risk} className="border-t" style={{ borderColor: 'var(--line)' }}>
-                      <td className="py-2.5 pr-3" style={{ color: 'var(--ink-200)' }}>{r.risk}</td>
+                      <td className="py-2.5 pr-3" style={{ color: 'var(--ink-200)' }}>
+                        <span className="inline-flex items-center gap-2">{r.risk} <PinButton onPin={pinRisk(r)} label={`Pin ${r.risk} impact to Briefing`} /></span>
+                      </td>
                       <td className="py-2.5 pr-3 text-right numeric-mono" style={{ color: 'var(--ink-300)' }}>
                         {r.daysWith.toLocaleString()}
                       </td>
@@ -696,12 +887,14 @@ export function WeatherTab({
   lookahead = [],
   windowFrom,
   windowTo,
+  onPin,
 }: {
   incidents:   IncidentRow[]
   weatherData: WeatherDay[]
   lookahead?:  WeatherLookaheadDay[]
   windowFrom:  string
   windowTo:    string
+  onPin?:      (draft: PinDraft) => void
 }) {
   const [metricKey, setMetricKey] = useState<WxMetricKey>('rain')
 
@@ -862,6 +1055,7 @@ export function WeatherTab({
         incidents={incidents}
         windowFrom={windowFrom}
         windowTo={windowTo}
+        onPin={onPin}
       />
 
       {/* ═══ Observed weather (Open-Meteo) ═══════════════════════════════════ */}
