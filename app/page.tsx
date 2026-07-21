@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, BookOpen, CalendarDays, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, ClipboardList, Clock, Cloud, Compass, Crosshair, Download, FileText, Filter, Flag, FlaskConical,
-  Gauge, GitBranch, GitCompare, Layers, List, MapPin, Minus, Monitor, Moon, RefreshCw, Route, Search, StickyNote,
+  Gauge, GitBranch, GitCompare, Layers, List, MapPin, Minus, Monitor, Moon, Pin, RefreshCw, Route, Search, StickyNote,
   Sun, Table2, TrendingDown, TrendingUp, Train, Trash2, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -76,9 +76,11 @@ import { buildReportPlan } from '@/lib/reports/builder'
 import { renderReportDocument } from '@/lib/reports/html'
 import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/print'
 import { serialiseControlPmcCsv, controlPmcCsvFilename } from '@/lib/reports/controlPmc'
+import { addPin, describeFilters as describePinFilters, PinDraft, KpiPinPayload, TimelinePinPayload } from '@/lib/briefing'
 import { DistillationTab } from './distillation-tab'
 import { FocusTab } from './focus-tab'
-import { WeatherTab } from './weather-tab'
+import { WeatherTab, PinButton } from './weather-tab'
+import { BriefingTab } from './briefing-tab'
 import { PerformanceFeedPanel } from './performance-feed'
 import { PerformanceAnalyticsPanel } from './performance-analytics'
 import { SearchTab } from './search-tab'
@@ -93,7 +95,7 @@ import { QualityTab } from './quality-tab'
 type Tab =
   | 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes'
   | 'trends' | 'explore' | 'analytics' | 'weather' | 'calendar' | 'compare' | 'pivot' | 'search'
-  | 'focus' | 'review' | 'reports' | 'distillation' | 'notebook' | 'quality'
+  | 'focus' | 'review' | 'reports' | 'briefing' | 'distillation' | 'notebook' | 'quality'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -113,6 +115,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'focus',        label: 'Focus',        icon: Crosshair },
   { id: 'review',       label: 'Review',       icon: ClipboardCheck },
   { id: 'reports',      label: 'Reports',      icon: FileText },
+  { id: 'briefing',     label: 'Briefing',     icon: Pin },
   { id: 'distillation', label: 'Distillation', icon: FlaskConical },
   { id: 'notebook',     label: 'Notebook',     icon: StickyNote },
   { id: 'quality',      label: 'Quality',      icon: Gauge },
@@ -556,6 +559,33 @@ export default function InsightDashboard() {
     clearFiltersFromUrl()
   }
 
+  // ─── Briefing pins ─────────────────────────────────────────────────────────
+  // Pin sites hand over a draft (kind, claim, payload); this submitter stamps
+  // it with the active window, a human-readable filter summary, and an
+  // epoch-seeded position so new pins land at the end of the composer order.
+  const [pinToast, setPinToast] = useState(0)
+  useEffect(() => {
+    if (!pinToast) return
+    const t = setTimeout(() => setPinToast(0), 2000)
+    return () => clearTimeout(t)
+  }, [pinToast])
+
+  const handlePin = (draft: PinDraft) => {
+    if (!isSupabaseConfigured() || demoMode || !effectiveData) return
+    addPin({
+      kind: draft.kind,
+      title: draft.title,
+      comment: draft.comment ?? null,
+      source_label: draft.source_label ?? null,
+      window_from: effectiveData.windowFrom,
+      window_to: effectiveData.windowTo,
+      filters_summary: describePinFilters(filters),
+      payload: draft.payload,
+      position: Math.floor(Date.now() / 1000),
+    }).then(pin => { if (pin) setPinToast(Date.now()) })
+  }
+  const pinsEnabled = isSupabaseConfigured() && !demoMode
+
   // ─── Review-tab data fetch ─────────────────────────────────────────────────
   // Resolves the same window the analytics tabs use, but bypasses category /
   // severity / search filters so the SNDM sees every incident in the period.
@@ -790,7 +820,7 @@ export default function InsightDashboard() {
 
         {kpis && effectiveData && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} annotations={dateAnnotations.map(a => ({ date: a.anchor, note: a.note }))} lookahead={lookahead} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} annotations={dateAnnotations.map(a => ({ date: a.anchor, note: a.note }))} lookahead={lookahead} onPin={pinsEnabled ? handlePin : undefined} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={effectiveData} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
             {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} metricFocus={filters.metricFocus} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={effectiveData.incidents} onDrillDown={setDrillDown} />}
@@ -800,7 +830,7 @@ export default function InsightDashboard() {
             {tab === 'trends'      && <TrendsTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowDays={effectiveData.windowDays} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'explore'     && <ExploreTab incidents={effectiveData.incidents} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} />}
-            {tab === 'weather'     && <WeatherTab incidents={effectiveData.incidents} weatherData={weatherData} lookahead={lookahead} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
+            {tab === 'weather'     && <WeatherTab incidents={effectiveData.incidents} weatherData={weatherData} lookahead={lookahead} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onPin={pinsEnabled ? handlePin : undefined} />}
             {tab === 'calendar'    && <CalendarTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onDrillDown={setDrillDown} />}
             {tab === 'compare'     && <CompareTab demoMode={demoMode} />}
             {tab === 'pivot'       && <PivotTab incidents={effectiveData.incidents} />}
@@ -831,6 +861,7 @@ export default function InsightDashboard() {
                   </>
             )}
             {tab === 'reports'      && <ReportsTab data={effectiveData} filters={filters} demoMode={demoMode} />}
+            {tab === 'briefing'     && <BriefingTab supabaseConfigured={isSupabaseConfigured()} demoMode={demoMode} />}
             {tab === 'distillation' && <DistillationTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
           </>
         )}
@@ -842,6 +873,15 @@ export default function InsightDashboard() {
           incidents={drillDown.incidents}
           onClose={() => setDrillDown(null)}
         />
+      )}
+
+      {pinToast > 0 && (
+        <div
+          className="fixed bottom-6 right-6 z-50 px-3 py-2 rounded border text-xs flex items-center gap-2 animate-fade-up"
+          style={{ background: 'var(--bg-card-hi)', borderColor: 'var(--nr-green)', color: 'var(--nr-green)', fontFamily: 'JetBrains Mono, monospace' }}
+        >
+          <Pin size={12} /> Pinned to Briefing
+        </div>
       )}
 
       <FilterDrawer
@@ -1240,7 +1280,7 @@ function HypothesisRow({ h, maxLift, onClick }: {
   )
 }
 
-function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, annotations, lookahead }: any) {
+function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, annotations, lookahead, onPin }: any) {
   // Timeline context: band the date axis by that day's operational weather
   // level so spikes can be read against the classification at a glance.
   // Normal (GREEN) days stay unbanded — only elevated levels are shaded.
@@ -1261,6 +1301,30 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
   }
   const hasBands = weatherBands.length > 0
 
+  // KPI pin helper — captures the formatted value + delta as a self-contained
+  // snapshot; the page-level submitter adds window/filter context.
+  const kpiPin = onPin
+    ? (label: string, value: string, deltaPct: number | null, deltaInverted: boolean, caption?: string) =>
+        () => onPin({
+          kind: 'kpi', title: label,
+          source_label: 'Overview · KPI',
+          payload: { value, deltaPct, deltaInverted, caption } as KpiPinPayload,
+        })
+    : () => undefined
+
+  const timelinePin = onPin
+    ? () => onPin({
+        kind: 'timeline',
+        title: 'Daily incidents, banded by operational weather level',
+        source_label: 'Overview · Daily Activity',
+        payload: {
+          days: trendWx.map((p: any) => ({
+            date: p.date, incidents: p.incidents, delayMins: Math.round(p.delayMins), level: p.weatherLevel ?? null,
+          })),
+        } as TimelinePinPayload,
+      })
+    : undefined
+
   return (
     <div className="space-y-6">
 
@@ -1273,6 +1337,7 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           deltaInverted
           decompose={decompose}
           metric="incidents"
+          onPin={kpiPin('Total Incidents', kpis.totalIncidents.toLocaleString(), kpis.incidentsDeltaPct, true)}
           onListClick={() => onDrillDown({
             title: 'All Incidents',
             incidents: [...incidents].sort((a: any, b: any) => b.report_date.localeCompare(a.report_date)),
@@ -1287,6 +1352,7 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           accent
           decompose={decompose}
           metric="delay"
+          onPin={kpiPin('Total Delay', fmtMins(kpis.totalDelayMins), kpis.delayDeltaPct, true)}
         />
         <KPICard
           label="Safety-Critical"
@@ -1297,6 +1363,7 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           critical={kpis.safetyDeltaPct != null && kpis.safetyDeltaPct > 5}
           decompose={decompose}
           metric="safety"
+          onPin={kpiPin('Safety-Critical', kpis.safetyCriticalCount.toLocaleString(), kpis.safetyDeltaPct, true)}
         />
         <KPICard
           label="Avg Incident Duration"
@@ -1304,25 +1371,28 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
           delta={kpis.durationDeltaPct}
           icon={Clock}
           deltaInverted
+          onPin={kpis.avgIncidentDuration ? kpiPin('Avg Incident Duration', fmtMins(Math.round(kpis.avgIncidentDuration)), kpis.durationDeltaPct, true) : undefined}
         />
         <KPICard
           label="Trains Delayed"
           value={kpis.totalTrainsDelayed != null ? kpis.totalTrainsDelayed.toLocaleString() : '—'}
           icon={Train}
           deltaInverted
+          onPin={kpis.totalTrainsDelayed != null ? kpiPin('Trains Delayed', kpis.totalTrainsDelayed.toLocaleString(), null, true) : undefined}
         />
         <KPICard
           label="Arrival SLA (≤45 min)"
           value={kpis.slaCompliancePct != null ? `${kpis.slaCompliancePct.toFixed(1)}%` : '—'}
           delta={kpis.slaBreachDeltaPct != null ? -kpis.slaBreachDeltaPct : null}
           icon={Clock}
+          onPin={kpis.slaCompliancePct != null ? kpiPin('Arrival SLA (≤45 min)', `${kpis.slaCompliancePct.toFixed(1)}%`, kpis.slaBreachDeltaPct != null ? -kpis.slaBreachDeltaPct : null, false, 'share of incidents where the responder arrived inside 45 minutes') : undefined}
         />
       </div>
 
       {/* Trend + breakdown row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card title="Daily Activity" subtitle={`${trend.length}-day rolling window · stability band shaded${hasBands ? ' · axis banded by operational weather level' : ''}`} className="lg:col-span-2 tick-corners"
-              right={<ChartTypeToggle value={chart} onChange={setChart} />}>
+              right={<div className="flex items-center gap-2">{timelinePin && <PinButton onPin={timelinePin} label="Pin this timeline to Briefing" />}<ChartTypeToggle value={chart} onChange={setChart} /></div>}>
           <TrendChart data={trendWx} kind={chart} onDateClick={onDateClick} changePoints={changePoints} showBaseline annotations={annotations} weatherBands={weatherBands} />
           {hasBands && (
             <div className="flex items-center gap-4 mt-2 flex-wrap">
@@ -2782,7 +2852,8 @@ function Card({ title, subtitle, children, className = '', right }: any) {
   )
 }
 
-function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, critical, accent, decompose, metric, onListClick }: any) {
+function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, critical, accent, decompose, metric, onListClick, onPin }: any) {
+  const [justPinned, setJustPinned] = useState(false)
   // delta: positive = up, negative = down. deltaInverted: up is bad (more delay = bad)
   const deltaColor = delta == null ? 'var(--ink-400)'
     : (delta > 0) === !!deltaInverted ? 'var(--nr-red)' : 'var(--nr-green)'
@@ -2809,6 +2880,17 @@ function KPICard({ label, value, subValue, delta, icon: Icon, deltaInverted, cri
       <div className="flex items-center justify-between mb-3">
         <span className="label-micro">{label}</span>
         <div className="flex items-center gap-1.5">
+          {onPin && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onPin(); setJustPinned(true); setTimeout(() => setJustPinned(false), 1600) }}
+              title="Pin this KPI to the Briefing"
+              className={`transition-opacity ${justPinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'}`}
+              style={{ background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}
+            >
+              <Pin size={12} style={{ color: justPinned ? 'var(--nr-green)' : 'var(--ink-400)' }} />
+            </button>
+          )}
           {onListClick && (
             <List size={12} className="opacity-0 group-hover:opacity-60 transition-opacity" style={{ color: 'var(--ink-400)' }} />
           )}

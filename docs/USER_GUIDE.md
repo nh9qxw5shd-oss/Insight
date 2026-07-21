@@ -291,10 +291,13 @@ enough to isolate the population you want to study.
 
 - **Weather** — two blocks. *Operational statement* (weather_lookahead): a
   per-day level timeline (hover for risks, the source statement and its
-  provenance), impact-by-level and impact-by-risk-type tables and a category
-  mix by level — every figure normalised **per day at that level**, never raw
-  totals, because day counts per level are very unequal; a Route / East
-  Midlands / London North toggle reclassifies days by the regional level.
+  provenance), impact-by-level and impact-by-risk-type tables, a **Duration
+  Effect** panel (per-day rates by *consecutive day at Extreme* — whether
+  pressure builds as a spell runs, and whether long spells settle as the
+  route adapts) and a category mix by level — every figure normalised
+  **per day at that level**, never raw totals, because day counts per level
+  are very unequal; a Route / East Midlands / London North toggle
+  reclassifies days by the regional level.
   *Observed weather* (Open-Meteo): condition-impact table (incident and delay
   rate per area-day vs the Clear/Dry baseline, with lift), a category ×
   condition matrix, a threshold explorer (rainfall / wind / temperature
@@ -548,6 +551,59 @@ Saving requires a **live Supabase connection** and **real data**:
 
 ---
 
+## 4. Building a one-page executive brief (Briefing tab)
+
+The Briefing tab turns findings you spot anywhere in Insight into a single
+rich page an exec can read in five minutes — claims in plain English, every
+number carrying its comparison and its provenance.
+
+### 4.1 Pinning a finding
+
+Wherever you see a small **PIN** control, pressing it captures that finding:
+
+| Where | What gets pinned |
+|---|---|
+| **Overview** — KPI cards (hover a card, pin icon top-right) | The headline number plus its % change vs the previous window |
+| **Overview** — Daily Activity chart header | The full daily timeline, banded by that day's weather level |
+| **Weather** — Impact by Weather Level column headers | That metric's per-day rate at each level (Normal → Extreme), with lift vs Normal |
+| **Weather** — Impact by Risk Type rows | That risk's incidents/delay per day on risk days vs statement days without it |
+| **Weather** — Duration Effect header | The consecutive-day escalation curves (incidents, delay, train defects per day by position in an Extreme spell) |
+
+Every pin snapshots the **numbers**, the **window**, and the **active
+filters** at the moment you pressed it — so the brief stays honest even after
+the live window moves on, and a finding read under filters says so. Pins are
+stored in the shared database: colleagues see the same working set.
+
+### 4.2 Composing
+
+Open **Briefing**. Each pin is an evidence card: edit the claim text, add an
+optional supporting sentence, reorder with the arrows, delete what you don't
+need. Add a **headline**, an optional scope line, and two or three sentences
+of narrative ("what this means"). The headline and narrative are your local
+draft; the pins themselves are shared.
+
+### 4.3 Exporting
+
+- **Print / PDF** — opens the composed brief and invokes the print dialog;
+  "Save as PDF" gives the one-pager.
+- **HTML** — downloads the same page as a file for forwarding.
+
+Consecutive KPI pins merge into a headline stat strip; level / risk /
+incident cards flow into a two-column grid; timeline and duration panels run
+full-width — all in the order you set. Every export carries a fixed method
+footnote (per-day normalisation, delay conventions, correlation caveat).
+
+### 4.4 A worked example
+
+During a heatwave: pin **Total Incidents** and **Total Delay** on Overview,
+pin the **Daily Activity** timeline, then on Weather pin **Incidents / day**
+and **Delay / day** from the level table, the **Max Temp** row from the risk
+table, and the **Duration Effect** panel. Open Briefing, headline it
+*"Fourteen days at Extreme"*, write three sentences, press **Print / PDF** —
+that is the whole workflow.
+
+---
+
 ## Quick reference
 
 | I want to… | Go to |
@@ -565,6 +621,7 @@ Saving requires a **live Supabase connection** and **real data**:
 | Do precision multi-criteria filtering | **Distillation** tab |
 | Review incidents as an SNDM | **Review** tab |
 | Produce a formatted report | **Reports** tab |
+| Pin findings & build a one-page exec brief | **PIN** controls → **Briefing** tab |
 
 ---
 

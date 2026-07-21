@@ -83,6 +83,30 @@ export function lookaheadProvenance(d: WeatherLookaheadDay): string {
   return 'unknown source'
 }
 
+// Position of each qualifying date within its run of consecutive calendar
+// days (1 = first day of a spell). A date that fails the predicate — or a
+// missing statement creating a calendar gap — breaks the streak. Drives the
+// "does pressure build with duration?" analysis.
+export function streakPositions(
+  days: WeatherLookaheadDay[],
+  qualifies: (d: WeatherLookaheadDay) => boolean,
+): Map<string, number> {
+  const sorted = [...days].sort((a, b) => a.weather_date.localeCompare(b.weather_date))
+  const out = new Map<string, number>()
+  let prevDate: string | null = null
+  let prevPos = 0
+  for (const d of sorted) {
+    if (!qualifies(d)) { prevDate = null; prevPos = 0; continue }
+    const expectedPrev = new Date(new Date(d.weather_date + 'T00:00:00Z').getTime() - 86_400_000)
+      .toISOString().slice(0, 10)
+    const pos = prevDate === expectedPrev ? prevPos + 1 : 1
+    out.set(d.weather_date, pos)
+    prevDate = d.weather_date
+    prevPos = pos
+  }
+  return out
+}
+
 // Does this date's statement satisfy the active weather filters? Levels match
 // on overall_level; risks match `risk IN risk_types` (multiple selections OR
 // together). A date with no row never qualifies while a filter is active.
