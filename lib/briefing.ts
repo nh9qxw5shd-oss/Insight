@@ -11,7 +11,9 @@ import { WeatherLevel, weatherLevelLabel, LOOKAHEAD_COVERAGE_START } from './wea
 // it through the existing print pipeline. Snapshots are stored whole so a
 // brief renders identically later, even after the live window moves on.
 
-export type PinKind = 'kpi' | 'timeline' | 'level-impact' | 'risk-impact' | 'duration' | 'incident'
+export type PinKind =
+  | 'kpi' | 'timeline' | 'level-impact' | 'risk-impact' | 'duration' | 'incident'
+  | 'ranking' | 'heatmap' | 'scatter' | 'profile'
 
 export interface KpiPinPayload {
   value: string                 // formatted headline value, e.g. "74,381 min"
@@ -21,7 +23,10 @@ export interface KpiPinPayload {
 }
 
 export interface TimelinePinPayload {
-  days: { date: string; incidents: number; delayMins: number; level: WeatherLevel | null }[]
+  days: { date: string; incidents: number; delayMins: number; level: WeatherLevel | null; t3?: number | null }[]
+  // Route T3 % context: t3 per day is the previous-day end-of-day figure
+  // from the 05:30 messaging snapshot (metrics_for_date attribution).
+  t3Target?: number | null
 }
 
 export interface LevelImpactPinPayload {
@@ -44,6 +49,46 @@ export interface DurationPinPayload {
   positions: string[]           // "Day 1" … "Day 5+"
   nDays: number[]               // sample size per position
   panels: { label: string; values: number[]; unit: 'count' | 'mins' }[]
+}
+
+export interface RankingPinPayload {
+  valueLabel: string            // "Delay minutes", "Incidents"
+  unit: 'count' | 'mins'
+  rows: { label: string; value: number; secondary?: string }[]
+}
+
+export interface HeatmapPinPayload {
+  // rows[dow][hour] — dow 0=Sun … 6=Sat, hour 0–23
+  rows: number[][]
+  cellLabel: string             // what a cell counts, e.g. "incidents"
+}
+
+export interface ScatterPinPayload {
+  xLabel: string
+  yLabel: string
+  points: { x: number; y: number }[]   // capped at capture time (~400)
+  note?: string
+}
+
+export interface ProfileTier {
+  label: string
+  n: number
+  per30d: number
+  medianDelay: number | null
+  meanDelay: number | null
+  p90Delay: number | null
+  medianDuration: number | null
+  medianArrival: number | null
+  cancelsPerInc: number | null
+  note?: string
+}
+
+export interface ProfilePinPayload {
+  typeLabel: string
+  location: string
+  radiusMiles: number | null      // null = anchor location not geocodable
+  tiers: ProfileTier[]
+  narrative: string | null
 }
 
 export interface IncidentPinPayload {
@@ -214,14 +259,20 @@ function renderKpiStrip(pins: BriefingPin[]): string {
 }
 
 function renderTimeline(pin: BriefingPin): string {
-  const days = (pin.payload as TimelinePinPayload).days ?? []
+  const payload = pin.payload as TimelinePinPayload
+  const days = payload.days ?? []
   if (!days.length) return ''
+  const hasT3 = days.some(d => d.t3 != null)
   const W = 860, top = 14, plotH = 120, stripY = top + plotH + 8, stripH = 9, axisY = stripY + stripH + 14
-  const H = axisY + 8, padL = 30, padR = 6
+  const H = axisY + 8, padL = 30, padR = hasT3 ? 34 : 6
   const n = days.length, maxV = Math.max(...days.map(d => d.incidents), 1)
   const bw = (W - padL - padR) / n
   const x = (i: number) => padL + i * bw
   const y = (v: number) => top + plotH - (v / maxV) * plotH
+  // Route T3 % rides a right-hand percentage scale (40–100) so the overlay
+  // never collides with incident counts on the left axis.
+  const T3_MIN = 40
+  const yT3 = (v: number) => top + plotH - ((Math.max(T3_MIN, v) - T3_MIN) / (100 - T3_MIN)) * plotH
   let s = `<svg viewBox="0 0 ${W} ${H}" role="img">`
   const step = maxV > 60 ? 25 : 10
   for (let g = step; g < maxV; g += step) {
@@ -230,10 +281,29 @@ function renderTimeline(pin: BriefingPin): string {
   }
   days.forEach((d, i) => {
     const bh = (d.incidents / maxV) * plotH
-    s += `<rect x="${x(i) + 1}" y="${y(d.incidents)}" width="${Math.max(1, bw - 2)}" height="${bh}" rx="1.5" fill="${C.accent}" opacity="${d.level === 'EXTREME' ? 0.95 : 0.55}"><title>${fmtShortDate(d.date)} · ${d.incidents} incidents · ${Math.round(d.delayMins).toLocaleString()} delay min · ${d.level ? weatherLevelLabel(d.level) : 'no statement'}</title></rect>`
+    s += `<rect x="${x(i) + 1}" y="${y(d.incidents)}" width="${Math.max(1, bw - 2)}" height="${bh}" rx="1.5" fill="${C.accent}" opacity="${d.level === 'EXTREME' ? 0.95 : 0.55}"><title>${fmtShortDate(d.date)} · ${d.incidents} incidents · ${Math.round(d.delayMins).toLocaleString()} delay min · ${d.level ? weatherLevelLabel(d.level) : 'no statement'}${d.t3 != null ? ` · Route T3 ${d.t3.toFixed(1)}%` : ''}</title></rect>`
   })
   const peak = days.reduce((a, d, i) => (d.incidents > days[a].incidents ? i : a), 0)
   s += `<text x="${Math.min(W - 40, Math.max(padL + 20, x(peak) + bw / 2))}" y="${Math.max(10, y(days[peak].incidents) - 5)}" text-anchor="middle" font-size="9.5" fill="${C.ink2}" font-family='${MONO}'>${days[peak].incidents} · ${fmtShortDate(days[peak].date)}</text>`
+  if (hasT3) {
+    // right axis ticks
+    for (const v of [50, 75, 100]) {
+      s += `<text x="${W - padR + 6}" y="${yT3(v) + 3}" text-anchor="start" font-size="9" fill="${C.ink3}" font-family='${MONO}'>${v}%</text>`
+    }
+    if (payload.t3Target != null) {
+      s += `<line x1="${padL}" x2="${W - padR}" y1="${yT3(payload.t3Target)}" y2="${yT3(payload.t3Target)}" stroke="#4A6FA5" stroke-width="1" stroke-dasharray="2 4" opacity="0.6"/>`
+    }
+    // polyline segments, broken at missing days
+    let path = ''
+    let pen = false
+    days.forEach((d, i) => {
+      if (d.t3 == null) { pen = false; return }
+      const cmd = pen ? 'L' : 'M'
+      path += `${cmd}${(x(i) + bw / 2).toFixed(1)} ${yT3(d.t3).toFixed(1)} `
+      pen = true
+    })
+    s += `<path d="${path.trim()}" fill="none" stroke="#4A6FA5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`
+  }
   days.forEach((d, i) => {
     s += `<rect x="${x(i) + 0.5}" y="${stripY}" width="${Math.max(1, bw - 1)}" height="${stripH}" fill="${d.level ? LEVEL_C[d.level] : C.line}"/>`
   })
@@ -245,6 +315,7 @@ function renderTimeline(pin: BriefingPin): string {
   const legend = (['GREEN', 'AWARE', 'ADVERSE', 'EXTREME'] as WeatherLevel[])
     .map(l => `<span><span class="sw" style="background:${LEVEL_C[l]}"></span>${weatherLevelLabel(l)}</span>`)
     .join('')
+    + (hasT3 ? `<span><span class="sw" style="background:#4A6FA5;height:3px;border-radius:2px"></span>Route T3 % — previous-day 05:30 figure, right axis${payload.t3Target != null ? ` (target ${payload.t3Target}%)` : ''}</span>` : '')
   return `<div class="card">
     <h3>${esc(pin.title)}</h3>
     ${commentHtml(pin)}
@@ -343,6 +414,120 @@ function renderIncident(pin: BriefingPin): string {
   </div>`
 }
 
+function renderRanking(pin: BriefingPin): string {
+  const p = pin.payload as RankingPinPayload
+  const rows = (p.rows ?? []).slice(0, 10)
+  if (!rows.length) return ''
+  const max = Math.max(...rows.map(r => r.value), 0.0001)
+  const fv = (v: number) => (p.unit === 'mins' ? fmtMinsFull(v) : Math.round(v).toLocaleString())
+  const bars = rows.map(r =>
+    `<div class="lvrow rank"><span class="lbl" title="${esc(r.label)}">${esc(r.label)}</span>` +
+    `<span class="bar"><i style="width:${(r.value / max) * 100}%;background:${C.accent}"></i></span>` +
+    `<span class="val">${fv(r.value)}${r.secondary ? `<em class="sec">${esc(r.secondary)}</em>` : ''}</span></div>`,
+  ).join('')
+  return `<div class="card finding">
+    <h3>${esc(pin.title)}</h3>
+    ${commentHtml(pin)}
+    <div class="lvbars mono" style="margin-top:11px">${bars}</div>
+    <div class="ctx" style="margin-top:8px">${esc(p.valueLabel)} per location, largest first.</div>
+    ${provenance(pin)}
+  </div>`
+}
+
+function renderHeatmap(pin: BriefingPin): string {
+  const p = pin.payload as HeatmapPinPayload
+  const rows = p.rows ?? []
+  if (rows.length !== 7) return ''
+  const max = Math.max(...rows.flat(), 1)
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  const cell = 30, gap = 3, padL = 40, padT = 6
+  const W = padL + 24 * (cell + gap), H = padT + 7 * (cell + gap) + 22
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img">`
+  rows.forEach((row, dow) => {
+    s += `<text x="${padL - 8}" y="${padT + dow * (cell + gap) + cell / 2 + 3}" text-anchor="end" font-size="10" fill="${C.ink2}" font-family='${MONO}'>${DOW[dow]}</text>`
+    row.forEach((v, h) => {
+      const alpha = v > 0 ? 0.12 + 0.88 * (v / max) : 0
+      s += `<rect x="${padL + h * (cell + gap)}" y="${padT + dow * (cell + gap)}" width="${cell}" height="${cell}" rx="3" `
+         + `fill="${v > 0 ? C.accent : C.line}" opacity="${v > 0 ? alpha.toFixed(2) : 0.5}">`
+         + `<title>${DOW[dow]} ${String(h).padStart(2, '0')}:00 · ${v} ${esc(p.cellLabel)}</title></rect>`
+    })
+  })
+  for (let h = 0; h < 24; h += 3) {
+    s += `<text x="${padL + h * (cell + gap) + cell / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="${C.ink3}" font-family='${MONO}'>${String(h).padStart(2, '0')}</text>`
+  }
+  s += `</svg>`
+  return `<div class="card">
+    <h3>${esc(pin.title)}</h3>
+    ${commentHtml(pin)}
+    <div style="margin-top:10px">${s}</div>
+    <div class="ctx" style="margin-top:6px">Darker cells carry more ${esc(p.cellLabel)} · peak cell: ${max}.</div>
+    ${provenance(pin)}
+  </div>`
+}
+
+function renderScatter(pin: BriefingPin): string {
+  const p = pin.payload as ScatterPinPayload
+  const pts = (p.points ?? []).filter(q => isFinite(q.x) && isFinite(q.y))
+  if (!pts.length) return ''
+  const W = 860, H = 300, padL = 56, padR = 14, padT = 12, padB = 40
+  const maxX = Math.max(...pts.map(q => q.x)) * 1.04
+  const maxY = Math.max(...pts.map(q => q.y)) * 1.06
+  const x = (v: number) => padL + (v / maxX) * (W - padL - padR)
+  const y = (v: number) => padT + (1 - v / maxY) * (H - padT - padB)
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img">`
+  for (let i = 1; i <= 4; i++) {
+    const gy = padT + (i / 4) * (H - padT - padB)
+    const val = Math.round(maxY * (1 - i / 4))
+    s += `<line x1="${padL}" x2="${W - padR}" y1="${gy}" y2="${gy}" stroke="${C.line}" stroke-width="1"/>`
+       + `<text x="${padL - 8}" y="${gy + 3}" text-anchor="end" font-size="9" fill="${C.ink3}" font-family='${MONO}'>${val.toLocaleString()}</text>`
+  }
+  for (let i = 0; i <= 4; i++) {
+    const vx = maxX * (i / 4)
+    s += `<text x="${x(vx)}" y="${H - padB + 16}" text-anchor="middle" font-size="9" fill="${C.ink3}" font-family='${MONO}'>${Math.round(vx).toLocaleString()}</text>`
+  }
+  pts.forEach(q => {
+    s += `<circle cx="${x(q.x).toFixed(1)}" cy="${y(q.y).toFixed(1)}" r="3.5" fill="${C.accent}" opacity="0.45"/>`
+  })
+  s += `<text x="${(padL + W - padR) / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="${C.ink2}" font-family='${MONO}'>${esc(p.xLabel)}</text>`
+     + `<text x="12" y="${(padT + H - padB) / 2}" text-anchor="middle" font-size="10" fill="${C.ink2}" font-family='${MONO}' transform="rotate(-90 12 ${(padT + H - padB) / 2})">${esc(p.yLabel)}</text>`
+  s += `</svg>`
+  return `<div class="card">
+    <h3>${esc(pin.title)}</h3>
+    ${commentHtml(pin)}
+    <div style="margin-top:10px">${s}</div>
+    ${p.note ? `<div class="ctx" style="margin-top:6px">${esc(p.note)}</div>` : ''}
+    ${provenance(pin)}
+  </div>`
+}
+
+function renderProfile(pin: BriefingPin): string {
+  const p = pin.payload as ProfilePinPayload
+  const tiers = p.tiers ?? []
+  if (!tiers.length) return ''
+  const num = (v: number | null, f: (x: number) => string) => (v == null ? '—' : f(v))
+  const rows = tiers.map(t => `<tr>
+    <td class="tierlbl">${esc(t.label)}${t.note ? `<div class="tiernote">${esc(t.note)}</div>` : ''}</td>
+    <td>${t.n.toLocaleString()}</td>
+    <td>${t.per30d.toFixed(1)}</td>
+    <td>${num(t.medianDelay, x => fmtMinsFull(x))}</td>
+    <td>${num(t.meanDelay, x => fmtMinsFull(x))}</td>
+    <td>${num(t.p90Delay, x => fmtMinsFull(x))}</td>
+    <td>${num(t.medianDuration, x => fmtMinsFull(x))}</td>
+    <td>${num(t.medianArrival, x => fmtMinsFull(x))}</td>
+    <td>${num(t.cancelsPerInc, x => x.toFixed(1))}</td>
+  </tr>`).join('')
+  return `<div class="card">
+    <h3>${esc(pin.title)}</h3>
+    ${p.narrative ? `<p class="ctx" style="font-size:12.5px;max-width:78ch">${esc(p.narrative)}</p>` : ''}
+    ${commentHtml(pin)}
+    <div style="overflow-x:auto;margin-top:11px"><table class="proftable mono">
+      <thead><tr><th>Scope</th><th>n</th><th>/30d</th><th>Median delay</th><th>Mean</th><th>P90</th><th>Duration</th><th>Arrival</th><th>Cancels/inc</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    ${provenance(pin)}
+  </div>`
+}
+
 export interface BriefingMeta {
   title: string
   subtitle?: string
@@ -365,16 +550,27 @@ export function buildBriefingHtml(meta: BriefingMeta, pins: BriefingPin[]): stri
       blocks.push(renderKpiStrip(group))
       continue
     }
-    if (pin.kind === 'level-impact' || pin.kind === 'risk-impact' || pin.kind === 'incident') {
+    if (['level-impact', 'risk-impact', 'incident', 'ranking'].includes(pin.kind)) {
       const group: string[] = []
-      while (i < ordered.length && ['level-impact', 'risk-impact', 'incident'].includes(ordered[i].kind)) {
+      while (i < ordered.length && ['level-impact', 'risk-impact', 'incident', 'ranking'].includes(ordered[i].kind)) {
         const p2 = ordered[i++]
-        group.push(p2.kind === 'level-impact' ? renderLevelImpact(p2) : p2.kind === 'risk-impact' ? renderRiskImpact(p2) : renderIncident(p2))
+        group.push(
+          p2.kind === 'level-impact' ? renderLevelImpact(p2) :
+          p2.kind === 'risk-impact'  ? renderRiskImpact(p2) :
+          p2.kind === 'ranking'      ? renderRanking(p2) :
+          renderIncident(p2),
+        )
       }
       blocks.push(`<div class="grid2">${group.join('')}</div>`)
       continue
     }
-    blocks.push(pin.kind === 'timeline' ? renderTimeline(pin) : renderDuration(pin))
+    blocks.push(
+      pin.kind === 'timeline' ? renderTimeline(pin) :
+      pin.kind === 'heatmap'  ? renderHeatmap(pin) :
+      pin.kind === 'scatter'  ? renderScatter(pin) :
+      pin.kind === 'profile'  ? renderProfile(pin) :
+      renderDuration(pin),
+    )
     i++
   }
 
@@ -410,11 +606,20 @@ export function buildBriefingHtml(meta: BriefingMeta, pins: BriefingPin[]): stri
   .prov { margin-top: 11px; padding-top: 8px; border-top: 1px solid ${C.line}; font-size: 9.5px; color: ${C.ink3}; letter-spacing: .04em; font-family: ${MONO}; }
   .lvbars { display: flex; flex-direction: column; gap: 5px; margin-top: 11px; }
   .lvrow { display: grid; grid-template-columns: 70px 1fr 48px; align-items: center; gap: 8px; font-size: 10.5px; }
+  .lvrow.rank { grid-template-columns: minmax(90px, 38%) 1fr auto; }
+  .lvrow.rank .lbl { text-transform: none; letter-spacing: 0; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lvrow .sec { color: ${C.ink3}; font-style: normal; margin-left: 6px; font-size: 9px; }
   .lvrow .lbl { color: ${C.ink2}; letter-spacing: .06em; text-transform: uppercase; font-size: 9.5px; }
   .lvrow .bar { height: 8px; border-radius: 2px 3px 3px 2px; background: ${C.line}; position: relative; overflow: hidden; }
   .lvrow .bar i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px 3px 3px 2px; }
   .lvrow .val { text-align: right; }
   .riskvals { font-size: 11.5px; } .riskvals em { color: ${C.ink3}; font-style: normal; }
+  .proftable { width: 100%; border-collapse: collapse; font-size: 10.5px; min-width: 640px; }
+  .proftable th { text-align: right; font-weight: 400; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: ${C.ink3}; padding: 0 8px 6px; }
+  .proftable th:first-child { text-align: left; padding-left: 0; }
+  .proftable td { text-align: right; padding: 6px 8px; border-top: 1px solid ${C.line}; }
+  .proftable td.tierlbl { text-align: left; padding-left: 0; color: ${C.ink1}; font-family: ${SANS}; font-size: 11.5px; }
+  .proftable .tiernote { font-size: 9px; color: ${C.ink3}; }
   .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; font-size: 10px; color: ${C.ink2}; }
   .legend span { display: inline-flex; align-items: center; gap: 5px; }
   .sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }

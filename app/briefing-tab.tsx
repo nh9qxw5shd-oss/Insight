@@ -24,6 +24,10 @@ const KIND_META: Record<PinKind, { label: string; color: string }> = {
   'risk-impact':  { label: 'Risk',      color: '#5B9EA0' },
   'duration':     { label: 'Duration',  color: '#9B59B6' },
   'incident':     { label: 'Incident',  color: 'var(--nr-red, #E74C3C)' },
+  'ranking':      { label: 'Ranking',   color: 'var(--nr-orange)' },
+  'heatmap':      { label: 'Heatmap',   color: '#9B59B6' },
+  'scatter':      { label: 'Scatter',   color: 'var(--nr-blue)' },
+  'profile':      { label: 'Profile',   color: '#5B9EA0' },
 }
 
 function fmtWindow(pin: BriefingPin): string {
