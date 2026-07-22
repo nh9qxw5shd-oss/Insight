@@ -23,7 +23,10 @@ export interface KpiPinPayload {
 }
 
 export interface TimelinePinPayload {
-  days: { date: string; incidents: number; delayMins: number; level: WeatherLevel | null }[]
+  days: { date: string; incidents: number; delayMins: number; level: WeatherLevel | null; t3?: number | null }[]
+  // Route T3 % context: t3 per day is the previous-day end-of-day figure
+  // from the 05:30 messaging snapshot (metrics_for_date attribution).
+  t3Target?: number | null
 }
 
 export interface LevelImpactPinPayload {
@@ -256,14 +259,20 @@ function renderKpiStrip(pins: BriefingPin[]): string {
 }
 
 function renderTimeline(pin: BriefingPin): string {
-  const days = (pin.payload as TimelinePinPayload).days ?? []
+  const payload = pin.payload as TimelinePinPayload
+  const days = payload.days ?? []
   if (!days.length) return ''
+  const hasT3 = days.some(d => d.t3 != null)
   const W = 860, top = 14, plotH = 120, stripY = top + plotH + 8, stripH = 9, axisY = stripY + stripH + 14
-  const H = axisY + 8, padL = 30, padR = 6
+  const H = axisY + 8, padL = 30, padR = hasT3 ? 34 : 6
   const n = days.length, maxV = Math.max(...days.map(d => d.incidents), 1)
   const bw = (W - padL - padR) / n
   const x = (i: number) => padL + i * bw
   const y = (v: number) => top + plotH - (v / maxV) * plotH
+  // Route T3 % rides a right-hand percentage scale (40–100) so the overlay
+  // never collides with incident counts on the left axis.
+  const T3_MIN = 40
+  const yT3 = (v: number) => top + plotH - ((Math.max(T3_MIN, v) - T3_MIN) / (100 - T3_MIN)) * plotH
   let s = `<svg viewBox="0 0 ${W} ${H}" role="img">`
   const step = maxV > 60 ? 25 : 10
   for (let g = step; g < maxV; g += step) {
@@ -272,10 +281,29 @@ function renderTimeline(pin: BriefingPin): string {
   }
   days.forEach((d, i) => {
     const bh = (d.incidents / maxV) * plotH
-    s += `<rect x="${x(i) + 1}" y="${y(d.incidents)}" width="${Math.max(1, bw - 2)}" height="${bh}" rx="1.5" fill="${C.accent}" opacity="${d.level === 'EXTREME' ? 0.95 : 0.55}"><title>${fmtShortDate(d.date)} · ${d.incidents} incidents · ${Math.round(d.delayMins).toLocaleString()} delay min · ${d.level ? weatherLevelLabel(d.level) : 'no statement'}</title></rect>`
+    s += `<rect x="${x(i) + 1}" y="${y(d.incidents)}" width="${Math.max(1, bw - 2)}" height="${bh}" rx="1.5" fill="${C.accent}" opacity="${d.level === 'EXTREME' ? 0.95 : 0.55}"><title>${fmtShortDate(d.date)} · ${d.incidents} incidents · ${Math.round(d.delayMins).toLocaleString()} delay min · ${d.level ? weatherLevelLabel(d.level) : 'no statement'}${d.t3 != null ? ` · Route T3 ${d.t3.toFixed(1)}%` : ''}</title></rect>`
   })
   const peak = days.reduce((a, d, i) => (d.incidents > days[a].incidents ? i : a), 0)
   s += `<text x="${Math.min(W - 40, Math.max(padL + 20, x(peak) + bw / 2))}" y="${Math.max(10, y(days[peak].incidents) - 5)}" text-anchor="middle" font-size="9.5" fill="${C.ink2}" font-family='${MONO}'>${days[peak].incidents} · ${fmtShortDate(days[peak].date)}</text>`
+  if (hasT3) {
+    // right axis ticks
+    for (const v of [50, 75, 100]) {
+      s += `<text x="${W - padR + 6}" y="${yT3(v) + 3}" text-anchor="start" font-size="9" fill="${C.ink3}" font-family='${MONO}'>${v}%</text>`
+    }
+    if (payload.t3Target != null) {
+      s += `<line x1="${padL}" x2="${W - padR}" y1="${yT3(payload.t3Target)}" y2="${yT3(payload.t3Target)}" stroke="#4A6FA5" stroke-width="1" stroke-dasharray="2 4" opacity="0.6"/>`
+    }
+    // polyline segments, broken at missing days
+    let path = ''
+    let pen = false
+    days.forEach((d, i) => {
+      if (d.t3 == null) { pen = false; return }
+      const cmd = pen ? 'L' : 'M'
+      path += `${cmd}${(x(i) + bw / 2).toFixed(1)} ${yT3(d.t3).toFixed(1)} `
+      pen = true
+    })
+    s += `<path d="${path.trim()}" fill="none" stroke="#4A6FA5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`
+  }
   days.forEach((d, i) => {
     s += `<rect x="${x(i) + 0.5}" y="${stripY}" width="${Math.max(1, bw - 1)}" height="${stripH}" fill="${d.level ? LEVEL_C[d.level] : C.line}"/>`
   })
@@ -287,6 +315,7 @@ function renderTimeline(pin: BriefingPin): string {
   const legend = (['GREEN', 'AWARE', 'ADVERSE', 'EXTREME'] as WeatherLevel[])
     .map(l => `<span><span class="sw" style="background:${LEVEL_C[l]}"></span>${weatherLevelLabel(l)}</span>`)
     .join('')
+    + (hasT3 ? `<span><span class="sw" style="background:#4A6FA5;height:3px;border-radius:2px"></span>Route T3 % — previous-day 05:30 figure, right axis${payload.t3Target != null ? ` (target ${payload.t3Target}%)` : ''}</span>` : '')
   return `<div class="card">
     <h3>${esc(pin.title)}</h3>
     ${commentHtml(pin)}

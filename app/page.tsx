@@ -43,7 +43,7 @@ import {
   upsertIncidentReview, deleteIncidentReview, deleteIncidentRow, deriveReviewPeriods,
   deriveRecoveryTrendByPeriod,
   fetchPmcFlagsForRange, addPmcFlag, removePmcFlag,
-  fetchAnnotations,
+  fetchAnnotations, fetchPerfSnapshots,
   RawData, ReviewPeriodGroup, ReviewPeriodDay, RecoveryTrendPoint,
 } from '@/lib/queries'
 import {
@@ -301,6 +301,34 @@ export default function InsightDashboard() {
       }
     }
     run()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.windowFrom, data?.windowTo, demoMode])
+
+  // Route T3 % per day for the Overview overlay. The 05:30 messaging
+  // snapshot carries the PREVIOUS day's end-of-day standing and is stored
+  // against metrics_for_date, so a plain date join attributes each figure to
+  // the day it describes.
+  const [t3Data, setT3Data] = useState<{ byDate: Map<string, number>; target: number | null }>({ byDate: new Map(), target: null })
+  useEffect(() => {
+    if (!isSupabaseConfigured() || demoMode || !data) return
+    let cancelled = false
+    fetchPerfSnapshots(data.windowFrom, data.windowTo)
+      .then(rows => {
+        if (cancelled) return
+        const byDate = new Map<string, number>()
+        let target: number | null = null
+        for (const s of rows) {
+          if (s.slot !== '0530') continue
+          const m = s.metrics.find(x => x.name === 'Route T3 %')
+          if (m?.value != null) {
+            byDate.set(s.metrics_for_date, m.value)
+            if (m.target != null) target = m.target
+          }
+        }
+        setT3Data({ byDate, target })
+      })
+      .catch(() => { /* non-fatal — overlay simply stays off */ })
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.windowFrom, data?.windowTo, demoMode])
@@ -821,7 +849,7 @@ export default function InsightDashboard() {
 
         {kpis && effectiveData && (
           <>
-            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} annotations={dateAnnotations.map(a => ({ date: a.anchor, note: a.note }))} lookahead={lookahead} onPin={pinsEnabled ? handlePin : undefined} />}
+            {tab === 'overview'    && <OverviewTab kpis={kpis} trend={trend} changePoints={changePoints} cats={cats} hots={hots} repeatAssets={repeatAssets} chart={trendChart} setChart={setTrendChart} dist={distChart} setDist={setDistChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} onAddCategoryFilter={handleAddCategoryFilter} onAddAreaFilter={handleAddAreaFilter} onAddSeverityFilter={handleAddSeverityFilter} decompose={decompose} annotations={dateAnnotations.map(a => ({ date: a.anchor, note: a.note }))} lookahead={lookahead} onPin={pinsEnabled ? handlePin : undefined} t3Data={t3Data} />}
             {tab === 'safety'      && <SafetyTab kpis={kpis} trend={trend} cats={cats} data={effectiveData} onAddCategoryFilter={handleAddCategoryFilter} decompose={decompose} />}
             {tab === 'performance' && <PerformanceTab kpis={kpis} trend={trend} changePoints={changePoints} hots={hots} resp={respDist} responderLoad={resp} ops={ops} attribution={attribution} chart={trendChart} setChart={setTrendChart} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onDateClick={handleDateClick} decompose={decompose} metricFocus={filters.metricFocus} />}
             {tab === 'geography'   && <GeographyTab hots={hots} delayDensity={delayDensity} incidents={effectiveData.incidents} onDrillDown={setDrillDown} onPin={pinsEnabled ? handlePin : undefined} />}
@@ -1281,7 +1309,8 @@ function HypothesisRow({ h, maxLift, onClick }: {
   )
 }
 
-function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, annotations, lookahead, onPin }: any) {
+function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, chart, setChart, dist, setDist, incidents, onDrillDown, onDateClick, onAddCategoryFilter, onAddAreaFilter, onAddSeverityFilter, decompose, annotations, lookahead, onPin, t3Data }: any) {
+  const [showT3, setShowT3] = useState(true)
   // Timeline context: band the date axis by that day's operational weather
   // level so spikes can be read against the classification at a glance.
   // Normal (GREEN) days stay unbanded — only elevated levels are shaded.
@@ -1289,9 +1318,15 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
   for (const d of (lookahead ?? []) as WeatherLookaheadDay[]) {
     if (d.overall_level) levelByDate.set(d.weather_date, d.overall_level)
   }
-  const trendWx = levelByDate.size
-    ? trend.map((p: any) => ({ ...p, weatherLevel: levelByDate.get(p.date) ?? null }))
+  const t3ByDate: Map<string, number> = t3Data?.byDate ?? new Map()
+  const trendWx = (levelByDate.size || t3ByDate.size)
+    ? trend.map((p: any) => ({
+        ...p,
+        weatherLevel: levelByDate.get(p.date) ?? null,
+        t3: t3ByDate.get(p.date) ?? null,
+      }))
     : trend
+  const hasT3 = t3ByDate.size > 0 && trendWx.some((p: any) => p.t3 != null)
   const weatherBands: { x1: string; x2: string; level: WeatherLevel }[] = []
   for (const p of trendWx as any[]) {
     const level = p.weatherLevel
@@ -1316,12 +1351,16 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
   const timelinePin = onPin
     ? () => onPin({
         kind: 'timeline',
-        title: 'Daily incidents, banded by operational weather level',
+        title: hasT3
+          ? 'Daily incidents vs Route T3, banded by operational weather level'
+          : 'Daily incidents, banded by operational weather level',
         source_label: 'Overview · Daily Activity',
         payload: {
           days: trendWx.map((p: any) => ({
             date: p.date, incidents: p.incidents, delayMins: Math.round(p.delayMins), level: p.weatherLevel ?? null,
+            t3: p.t3 ?? null,
           })),
+          t3Target: t3Data?.target ?? null,
         } as TimelinePinPayload,
       })
     : undefined
@@ -1392,10 +1431,22 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
 
       {/* Trend + breakdown row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card title="Daily Activity" subtitle={`${trend.length}-day rolling window · stability band shaded${hasBands ? ' · axis banded by operational weather level' : ''}`} className="lg:col-span-2 tick-corners"
-              right={<div className="flex items-center gap-2">{timelinePin && <PinButton onPin={timelinePin} label="Pin this timeline to Briefing" />}<ChartTypeToggle value={chart} onChange={setChart} /></div>}>
-          <TrendChart data={trendWx} kind={chart} onDateClick={onDateClick} changePoints={changePoints} showBaseline annotations={annotations} weatherBands={weatherBands} />
-          {hasBands && (
+        <Card title="Daily Activity" subtitle={`${trend.length}-day rolling window · stability band shaded${hasBands ? ' · axis banded by operational weather level' : ''}${hasT3 && showT3 ? ' · Route T3 % overlaid (right axis)' : ''}`} className="lg:col-span-2 tick-corners"
+              right={<div className="flex items-center gap-2">
+                {hasT3 && (
+                  <button
+                    onClick={() => setShowT3(s => !s)}
+                    className={`btn !py-1 !px-2 !text-[10px] ${showT3 ? 'btn-active' : ''}`}
+                    title="Toggle the Route T3 % overlay — previous-day end-of-day figures from the 05:30 snapshot"
+                  >
+                    T3
+                  </button>
+                )}
+                {timelinePin && <PinButton onPin={timelinePin} label="Pin this timeline to Briefing" />}
+                <ChartTypeToggle value={chart} onChange={setChart} />
+              </div>}>
+          <TrendChart data={trendWx} kind={chart} onDateClick={onDateClick} changePoints={changePoints} showBaseline annotations={annotations} weatherBands={weatherBands} showT3={hasT3 && showT3} t3Target={t3Data?.target ?? null} />
+          {(hasBands || (hasT3 && showT3)) && (
             <div className="flex items-center gap-4 mt-2 flex-wrap">
               {(['AWARE', 'ADVERSE', 'EXTREME'] as WeatherLevel[])
                 .filter(l => weatherBands.some(b => b.level === l))
@@ -1405,6 +1456,14 @@ function OverviewTab({ kpis, trend, changePoints, cats, hots, repeatAssets, char
                     <span className="text-[9px]" style={{ color: 'var(--ink-500)' }}>{WEATHER_LEVEL_CONFIG[l].label} weather day</span>
                   </div>
                 ))}
+              {hasT3 && showT3 && (
+                <div className="flex items-center gap-1.5">
+                  <div style={{ width: 14, height: 0, borderTop: '2px solid var(--nr-blue)' }} />
+                  <span className="text-[9px]" style={{ color: 'var(--ink-500)' }}>
+                    Route T3 % — previous-day 05:30 figure, right axis{t3Data?.target != null ? ` · target ${t3Data.target}%` : ''}
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </Card>
@@ -3275,7 +3334,7 @@ const ROLLING_KEY: Record<string, string> = {
   safetyCritical: 'rolling7SafetyAvg',
 }
 
-function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick, changePoints, showBaseline, annotations, weatherBands }: any) {
+function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', onDateClick, changePoints, showBaseline, annotations, weatherBands, showT3, t3Target }: any) {
   const stroke = gradient === 'orange' ? '#E05206' : '#4A6FA5'
   const gradientId = `grad-${dataKey}-${gradient}`
 
@@ -3397,6 +3456,11 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
       ? <Line type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.8} dot={false} activeDot={{ r: 4 }} />
       : <Area type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={1.5} fill={`url(#${gradientId})`} />
 
+  // Route T3 % overlay — previous-day end-of-day figures on their own
+  // right-hand percentage scale, so counts and percentages never share
+  // an axis.
+  const hasT3Series = showT3 && data.some((d: any) => d.t3 != null)
+
   return (
     <ResponsiveContainer width="100%" height={300}>
       <ComposedChart data={data} onClick={handleClick} style={{ cursor: cursorStyle }}>
@@ -3410,6 +3474,34 @@ function TrendChart({ data, kind, dataKey = 'incidents', gradient = 'orange', on
         {wxBandAreas}
         <XAxis dataKey="date" tickFormatter={shortDate} />
         <YAxis />
+        {hasT3Series && (
+          <YAxis
+            yAxisId="t3"
+            orientation="right"
+            domain={[40, 100]}
+            width={38}
+            tickFormatter={(v: number) => `${v}%`}
+            tick={{ fontSize: 9, fill: 'var(--ink-500)', fontFamily: 'JetBrains Mono' }}
+            axisLine={false}
+            tickLine={false}
+          />
+        )}
+        {hasT3Series && t3Target != null && (
+          <ReferenceLine yAxisId="t3" y={t3Target} stroke="var(--nr-blue)" strokeDasharray="2 5" strokeOpacity={0.5} />
+        )}
+        {hasT3Series && (
+          <Line
+            yAxisId="t3"
+            type="monotone"
+            dataKey="t3"
+            name="Route T3 % (prev-day 05:30)"
+            stroke="var(--nr-blue)"
+            strokeWidth={1.8}
+            dot={false}
+            activeDot={{ r: 3 }}
+            connectNulls
+          />
+        )}
         <Tooltip content={<CustomTooltip footer="Click to focus this date" />} position={{ x: 65, y: 8 }} />
         {baselineBand}
         {changePointLines}
