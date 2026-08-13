@@ -6,7 +6,7 @@ import {
   Activity, AlertTriangle, BarChart2, Bell, BookOpen, CalendarDays, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, ClipboardList, Clock, Cloud, Compass, Crosshair, Download, FileText, Filter, Flag, FlaskConical,
   Gauge, GitBranch, GitCompare, Info, Layers, List, MapPin, Minus, Monitor, Moon, Pin, RefreshCw, Route, Search, StickyNote,
-  Sun, Table2, TrendingDown, TrendingUp, Train, Trash2, Wrench, X, Zap, type LucideIcon,
+  Sun, Table2, Thermometer, TrendingDown, TrendingUp, Train, Trash2, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
@@ -90,12 +90,13 @@ import { CalendarTab } from './calendar-tab'
 import { PivotTab } from './pivot-tab'
 import { NotebookTab } from './notebook-tab'
 import { QualityTab } from './quality-tab'
+import { TemperatureExposureTab } from './temperature-exposure-tab'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
 type Tab =
   | 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes'
-  | 'trends' | 'explore' | 'analytics' | 'weather' | 'calendar' | 'compare' | 'pivot' | 'search'
+  | 'trends' | 'explore' | 'analytics' | 'weather' | 'exposure' | 'calendar' | 'compare' | 'pivot' | 'search'
   | 'focus' | 'review' | 'reports' | 'briefing' | 'distillation' | 'notebook' | 'quality'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
@@ -109,6 +110,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'explore',     label: 'Explore',     icon: Compass },
   { id: 'analytics',   label: 'Analytics',   icon: BarChart2 },
   { id: 'weather',      label: 'Weather',      icon: Cloud },
+  { id: 'exposure',     label: 'Exposure',     icon: Thermometer },
   { id: 'calendar',     label: 'Calendar',     icon: CalendarDays },
   { id: 'compare',      label: 'Compare',      icon: GitCompare },
   { id: 'pivot',        label: 'Pivot',        icon: Table2 },
@@ -860,6 +862,7 @@ export default function InsightDashboard() {
             {tab === 'explore'     && <ExploreTab incidents={effectiveData.incidents} areaOptions={areas.map((a: any) => a.area)} />}
             {tab === 'analytics'   && <AnalyticsTab incidents={effectiveData.incidents} windowDays={effectiveData.windowDays} onPin={pinsEnabled ? handlePin : undefined} />}
             {tab === 'weather'     && <WeatherTab incidents={effectiveData.incidents} weatherData={weatherData} lookahead={lookahead} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onPin={pinsEnabled ? handlePin : undefined} />}
+            {tab === 'exposure'    && <TemperatureExposureTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
             {tab === 'calendar'    && <CalendarTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} onDrillDown={setDrillDown} />}
             {tab === 'compare'     && <CompareTab demoMode={demoMode} />}
             {tab === 'pivot'       && <PivotTab incidents={effectiveData.incidents} />}
