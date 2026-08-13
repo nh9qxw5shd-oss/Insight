@@ -86,5 +86,7 @@ NWR Allocation & Consist feed lands (Phase 2).
 - Every deep-dive cell/bucket shows its n; cells resting on fewer than 5
   diagram-days are greyed; groups with fewer than 5 faults are flagged thin.
 - The section is labelled a PoC pattern-finder, not a significance test.
-- Fault panels are restricted to the overlap between the selected window and
-  the loaded incident feed, and say so when clipped.
+- When the selected window extends beyond the app-level incident feed, the
+  section fetches incidents for its own range directly (`fetchIncidentsForRange`)
+  so extreme days outside the app window keep their faults. Without a database
+  connection (demo mode) fault panels clip to the loaded feed and say so.

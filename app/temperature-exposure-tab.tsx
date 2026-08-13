@@ -20,7 +20,8 @@ import {
   ResponsiveContainer, CartesianGrid, Legend, ReferenceLine,
 } from 'recharts'
 import { IncidentRow, IncidentCategory, CATEGORY_CONFIG } from '@/lib/types'
-import { nonContinuation } from '@/lib/queries'
+import { nonContinuation, fetchIncidentsForRange } from '@/lib/queries'
+import { isSupabaseConfigured } from '@/lib/supabase'
 import {
   WEATHER_GRID, fetchGridWeather, computeExposure, cumulativeExposureAt,
   dailyGridMax, classifyDayType, datesInRange, headcodeToGroup,
@@ -475,6 +476,31 @@ export function TemperatureExposureTab({ incidents, windowFrom, windowTo }: {
 
   const wx = wxState.wx
 
+  // ── Fault data for the section's own range ─────────────────────────────────
+  // The app-level feed only covers [windowFrom..windowTo]. When the section
+  // range extends beyond it (e.g. the July heat window from an August app
+  // window), fetch incidents for the full range directly so extreme days
+  // outside the app window still get their faults. Demo mode (no Supabase)
+  // falls back to clipping against the loaded feed.
+  const needsOwnFetch = from < windowFrom || to > windowTo
+  const [rangeIncidents, setRangeIncidents] = useState<IncidentRow[] | null>(null)
+  const [rangeLoading, setRangeLoading] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    setRangeIncidents(null)
+    if (!needsOwnFetch || !isSupabaseConfigured()) return
+    setRangeLoading(true)
+    fetchIncidentsForRange(from, to)
+      .then(rows => { if (alive) setRangeIncidents(rows) })
+      .catch(() => { if (alive) setRangeIncidents(null) })
+      .finally(() => { if (alive) setRangeLoading(false) })
+    return () => { alive = false }
+  }, [from, to, needsOwnFetch])
+
+  const usingOwnFetch = rangeIncidents != null
+  const faultSource = usingOwnFetch ? rangeIncidents : incidents
+
   function applyRange() {
     if (!draftFrom || !draftTo || draftTo < draftFrom) return
     // Clamp: ≤ 92 days (compute + API budget), ≤ forecast horizon
@@ -508,10 +534,10 @@ export function TemperatureExposureTab({ incidents, windowFrom, windowTo }: {
     return out
   }, [wx, from, to])
 
-  // Fault panels only make sense where the loaded incident feed overlaps the
-  // selected window.
-  const faultFrom = from > windowFrom ? from : windowFrom
-  const faultTo = to < windowTo ? to : windowTo
+  // Fault panels cover the whole section range when the section fetched its
+  // own incidents; otherwise only where the loaded feed overlaps it.
+  const faultFrom = usingOwnFetch ? from : (from > windowFrom ? from : windowFrom)
+  const faultTo = usingOwnFetch ? to : (to < windowTo ? to : windowTo)
   const faultWindowOk = faultFrom <= faultTo
 
   const classifiedDates = useMemo(() => {
@@ -532,14 +558,14 @@ export function TemperatureExposureTab({ incidents, windowFrom, windowTo }: {
   )
 
   const faults = useMemo(() => {
-    return nonContinuation(incidents).filter(i => {
+    return nonContinuation(faultSource).filter(i => {
       if (!faultCats.includes(i.category)) return false
       if (!dateClass.has(i.report_date)) return false
       if (trendDayTypes.length && !trendDayTypes.includes(classifyDayType(i.report_date))) return false
       if (groupFilter.length && !groupFilter.includes(headcodeToGroup(i.train_id))) return false
       return true
     })
-  }, [incidents, faultCats, dateClass, trendDayTypes, groupFilter])
+  }, [faultSource, faultCats, dateClass, trendDayTypes, groupFilter])
 
   const unclassifiedFaults = useMemo(
     () => faults.filter(i => headcodeToGroup(i.train_id) === 'UNCLASSIFIED').length,
@@ -944,9 +970,14 @@ export function TemperatureExposureTab({ incidents, windowFrom, windowTo }: {
             </LineChart>
           </ResponsiveContainer>
         )}
-        {faultWindowOk && (faultFrom !== from || faultTo !== to) && (
+        {rangeLoading && (
           <div className="text-[10px] mt-1" style={{ color: 'var(--ink-500)' }}>
-            Fault data limited to the loaded incident window {faultFrom} – {faultTo}; exposure metrics still cover the full selected range.
+            Loading fault data for {from} – {to}…
+          </div>
+        )}
+        {!usingOwnFetch && faultWindowOk && (faultFrom !== from || faultTo !== to) && !rangeLoading && (
+          <div className="text-[10px] mt-1" style={{ color: 'var(--nr-amber)' }}>
+            Fault data limited to the loaded incident window {faultFrom} – {faultTo} (no database connection to load the full range); exposure metrics still cover the full selected range.
           </div>
         )}
       </div>
