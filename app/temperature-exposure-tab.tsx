@@ -25,8 +25,8 @@ import { isSupabaseConfigured } from '@/lib/supabase'
 import {
   WEATHER_GRID, fetchGridWeather, computeExposure, cumulativeExposureAt,
   dailyGridMax, classifyDayType, datesInRange, headcodeToGroup,
-  headcodeToArchetype, groupColor, HourlyGridWeather, ArchetypeExposure,
-  DEFAULT_BANDS,
+  headcodeToArchetype, extractHeadcode, groupColor, HourlyGridWeather,
+  ArchetypeExposure, DEFAULT_BANDS,
 } from '@/lib/exposure'
 import {
   EXPOSURE_ARCHETYPES, ARCHETYPE_TRACES, ExposureDayType,
@@ -562,13 +562,13 @@ export function TemperatureExposureTab({ incidents, windowFrom, windowTo }: {
       if (!faultCats.includes(i.category)) return false
       if (!dateClass.has(i.report_date)) return false
       if (trendDayTypes.length && !trendDayTypes.includes(classifyDayType(i.report_date))) return false
-      if (groupFilter.length && !groupFilter.includes(headcodeToGroup(i.train_id))) return false
+      if (groupFilter.length && !groupFilter.includes(headcodeToGroup(extractHeadcode(i.train_id, i.title)))) return false
       return true
     })
   }, [faultSource, faultCats, dateClass, trendDayTypes, groupFilter])
 
   const unclassifiedFaults = useMemo(
-    () => faults.filter(i => headcodeToGroup(i.train_id) === 'UNCLASSIFIED').length,
+    () => faults.filter(i => headcodeToGroup(extractHeadcode(i.train_id, i.title)) === 'UNCLASSIFIED').length,
     [faults],
   )
 
@@ -607,7 +607,7 @@ export function TemperatureExposureTab({ incidents, windowFrom, windowTo }: {
     for (const i of faults) {
       const m = faultMinute(i)
       if (m == null) continue
-      const arch = headcodeToArchetype(i.train_id, i.report_date)
+      const arch = headcodeToArchetype(extractHeadcode(i.train_id, i.title), i.report_date)
       if (!arch) continue
       out.push({
         incident: i, date: i.report_date, minute: m,
@@ -988,7 +988,7 @@ export function TemperatureExposureTab({ incidents, windowFrom, windowTo }: {
           <div>
             <h3 className="serif text-lg" style={{ color: 'var(--ink-100)' }}>Extreme vs baseline — cumulative exposure at fault</h3>
             <p className="text-[11px] mt-0.5" style={{ color: 'var(--ink-400)' }}>
-              Each fault joined to its archetype via headcode prefix; exposure accumulated along the trace up to the fault&apos;s time of day ·
+              Each fault joined to its archetype via headcode prefix (from the CCIL train ID, or extracted from the incident title); exposure accumulated along the trace up to the fault&apos;s time of day ·
               {' '}{joined.length} of {faults.length} filtered faults joined
               {unclassifiedFaults > 0 && ` · ${unclassifiedFaults} unclassified headcodes excluded`}
             </p>
@@ -1150,7 +1150,7 @@ export function TemperatureExposureTab({ incidents, windowFrom, windowTo }: {
               <span style={{ color: 'var(--nr-amber)' }}>One unit per diagram assumed</span> — breaks on disrupted days; treat disrupted-day joins with suspicion.
             </p>
             <p>
-              <span style={{ color: 'var(--nr-amber)' }}>Fault→archetype mapping is service-group-level</span>, not true unit-level, until the live consist feed lands (Phase 2). Headcode prefix → group is empirical from EMR CIF data; 1B/1D default to Nottingham–STP (≥96%), 2K merged into the Lincoln regional bucket; unmatched prefixes are excluded as UNCLASSIFIED, never force-fitted. Tier defaults to full-day.
+              <span style={{ color: 'var(--nr-amber)' }}>Fault→archetype mapping is service-group-level</span>, not true unit-level, until the live consist feed lands (Phase 2). Headcodes are read from the CCIL train ID or extracted from the incident title; prefix → group is empirical from EMR CIF data; 1B/1D default to Nottingham–STP (≥96%), 2K merged into the Lincoln regional bucket; unmatched prefixes are excluded as UNCLASSIFIED, never force-fitted. Tier defaults to full-day.
             </p>
             <p>
               <span style={{ color: 'var(--nr-amber)' }}>Pattern-finder, not a significance test</span> — cells and groups resting on fewer than {N_FLOOR} diagram-days/faults are greyed or flagged; small-n archetypes (n≤2) carry misclassified edge diagrams.

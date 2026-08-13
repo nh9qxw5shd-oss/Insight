@@ -68,7 +68,11 @@ the reference window against `JULY_2026_REFERENCE`.
 
 ## Fault → archetype mapping
 
-Service group comes from the headcode's two-character prefix
+CCIL captures rarely populate `train_id`, but incident titles almost always
+lead with the working's headcode ("1F57 loss of air pressure") —
+`extractHeadcode` prefers the structured field and falls back to the first
+headcode-shaped token in the title (unit numbers don't match the pattern).
+Service group then comes from the headcode's two-character prefix
 (`HEADCODE_PREFIX_GROUP` in `lib/exposure.ts`), derived empirically from the
 classified EMR schedule data. Day-type from the incident date; tier defaults
 to full-day (dominant population), falling back to part-day where a group

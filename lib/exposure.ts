@@ -354,6 +354,24 @@ export function headcodeToGroup(headcode: string | null | undefined): string {
   return HEADCODE_PREFIX_GROUP[prefix] ?? 'UNCLASSIFIED'
 }
 
+// CCIL captures rarely populate train_id, but the incident title almost
+// always leads with the working's headcode ("1F57 loss of air pressure",
+// "1C68 - Brake Fault"). Prefer the structured field when it looks like a
+// headcode; otherwise take the first headcode-shaped token from the title.
+// Unit numbers ("222019 GSMR defective") don't match the pattern and fall
+// through to null → UNCLASSIFIED, never force-fitted.
+const HEADCODE_RE = /(?:^|[^0-9A-Z])([0-9][A-Z][0-9]{2})(?![0-9A-Z])/
+
+export function extractHeadcode(
+  trainId: string | null | undefined,
+  title: string | null | undefined,
+): string | null {
+  const t = trainId?.trim().toUpperCase()
+  if (t && /^[0-9][A-Z][0-9]{2}$/.test(t.slice(0, 4))) return t.slice(0, 4)
+  const m = title?.toUpperCase().match(HEADCODE_RE)
+  return m ? m[1] : null
+}
+
 // Resolve a headcode + date to its archetype. Tier defaults to full-day (the
 // dominant population); falls back to part-day where the group runs no
 // full-day diagrams on that day-type (e.g. Corby–STP on Sundays). Returns
