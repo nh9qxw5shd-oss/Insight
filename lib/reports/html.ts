@@ -31,6 +31,13 @@ function fmtPct(n: number | null | undefined): string {
   return `${n > 0 ? '+' : ''}${n.toFixed(0)}%`
 }
 
+// Percentage-POINT movement, for deltas between two rates.
+function fmtPts(n: number | null | undefined): string {
+  if (n == null) return '—'
+  if (Math.abs(n) < 0.5) return '~0 pts'
+  return `${n > 0 ? '+' : ''}${n.toFixed(0)} pts`
+}
+
 function shortDate(iso: string): string {
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
   const [y, m, d] = iso.split('-')
@@ -311,6 +318,14 @@ function reportStylesheet(): string {
       }
       .kpi:nth-child(4n) { border-right: none; }
       .kpi:nth-last-child(-n+4) { border-bottom: none; }
+      /* Six-tile headline block sits 3-across. The rules below undo the
+         4-column edge cases and re-apply them on the 3-column boundaries so
+         the outer frame stays clean. */
+      .kpi-grid-3 { grid-template-columns: repeat(3, 1fr); }
+      .kpi-grid-3 .kpi:nth-child(4n)         { border-right: 0.5pt solid var(--rule); }
+      .kpi-grid-3 .kpi:nth-child(3n)         { border-right: none; }
+      .kpi-grid-3 .kpi:nth-last-child(-n+4)  { border-bottom: 0.5pt solid var(--rule); }
+      .kpi-grid-3 .kpi:nth-last-child(-n+3)  { border-bottom: none; }
       .kpi-critical::after {
         content: '';
         position: absolute; top: 0; right: 0;
@@ -639,7 +654,7 @@ function renderCover(plan: ReportPlan): string {
     <div class="cover-hero-tile">
       <div class="cover-hero-label">${esc(k.label)}</div>
       <div class="cover-hero-value">${esc(k.value)}</div>
-      ${k.delta ? deltaTag(k.delta.signedPct, k.delta.deltaInverted, k.delta.label, 'cover-hero-delta') : ''}
+      ${k.delta ? deltaTag(k.delta, 'cover-hero-delta') : ''}
     </div>
   `).join('')
 
@@ -677,14 +692,18 @@ function renderCover(plan: ReportPlan): string {
   `
 }
 
-function deltaTag(signedPct: number | null, inverted: boolean, label: string, className = 'kpi-delta'): string {
+function deltaTag(delta: NonNullable<ReportKpi['delta']>, className = 'kpi-delta'): string {
+  const { signedPct, deltaInverted: inverted, label } = delta
+  const pts = delta.unit === 'pts'
+  const zero = pts ? '~0 pts' : '~0%'
   if (signedPct == null) return `<div class="${className} delta-flat">— ${esc(label)}</div>`
-  if (Math.abs(signedPct) < 0.5) return `<div class="${className} delta-flat">~0% ${esc(label)}</div>`
+  if (Math.abs(signedPct) < 0.5) return `<div class="${className} delta-flat">${zero} ${esc(label)}</div>`
   const up = signedPct > 0
   const isBad = (up && inverted) || (!up && !inverted)
   const cls = isBad ? 'delta-bad' : 'delta-good'
   const arrow = up ? '▲' : '▼'
-  return `<div class="${className} ${cls}"><span class="arrow">${arrow}</span>${fmtPct(signedPct)} ${esc(label)}</div>`
+  const body = pts ? fmtPts(signedPct) : fmtPct(signedPct)
+  return `<div class="${className} ${cls}"><span class="arrow">${arrow}</span>${body} ${esc(label)}</div>`
 }
 
 // ─── Section renderers ───────────────────────────────────────────────────────
@@ -724,21 +743,31 @@ function sectionHead(num: string, title: string, sub: string): string {
   `
 }
 
+const NUMBER_WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten']
+
+function kpiLede(plan: ReportPlan): string {
+  const n = plan.kpis?.length ?? 0
+  const word = NUMBER_WORDS[n] ?? String(n)
+  const base = `${word} number${n === 1 ? '' : 's'} that frame the window. Each delta compares like-for-like against the previous equivalent window — every metric continuation-aware so a multi-day incident isn't double-counted.`
+  if (plan.meta.template !== 'period') return base
+  return `${base} ITSR adherence, time stranded and time to recover are driven by SNDM reviews — incidents without a review on file count against adherence and contribute no recovery samples.`
+}
+
 function renderKpis(plan: ReportPlan, num: number): string {
   if (!plan.kpis || plan.kpis.length === 0) return ''
   const tiles = plan.kpis.map(k => `
     <div class="kpi ${k.critical ? 'kpi-critical' : ''}">
       <div class="kpi-label">${esc(k.label)}</div>
       <div class="kpi-value">${esc(k.value)}</div>
-      ${k.delta ? deltaTag(k.delta.signedPct, k.delta.deltaInverted, k.delta.label) : ''}
+      ${k.delta ? deltaTag(k.delta) : ''}
       ${k.hint ? `<div class="kpi-hint">${esc(k.hint)}</div>` : ''}
     </div>
   `).join('')
   return `
     <section class="page section">
       ${sectionHead(String(num).padStart(2, '0'), 'Headline KPIs', plan.meta.scopeLabel)}
-      <p class="section-lede">Eight numbers that frame the window. Each delta compares like-for-like against the previous equivalent window — every metric continuation-aware so a multi-day incident isn't double-counted.</p>
-      <div class="kpi-grid">${tiles}</div>
+      <p class="section-lede">${esc(kpiLede(plan))}</p>
+      <div class="kpi-grid${plan.kpis.length % 3 === 0 && plan.kpis.length % 4 !== 0 ? ' kpi-grid-3' : ''}">${tiles}</div>
       ${footer(plan, num)}
     </section>
   `
@@ -1259,15 +1288,15 @@ function renderPmcSummary(plan: ReportPlan, num: number): string {
     <div class="kpi ${kpi.critical ? 'kpi-critical' : ''}">
       <div class="kpi-label">${esc(kpi.label)}</div>
       <div class="kpi-value">${esc(kpi.value)}</div>
-      ${kpi.delta ? deltaTag(kpi.delta.signedPct, kpi.delta.deltaInverted, kpi.delta.label) : ''}
+      ${kpi.delta ? deltaTag(kpi.delta) : ''}
       ${kpi.hint ? `<div class="kpi-hint">${esc(kpi.hint)}</div>` : ''}
     </div>
   `).join('')
   return `
     <section class="page section">
       ${sectionHead(String(num).padStart(2, '0'), 'Control PMC · Week summary', plan.meta.scopeLabel)}
-      <p class="section-lede">Six headline numbers for the Control PMC week. Each topic is broken down in detail in the sections that follow.</p>
-      <div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr);">${tiles}</div>
+      <p class="section-lede">Six headline numbers for the Control PMC week — the same set the Period Report leads on. Each topic is broken down in detail in the sections that follow.</p>
+      <div class="kpi-grid kpi-grid-3">${tiles}</div>
       <hr class="rule" />
       <div class="two-col">
         <div class="panel">
@@ -1276,7 +1305,7 @@ function renderPmcSummary(plan: ReportPlan, num: number): string {
         </div>
         <div class="panel-light">
           <div class="panel-title">Period vector</div>
-          <p>Each topic shows a percentage change against the same week one cycle earlier. Up-arrows are red where rising is bad (incidents, delay) and green where rising is good (ITSR adherence).</p>
+          <p>Each headline number is compared against the same week one cycle earlier. Up-arrows are red where rising is bad (incidents, duration, time stranded, time to recover, SLA breaches) and green where rising is good (ITSR adherence, shown in percentage points).</p>
         </div>
       </div>
       ${footer(plan, num)}

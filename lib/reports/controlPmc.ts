@@ -15,14 +15,17 @@
 import {
   CATEGORY_CONFIG, IncidentReview, IncidentRow,
 } from '../types'
-import { deriveRecoveryTrendByPeriod, effectiveDelay, nonContinuation } from '../queries'
+import {
+  ITSR_THRESHOLD_MINS, deriveItsrAdherence, deriveRecoveryTrendByPeriod,
+  effectiveDelay, nonContinuation,
+} from '../queries'
+import { buildHeadlineKpis } from './headlineKpis'
 import {
   ControlPmcPlan, PmcIncidentRow, PmcItsrPlan, PmcLocationRow,
   PmcRepeatMatch, PmcTopDelayDetail, PmcTopDelayPlan,
   PmcTopicPlan, PmcTopicSummary, ReportKpi,
 } from './types'
 
-const ITSR_THRESHOLD_MINS = 300
 const TRAIN_FAULT_PRIMARY_MINS = 200
 const PAX_TOPN = 10
 const TRAIN_FAULT_SECONDARY_TOPN = 5
@@ -33,10 +36,6 @@ const HISTORICAL_LOOKBACK_DAYS = 183  // ~6 months
 function pctDelta(curr: number, prev: number): number | null {
   if (prev === 0) return curr === 0 ? 0 : null
   return ((curr - prev) / prev) * 100
-}
-
-function fmt(n: number): string {
-  return n.toLocaleString('en-GB', { maximumFractionDigits: 0 })
 }
 
 function fmtMinsShort(n: number): string {
@@ -247,42 +246,26 @@ function buildItsr(
   const cur = filterAbove(curr)
   const pre = filterAbove(prev)
 
-  // Classify each current-window 300m+ incident by ITSR completion. A review
-  // of N/A means an ITSR does not APPLY to the incident — exempt, excluded
-  // from the adherence denominator rather than counted against it.
-  const did: IncidentRow[]    = []
-  const didnt: IncidentRow[]  = []
-  const exempt: IncidentRow[] = []
-  const unrev: IncidentRow[]  = []
-  for (const i of cur) {
-    const r = curRevById.get(i.id)
-    if (!r) { unrev.push(i); continue }
-    if (r.itsr_required === 'YES') did.push(i)
-    else if (r.itsr_required === 'NA') exempt.push(i)
-    else didnt.push(i)
-  }
+  // Classification and the adherence percentage come from the shared helper in
+  // queries.ts, so this section and the headline KPI tile can never disagree.
+  const a    = deriveItsrAdherence(curr, curRevById)
+  const prevA = deriveItsrAdherence(prev, prevRevById)
+
+  const did    = a.completed
+  const didnt  = a.missing
+  const exempt = a.exempt
+  const unrev  = a.unreviewed
 
   const itsrExempt     = exempt.length
-  const itsrCount      = cur.length - itsrExempt   // applicable population
+  const itsrCount      = a.applicable     // above-threshold minus N/A exempt
   const itsrCompleted  = did.length
   const itsrMissing    = didnt.length
   const itsrUnreviewed = unrev.length
-  // Adherence percentage uses the applicable 300m+ population as denominator —
-  // an unreviewed incident counts against adherence so the number reflects
-  // the policy gate (every applicable 300m+ event should have an ITSR
-  // completed); N/A-reviewed incidents are out of scope entirely.
-  const itsrPct = itsrCount === 0 ? 100 : (itsrCompleted / itsrCount) * 100
+  const itsrPct        = a.pct
 
-  // Same metric for previous week (N/A exempt there too)
-  let prevDid = 0
-  let prevExempt = 0
-  for (const i of pre) {
-    const r = prevRevById.get(i.id)
-    if (r?.itsr_required === 'YES') prevDid += 1
-    else if (r?.itsr_required === 'NA') prevExempt += 1
-  }
-  const prevApplicable = pre.length - prevExempt
-  const prevPct = prevApplicable === 0 ? 100 : (prevDid / prevApplicable) * 100
+  const prevApplicable = prevA.applicable
+  const prevDid        = prevA.completed.length
+  const prevPct        = prevA.pct
 
   const summary = summarise(cur, pre)
   const insights: string[] = []
@@ -551,42 +534,19 @@ function buildSatisfaction(): PmcTopicPlan {
 
 // ─── Headline KPI summary across all topics ───────────────────────────────────
 
-function buildHeadline(plan: Omit<ControlPmcPlan, 'headline'>): ReportKpi[] {
-  const itsr = plan.itsr
-  return [
-    {
-      label: 'PST · Fatalities',
-      value: fmt(plan.fatalities.summary.count),
-      delta: { signedPct: plan.fatalities.summary.countDeltaPct, deltaInverted: true, label: 'vs prev week' },
-      critical: plan.fatalities.summary.count > 0,
-    },
-    {
-      label: 'Stranded trains',
-      value: fmt(plan.stranded.summary.count),
-      delta: { signedPct: plan.stranded.summary.countDeltaPct, deltaInverted: true, label: 'vs prev week' },
-    },
-    {
-      label: 'Irregular working',
-      value: fmt(plan.irregular.summary.count),
-      delta: { signedPct: plan.irregular.summary.countDeltaPct, deltaInverted: true, label: 'vs prev week' },
-    },
-    {
-      label: 'PAX incidents',
-      value: fmt(plan.pax.summary.count),
-      delta: { signedPct: plan.pax.summary.countDeltaPct, deltaInverted: true, label: 'vs prev week' },
-    },
-    {
-      label: 'Train faults',
-      value: fmt(plan.trainFaults.summary.count),
-      delta: { signedPct: plan.trainFaults.summary.countDeltaPct, deltaInverted: true, label: 'vs prev week' },
-      hint: `${fmtMinsShort(plan.trainFaults.summary.delayMins)} total delay`,
-    },
-    {
-      label: 'ITSR adherence',
-      value: `${itsr.itsrPct.toFixed(0)}%`,
-      hint: `${itsr.itsrCompleted}/${itsr.itsrCount} applicable incidents > ${ITSR_THRESHOLD_MINS}m`,
-    },
-  ]
+function buildHeadline(
+  curr: IncidentRow[], prev: IncidentRow[],
+  reviews: IncidentReview[], prevReviews: IncidentReview[],
+): ReportKpi[] {
+  // Same six numbers as the Period Report's headline block — one definition,
+  // shared from reports/headlineKpis.ts.
+  return buildHeadlineKpis({
+    incidents:     curr,
+    prevIncidents: prev,
+    reviews,
+    prevReviews,
+    deltaLabel:    'vs prev week',
+  })
 }
 
 // ─── Public entry ─────────────────────────────────────────────────────────────
@@ -619,10 +579,10 @@ export function buildControlPmcPlan(
   const trendPool = allReviews.length > 0 ? allReviews : [...prevReviews, ...reviews]
   const recoveryTrend = deriveRecoveryTrendByPeriod(trendPool)
 
-  const partial: Omit<ControlPmcPlan, 'headline'> = {
+  return {
     fatalities, stranded, irregular, pax, trainFaults, itsr, satisfaction, topDelay, recoveryTrend,
+    headline: buildHeadline(curr, prev, reviews, prevReviews),
   }
-  return { ...partial, headline: buildHeadline(partial) }
 }
 
 // ─── CSV serialiser ──────────────────────────────────────────────────────────

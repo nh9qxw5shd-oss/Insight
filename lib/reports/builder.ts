@@ -3,7 +3,7 @@
 // Sections that aren't in `options.sections` are omitted from the plan.
 
 import {
-  CATEGORY_CONFIG, IncidentRow, SAFETY_CATEGORIES, Severity,
+  CATEGORY_CONFIG, IncidentReview, IncidentRow, SAFETY_CATEGORIES, Severity,
 } from '../types'
 import {
   deriveKPIs, deriveTrend, deriveCategorySplit, deriveLocationHotspots,
@@ -14,6 +14,7 @@ import {
 import { railwayPeriodWeek } from '../railwayCalendar'
 import { buildNarrative } from './narrative'
 import { buildControlPmcPlan } from './controlPmc'
+import { buildHeadlineKpis } from './headlineKpis'
 import {
   AppendixRow, AssetRow, AttributionRow, CategoryRow, ChangePointRow, GeoRow,
   HeatmapCellPlain, ReportKpi, ReportOptions, ReportPlan, ReportSource,
@@ -50,7 +51,27 @@ function buildScopeLabel(template: ReportOptions['template'], from: string, to: 
 
 // ─── KPI list builder ────────────────────────────────────────────────────────
 
-function buildKpis(data: RawData): ReportKpi[] {
+// The Period Report leads on the same six operational numbers as the Control
+// PMC pack. Every other template keeps the broader eight-tile strategic set.
+function buildKpis(
+  data: RawData,
+  template: ReportOptions['template'],
+  reviews: IncidentReview[],
+  prevReviews: IncidentReview[],
+): ReportKpi[] {
+  if (template === 'period') {
+    return buildHeadlineKpis({
+      incidents:     data.incidents,
+      prevIncidents: data.prevIncidents,
+      reviews,
+      prevReviews,
+      deltaLabel:    'vs prior',
+    })
+  }
+  return buildStandardKpis(data)
+}
+
+function buildStandardKpis(data: RawData): ReportKpi[] {
   const k = deriveKPIs(data)
   const fmt = (n: number) => n.toLocaleString('en-GB', { maximumFractionDigits: 0 })
   const fmtMins = (n: number) => {
@@ -350,7 +371,7 @@ export function buildReportPlan(src: ReportSource, options: ReportOptions): Repo
     // the cover hero tiles for that template to avoid duplicating the same
     // KPI panel twice in a row.
     heroKpis: controlPmc ? undefined : buildHeroKpis(data),
-    kpis:           want.has('kpis')         ? buildKpis(data) : undefined,
+    kpis:           want.has('kpis')         ? buildKpis(data, options.template, src.reviews ?? [], src.prevReviews ?? []) : undefined,
     trend:          want.has('trend')        ? { points: buildTrend(trendPts), changePoints } : undefined,
     categories:     want.has('categoryMix')  ? categories : undefined,
     geography:      want.has('geography')    ? geography : undefined,

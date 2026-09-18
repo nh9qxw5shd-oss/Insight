@@ -121,7 +121,16 @@ export interface ReportMeta {
 export interface ReportKpi {
   label:    string
   value:    string
-  delta?:   { signedPct: number | null; deltaInverted: boolean; label: string }
+  delta?:   {
+    signedPct:     number | null
+    deltaInverted: boolean
+    label:         string
+    // 'pts' renders the movement as percentage points, which is the correct
+    // reading for a delta between two rates — ITSR adherence going 5% → 17%
+    // is +12 pts, not the +250% a relative change would claim. Defaults to a
+    // relative percentage change.
+    unit?:         'pct' | 'pts'
+  }
   critical?: boolean
   hint?:    string            // small subtitle under the value
 }
