@@ -1937,10 +1937,55 @@ export interface RecoveryTrendPoint {
   avgTimeStrandedMins:  number | null
 }
 
+// Sample extraction shared by the periodic trend and the window-level stats
+// below, so a headline average and the trend chart can never disagree about
+// which reviews counted.
+function collectRecoverySamples(
+  reviews: IncidentReview[],
+  into: { recover: number[]; stranded: number[] } = { recover: [], stranded: [] },
+): { recover: number[]; stranded: number[] } {
+  for (const r of reviews) {
+    if (r.time_to_recover_mins != null && r.time_to_recover_mins >= 0) {
+      into.recover.push(r.time_to_recover_mins)
+    }
+    if (r.stranded_trains_occurred === 'YES' && r.stranded_trains) {
+      for (const e of r.stranded_trains) {
+        const dur = minsFromTimes(e.time_stranded, e.time_moved)
+        if (dur != null && dur >= 0) into.stranded.push(dur)
+      }
+    }
+  }
+  return into
+}
+
+function meanOf(arr: number[]): number | null {
+  return arr.length > 0 ? arr.reduce((s, v) => s + v, 0) / arr.length : null
+}
+
+// Window-level (rather than per-period) recovery averages, used by the
+// headline KPI tiles. Sample counts come back too so a tile can state the
+// population the average was taken over.
+export interface RecoveryStats {
+  avgTimeToRecoverMins: number | null
+  recoverSamples:       number
+  avgTimeStrandedMins:  number | null
+  strandedSamples:      number
+}
+
+export function deriveRecoveryStats(reviews: IncidentReview[]): RecoveryStats {
+  const s = collectRecoverySamples(reviews)
+  return {
+    avgTimeToRecoverMins: meanOf(s.recover),
+    recoverSamples:       s.recover.length,
+    avgTimeStrandedMins:  meanOf(s.stranded),
+    strandedSamples:      s.stranded.length,
+  }
+}
+
 export function deriveRecoveryTrendByPeriod(reviews: IncidentReview[]): RecoveryTrendPoint[] {
   const byPeriod = new Map<string, {
     key: string; periodLabel: string; railYear: number; periodNumber: number
-    recoverSamples: number[]; strandedSamples: number[]
+    samples: { recover: number[]; stranded: number[] }
   }>()
 
   for (const r of reviews) {
@@ -1950,24 +1995,11 @@ export function deriveRecoveryTrendByPeriod(reviews: IncidentReview[]): Recovery
 
     const g = byPeriod.get(key) ?? {
       key, periodLabel, railYear: pw.railYear, periodNumber: pw.period,
-      recoverSamples: [], strandedSamples: [],
+      samples: { recover: [], stranded: [] },
     }
-
-    if (r.time_to_recover_mins != null && r.time_to_recover_mins >= 0) {
-      g.recoverSamples.push(r.time_to_recover_mins)
-    }
-
-    if (r.stranded_trains_occurred === 'YES' && r.stranded_trains) {
-      for (const e of r.stranded_trains) {
-        const dur = minsFromTimes(e.time_stranded, e.time_moved)
-        if (dur != null && dur >= 0) g.strandedSamples.push(dur)
-      }
-    }
-
+    collectRecoverySamples([r], g.samples)
     byPeriod.set(key, g)
   }
-
-  const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((s, v) => s + v, 0) / arr.length : null
 
   return Array.from(byPeriod.values())
     .sort((a, b) => a.railYear !== b.railYear ? a.railYear - b.railYear : a.periodNumber - b.periodNumber)
@@ -1976,7 +2008,51 @@ export function deriveRecoveryTrendByPeriod(reviews: IncidentReview[]): Recovery
       periodLabel:          g.periodLabel,
       railYear:             g.railYear,
       periodNumber:         g.periodNumber,
-      avgTimeToRecoverMins: avg(g.recoverSamples),
-      avgTimeStrandedMins:  avg(g.strandedSamples),
+      avgTimeToRecoverMins: meanOf(g.samples.recover),
+      avgTimeStrandedMins:  meanOf(g.samples.stranded),
     }))
+}
+
+// ─── ITSR adherence ────────────────────────────────────────────────────────────
+// Every incident above the delay threshold should have an ITSR completed. A
+// review of N/A means an ITSR does not APPLY — exempt, dropped from the
+// denominator rather than counted as a failure. An incident with no review on
+// file counts against adherence: the metric is the policy gate, and an
+// unreviewed event has not passed it.
+
+export const ITSR_THRESHOLD_MINS = 300
+
+export interface ItsrAdherence {
+  completed:  IncidentRow[]   // reviewed, ITSR done
+  missing:    IncidentRow[]   // reviewed, no ITSR
+  exempt:     IncidentRow[]   // reviewed N/A — outside the denominator
+  unreviewed: IncidentRow[]   // no review on file — counts against adherence
+  applicable: number          // denominator: above-threshold minus exempt
+  pct:        number          // 100 when nothing was applicable
+}
+
+export function deriveItsrAdherence(
+  incidents: IncidentRow[],
+  reviewsById: Map<string, IncidentReview>,
+): ItsrAdherence {
+  const above = nonContinuation(incidents).filter(i => effectiveDelay(i) > ITSR_THRESHOLD_MINS)
+
+  const completed:  IncidentRow[] = []
+  const missing:    IncidentRow[] = []
+  const exempt:     IncidentRow[] = []
+  const unreviewed: IncidentRow[] = []
+
+  for (const i of above) {
+    const r = reviewsById.get(i.id)
+    if (!r) { unreviewed.push(i); continue }
+    if (r.itsr_required === 'YES')     completed.push(i)
+    else if (r.itsr_required === 'NA') exempt.push(i)
+    else                               missing.push(i)
+  }
+
+  const applicable = above.length - exempt.length
+  return {
+    completed, missing, exempt, unreviewed, applicable,
+    pct: applicable === 0 ? 100 : (completed.length / applicable) * 100,
+  }
 }

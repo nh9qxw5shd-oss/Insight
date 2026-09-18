@@ -7011,15 +7011,19 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope.from, scope.to, filterSig, demoMode])
 
-  // Fetch incident reviews for the Control PMC template so stranded-train and
-  // ITSR adherence sections are populated. Skipped for other templates to
-  // avoid an unused round-trip.
+  // Fetch incident reviews for the templates whose headline numbers ride on
+  // them: Control PMC (stranded-train + ITSR sections) and the Period Report
+  // (ITSR adherence, time stranded, time to recover headline KPIs). Skipped
+  // for the other templates to avoid an unused round-trip. PMC flags are
+  // Control-PMC-only.
   useEffect(() => {
-    if (template !== 'controlPmc') {
+    const needsReviews = template === 'controlPmc' || template === 'period'
+    if (!needsReviews) {
       setReviewBundle(null)
       setReportPmcFlags([])
       return
     }
+    const needsFlags = template === 'controlPmc'
     let cancelled = false
     const days = daysBetween(scope.from, scope.to)
     const prevTo = isoMinusDays(scope.from, 1)
@@ -7028,8 +7032,8 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
     async function run() {
       try {
         if (!isSupabaseConfigured() || demoMode) {
-          // No reviews or flags in demo mode — Control PMC sections will
-          // surface an explanatory status banner rather than fake numbers.
+          // No reviews or flags in demo mode — review-backed numbers surface
+          // an explanatory status banner rather than fake figures.
           if (!cancelled) {
             setReviewBundle({ reviews: [], prevReviews: [] })
             setReportPmcFlags([])
@@ -7039,7 +7043,7 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
         const [reviews, prevReviews, flags] = await Promise.all([
           fetchReviewsForRange(scope.from, scope.to),
           fetchReviewsForRange(prevFrom, prevTo),
-          fetchPmcFlagsForRange(scope.from, scope.to),
+          needsFlags ? fetchPmcFlagsForRange(scope.from, scope.to) : Promise.resolve([] as PmcFlag[]),
         ])
         if (!cancelled) {
           setReviewBundle({ reviews, prevReviews })
