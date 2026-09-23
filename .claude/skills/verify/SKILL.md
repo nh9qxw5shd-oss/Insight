@@ -37,3 +37,8 @@ Useful flows:
 - KPI tiles: the whole card is clickable — `page.locator('div.card', { hasText: 'Total Incidents' }).click()` opens the DrillDownModal (`h3:has-text("All Incidents")`).
 - Nearly everything is a drill-down into the same modal: hotspots, repeat assets, routes, etc.
 - Tabs are the top nav buttons (OVERVIEW, SAFETY, PERFORMANCE, …).
+- WhatsApp tab: `page.setInputFiles` on the hidden input does not fire React's
+  change handler — use `page.waitForEvent('filechooser')` + `chooser.setFiles`,
+  or dispatch a `drop` event with a `DataTransfer` on `.card.border-dashed`.
+  Give the fixture an ASCII-only file name; a path with an en dash never
+  reaches the input. Modals portal to `<body>` and close on Escape.
