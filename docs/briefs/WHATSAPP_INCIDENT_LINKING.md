@@ -139,7 +139,47 @@ Those last two rows are the point of the feature: for the same incident you
 can see both "did Control say it was over" and "when did CCIL say it was
 over", and score the gap.
 
-## 4. Proposed design
+## 4. Scoring against the EM Control Messaging Standard
+
+The Route's Control Messaging Standard (issue 0.8, 17 Mar 2025, Head of
+Control) turns "monitor the messaging" into compliance scoring against written
+rules. The measurable ones, and what the exports show today:
+
+| Rule in the standard | Metric | Evidence from the exports |
+|---|---|---|
+| WhatsApp incident messages are sent for RED/BLACK incidents; SNDM manages them | % of highlight / high-delay CCIL incidents with any linked post; sender role | Post-standard, 76–77% of all posts come from the shared "SNDM Derby" role account, up from a spread of named individuals |
+| Holding message within 10 min of Control receiving the information | first linked post minus CCIL `advised_time` / `incident_start` | July trial: median 35 min, p25 21 min, on 30 confident pairs |
+| First detailed message within 20 min of the holding message (the overview table says 15) | gap between first and second linked post | 47–51% of multi-post threads meet 20 min post-standard (35–47% before) |
+| Updates every 30 min for RED/BLACK, 45 min for AMBER | share of inter-post gaps within target, by category | Pre-standard RED-tagged threads: 57% (North) / 73% (South) of gaps ≤ 30 min; 20% / 11% of gaps > 60 min. Post-standard cannot be scored by category, see gap below |
+| Avoid several updates in quick succession | threads with any gap < 5 min | 33–34% of multi-post threads post-standard, up from 23–24% |
+| Title format "East Midlands route Red Incident: Headline – Location"; off-route "Off Route Incident advice Sussex Route: …" | regex on first post | 0% of threads use the incident title format in either era; off-route format used once |
+| Holding message content: location, summary, asset/train ID, impact, initial response, command structure | presence of each element in the first linked post | headcode present in 41–50% of first posts; only about a third of those give origin and destination as the standard requires |
+| Incident message content: responders/ETA, priority plan, impact, contingency, stranded trains, command structure, passenger impact, milestone plan | keyword presence per thread | post-standard, North / South: response 84% / 63%, command structure 70% / 53%, stranded 51% / 33%, passenger impact 49% / 47%, priority or milestone plan 20% / 26% |
+| Rectified / in order: time declared, cause, NWR confirmed, service recovery target, first train to run | keyword presence in closing posts | recovery target 53% / 46% post-standard, up from 14% / 29%; an explicit in-order or NWR time 37% / 26%; first-train detail 0–1% |
+| Clear the incident once service recovery is complete | thread ends with a closure post | 68% / 61% post-standard (73% / 71% before) |
+| Style: no abbreviations such as SOWC, TCF | abbreviation regex on first post | 59–62% of first posts contain at least one listed abbreviation, unchanged by the standard |
+
+Two things the standard changed visibly: command-structure and
+service-recovery-target content roughly doubled, and messaging consolidated
+onto the SNDM role account. One thing it removed: the RAG emoji prefix, used on
+38–51% of first posts before March 2025, is absent afterwards, and the written
+"Red Incident" title never replaced it.
+
+**Data gap that matters.** After March 2025 the formal BLACK/RED/AMBER/GREEN
+category is not recorded in either source. CCIL `severity` is a delay-derived
+proxy, not the route categorisation (its LOW bucket contains the 11,802-minute
+Elstree de-wirement). Cadence compliance by category therefore needs one of:
+the category added to `incident_reviews` by the SNDM at review, a delay-based
+proxy declared as such, or the category re-introduced into the post title as
+the standard already requires. The last option fixes the data and the
+compliance gap at once.
+
+Caveats on the numbers: thread boundaries come from the naive headline
+grouping in section 3, keyword presence is a proxy for a populated section,
+and the standard is a draft issue with no compliance date, so the "post"
+period measures adoption, not breach.
+
+## 5. Proposed design
 
 ### Anchor on the incident, not the thread
 
@@ -207,7 +247,7 @@ existing `canWrite` gate once the PII position is settled.
   incidents with any post, % with a close, by group and by month.
 - Unlinked inbox and ambiguous-link review queue.
 
-## 5. Risks and decisions needed
+## 6. Risks and decisions needed
 
 - **Personal data.** Exports carry staff names, and unsaved contacts appear as
   phone numbers (`‪+44 7825 …‬`) or `~ Peter`. Recommend storing a normalised
@@ -230,7 +270,7 @@ existing `canWrite` gate once the PII position is settled.
 - **CCIL `area` null on 38% of rows** weakens the group→area prior; fall back to
   gazetteer corridor.
 
-## 6. Effort
+## 7. Effort
 
 | Phase | Scope | Size |
 |---|---|---|
@@ -239,7 +279,7 @@ existing `canWrite` gate once the PII position is settled.
 | 2 | Comms tab roll-ups, unlinked inbox, manual link/unlink | ~2 days |
 | 3 | Browser upload, PII policy, optional LLM re-rank | on decision |
 
-## 7. Reproducing the trial
+## 8. Reproducing the trial
 
 `scripts/whatsapp-ccil-link-poc.py` is the matcher used above. Export CCIL
 candidates to JSON from the SQL Editor:
