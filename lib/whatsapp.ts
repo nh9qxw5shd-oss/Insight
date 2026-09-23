@@ -1022,3 +1022,175 @@ export function boldSegments(text: string): { bold: boolean; text: string }[] {
 }
 
 export { bodyText as messageText }
+
+// ─── Attribution to the SNDM on shift ────────────────────────────────────────
+// The standard makes the SNDM accountable for WhatsApp incident messaging.
+// Since March 2025 posts come from the shared "SNDM Derby" account, so the
+// sender cannot identify the person; instead the incident is attributed to
+// the SNDM DLog2 recorded on duty for that log day and shift. The shift is
+// chosen from the time of the first WhatsApp post (day 06:00–18:00, night
+// otherwise, the EMCC 12-hour pattern). Before the role account existed the
+// poster's own name is used when no roster row exists.
+
+export const DAY_SHIFT_START = 6   // 06:00 inclusive
+export const DAY_SHIFT_END   = 18  // 18:00 exclusive
+
+export const SNDM_ROLE_ACCOUNT = /^sndm derby$/i
+const SNDM_ROLE_RE = /\bsndm\b/i
+const PLACEHOLDER_NAME_RE = /^(uncovered|vacancy|u\/c|tbc|n\/a|none|-+|=+|\?+)$/i
+export const UNATTRIBUTED = 'Unattributed'
+
+export interface RosterRow { incident_id: string; report_date: string; name: string; role: string; shift: 'day' | 'night' }
+
+export function normaliseStaffName(name: string): string {
+  const n = name.replace(/\s+/g, ' ').trim()
+  if (!n || PLACEHOLDER_NAME_RE.test(n)) return 'Uncovered'
+  return n
+}
+
+export function shiftForLocal(sentLocal: string): 'day' | 'night' {
+  const h = parseInt(sentLocal.slice(11, 13), 10)
+  return h >= DAY_SHIFT_START && h < DAY_SHIFT_END ? 'day' : 'night'
+}
+
+export interface SndmAttribution {
+  name: string
+  source: 'roster' | 'sender' | 'none'
+  shift: 'day' | 'night' | null
+}
+
+// Roster index: incident id → SNDM rows.
+export function indexRoster(rows: RosterRow[]): Map<string, RosterRow[]> {
+  const m = new Map<string, RosterRow[]>()
+  for (const r of rows) {
+    if (!SNDM_ROLE_RE.test(r.role)) continue
+    const arr = m.get(r.incident_id) ?? []
+    arr.push(r)
+    m.set(r.incident_id, arr)
+  }
+  return m
+}
+
+export function attributeSndm(s: CommsScore, roster: Map<string, RosterRow[]>): SndmAttribution {
+  const first = s.posts[0]
+  const shift = first ? shiftForLocal(first.sent_local) : null
+  const rows = roster.get(s.incidentId) ?? []
+  if (rows.length) {
+    const onShift = rows.filter(r => shift == null || r.shift === shift)
+    const pick = (onShift.length ? onShift : rows)[0]
+    return { name: normaliseStaffName(pick.name), source: 'roster', shift }
+  }
+  if (first && !SNDM_ROLE_ACCOUNT.test(first.sender) && first.sender !== 'Unsaved contact' && first.sender !== 'Control Mob') {
+    return { name: normaliseStaffName(first.sender), source: 'sender', shift }
+  }
+  return { name: UNATTRIBUTED, source: 'none', shift }
+}
+
+export interface SndmStats {
+  name: string
+  incidents: number
+  dayIncidents: number
+  nightIncidents: number
+  fromRoster: number
+  meanScore: number | null
+  grades: Record<'A' | 'B' | 'C' | 'D', number>
+  medianFirstPostMins: number | null
+  pctFirstPostWithin10: number | null
+  pctFirstUpdateWithin20: number | null
+  pctGapsWithinTarget: number | null
+  pctWithClose: number | null
+  meanCompleteness: number | null
+  posts: number
+  scores: CommsScore[]
+}
+
+// Roster spellings drift ("Brad Garner" / "Bradley Garner"). Names sharing a
+// surname whose forenames are prefixes of each other are merged under the
+// longest spelling. Two different people with the same surname and a shared
+// forename prefix would merge too; that is accepted and visible in the table.
+export function canonicaliseNames(names: string[]): Map<string, string> {
+  const out = new Map<string, string>()
+  const parts = (n: string) => { const t = n.toLowerCase().split(' '); return { first: t[0] ?? '', last: t[t.length - 1] ?? '' } }
+  for (const n of names) {
+    let best = n
+    for (const m of names) {
+      if (m === n) continue
+      const a = parts(n), b = parts(m)
+      if (a.last === b.last && a.first && b.first && (b.first.startsWith(a.first) || a.first.startsWith(b.first)) && m.length > best.length) best = m
+    }
+    out.set(n, best)
+  }
+  return out
+}
+
+export function computeSndmStats(scores: CommsScore[], roster: Map<string, RosterRow[]>): { stats: SndmStats[]; byIncident: Map<string, SndmAttribution> } {
+  const byIncident = new Map<string, SndmAttribution>()
+  const groups = new Map<string, CommsScore[]>()
+  const meta = new Map<string, { day: number; night: number; roster: number }>()
+  const raw = scores.map(s => attributeSndm(s, roster))
+  const canon = canonicaliseNames([...new Set(raw.map(a => a.name))])
+  for (let i = 0; i < scores.length; i++) {
+    const s = scores[i]
+    const a = { ...raw[i], name: canon.get(raw[i].name) ?? raw[i].name }
+    byIncident.set(s.incidentId, a)
+    const arr = groups.get(a.name) ?? []
+    arr.push(s); groups.set(a.name, arr)
+    const m = meta.get(a.name) ?? { day: 0, night: 0, roster: 0 }
+    if (a.shift === 'day') m.day++; else if (a.shift === 'night') m.night++
+    if (a.source === 'roster') m.roster++
+    meta.set(a.name, m)
+  }
+  const stats: SndmStats[] = []
+  for (const [name, ss] of groups) {
+    const lags = ss.map(x => x.firstPostLagMins).filter((x): x is number => x != null)
+    const fu = ss.map(x => x.firstUpdateGapMins).filter((x): x is number => x != null)
+    const gaps = ss.flatMap(x => x.gaps.map(g => [g, x.cadenceTargetMins] as const))
+    const grades = { A: 0, B: 0, C: 0, D: 0 }
+    for (const x of ss) grades[x.grade]++
+    const m = meta.get(name)!
+    stats.push({
+      name, incidents: ss.length, dayIncidents: m.day, nightIncidents: m.night, fromRoster: m.roster,
+      meanScore: mean(ss.map(x => x.score)), grades,
+      medianFirstPostMins: median(lags),
+      pctFirstPostWithin10: pct(lags.filter(l => l <= STANDARD.holdingMins).length, lags.length),
+      pctFirstUpdateWithin20: pct(fu.filter(g => g <= STANDARD.firstDetailMins).length, fu.length),
+      pctGapsWithinTarget: pct(gaps.filter(([g, t]) => g <= t).length, gaps.length),
+      pctWithClose: pct(ss.filter(x => x.hasClose).length, ss.length),
+      meanCompleteness: mean(ss.map(x => x.completeness)),
+      posts: ss.reduce((n, x) => n + x.postCount, 0),
+      scores: ss,
+    })
+  }
+  stats.sort((a, b) => b.incidents - a.incidents)
+  return { stats, byIncident }
+}
+
+export type SndmTrendMetric = 'meanScore' | 'medianFirstPostMins' | 'pctWithClose' | 'pctGapsWithinTarget'
+export const SNDM_TREND_METRIC_LABELS: Record<SndmTrendMetric, string> = {
+  meanScore: 'Mean score',
+  medianFirstPostMins: 'Median first post (min)',
+  pctWithClose: 'Closed with NWR post %',
+  pctGapsWithinTarget: 'Updates within cadence %',
+}
+
+// Monthly series per SNDM: [{ key, label, <name>: value, ... }]
+export function computeSndmTrend(stats: SndmStats[], metric: SndmTrendMetric, names: string[]): Record<string, string | number | null>[] {
+  const months = new Map<string, Record<string, string | number | null>>()
+  for (const st of stats) {
+    if (!names.includes(st.name)) continue
+    const byMonth = new Map<string, CommsScore[]>()
+    for (const s of st.scores) { const k = s.incident.report_date.slice(0, 7); const arr = byMonth.get(k) ?? []; arr.push(s); byMonth.set(k, arr) }
+    for (const [k, ss] of byMonth) {
+      let row = months.get(k)
+      if (!row) { row = { key: k, label: new Date(k + '-01T00:00:00Z').toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' }) }; months.set(k, row) }
+      let v: number | null = null
+      if (metric === 'meanScore') v = mean(ss.map(x => x.score))
+      else if (metric === 'medianFirstPostMins') v = median(ss.map(x => x.firstPostLagMins).filter((x): x is number => x != null))
+      else if (metric === 'pctWithClose') { const p = pct(ss.filter(x => x.hasClose).length, ss.length); v = p == null ? null : p * 100 }
+      else { const gaps = ss.flatMap(x => x.gaps.map(g => [g, x.cadenceTargetMins] as const)); const p = pct(gaps.filter(([g, t]) => g <= t).length, gaps.length); v = p == null ? null : p * 100 }
+      row[st.name] = v == null ? null : Math.round(v * 10) / 10
+      row[`${st.name}__n`] = ss.length
+    }
+  }
+  return [...months.values()].sort((a, b) => String(a.key).localeCompare(String(b.key)))
+}

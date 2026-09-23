@@ -2228,3 +2228,18 @@ export async function deleteWaGroupData(group: WaGroup): Promise<void> {
   const m = await sb.from('wa_messages').delete().eq('group_name', group)
   if (m.error) throw new Error(m.error.message)
 }
+
+// SNDM roster rows only (role contains "SNDM") for a date range — the
+// WhatsApp tab attributes each linked incident's comms to the SNDM on shift.
+export async function fetchSndmRosterForRange(from: string, to: string): Promise<IncidentTeamMember[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<IncidentTeamMember>(() =>
+    sb!.from('incident_team_members').select(TEAM_MEMBER_COLS)
+      .ilike('role', '%sndm%')
+      .gte('report_date', from)
+      .lte('report_date', to)
+      .order('report_date', { ascending: true })
+      .order('id', { ascending: true }),
+  )
+}

@@ -684,6 +684,12 @@ replaced at parse time and never stored.
   Notable incidents with no post at all are listed underneath. Click a row to
   open the incident: CCIL fields and commentary on the left, the WhatsApp chain
   on the right, or **Merged timeline** to interleave them.
+- **By SNDM** — the same scores attributed to the SNDM DLog2 recorded on
+  duty for the incident's log day, day roster when the first post fell
+  between 06:00 and 18:00 and night roster otherwise. A monthly trend per
+  person (mean score, median first post, closure, cadence) and a table with
+  each person's incident list. Where no roster row exists the poster's own
+  name is used if it is a person rather than the shared SNDM account.
 - **Unlinked chains** — chains with no incident. Accept the matcher's
   suggestion with **Link**, or **Find incident…** to search CCIL rows near the
   chain's date. Advisories, conference-call invitations and off-route items are

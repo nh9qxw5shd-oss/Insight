@@ -4,14 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, ReactNode } from 're
 import { createPortal } from 'react-dom'
 import {
   MessageSquare, Upload, Loader2, X, Link2, CheckCircle2, XCircle, AlertTriangle,
-  Download, Trash2, Search, Clock, FileText, Inbox, Activity, ListChecks,
+  Download, Trash2, Search, Clock, FileText, Inbox, Activity, ListChecks, Users,
 } from 'lucide-react'
 import {
   ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts'
-import { IncidentRow, IncidentEvent, WaGroup, WaImport, WaMessage, WaThreadLink, CATEGORY_CONFIG } from '@/lib/types'
+import { IncidentRow, IncidentEvent, IncidentTeamMember, WaGroup, WaImport, WaMessage, WaThreadLink, CATEGORY_CONFIG } from '@/lib/types'
 import {
-  effectiveDelay, fetchIncidentEvents, fetchIncidentsLeanForRange,
+  effectiveDelay, fetchIncidentEvents, fetchIncidentsLeanForRange, fetchSndmRosterForRange,
   fetchWaMessages, fetchWaLinks, fetchWaImports, upsertWaMessages, insertWaAutoLinks,
   insertWaImport, updateWaImportCounts, setWaLink, deleteWaLink, deleteWaGroupData,
 } from '@/lib/queries'
@@ -23,15 +23,18 @@ import {
   mergedTimeline, scoresToCsv, boldSegments, messageText, localMs,
   WA_GROUP_LABELS, STANDARD, CONTENT_FLAG_LABELS, WA_FLAG_LABELS, NOTABLE_RULE_LABELS,
   ClassifiedMessage, WaThread, ThreadMatch, CommsScore, WaFlag, NotableRule, WaPicture, ContentFlags,
+  indexRoster, computeSndmStats, computeSndmTrend, SndmStats, SndmTrendMetric, SNDM_TREND_METRIC_LABELS, SndmAttribution,
+  DAY_SHIFT_START, DAY_SHIFT_END, UNATTRIBUTED,
 } from '@/lib/whatsapp'
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const AUTHOR_STORAGE_KEY = 'insight-author'
-type Section = 'scorecard' | 'incidents' | 'inbox' | 'monitoring' | 'imports'
+type Section = 'scorecard' | 'incidents' | 'sndm' | 'inbox' | 'monitoring' | 'imports'
 const SECTIONS: { id: Section; label: string; icon: typeof Activity }[] = [
   { id: 'scorecard',  label: 'Scorecard',  icon: Activity },
   { id: 'incidents',  label: 'Incidents',  icon: ListChecks },
+  { id: 'sndm',       label: 'By SNDM',    icon: Users },
   { id: 'inbox',      label: 'Unlinked chains', icon: Inbox },
   { id: 'monitoring', label: 'Monitoring', icon: AlertTriangle },
   { id: 'imports',    label: 'Imports',    icon: Upload },
@@ -104,6 +107,7 @@ export function WhatsAppTab({ incidents, windowFrom, windowTo, demoMode, canWrit
   const [links,     setLinks]     = useState<WaThreadLink[]>([])
   const [imports,   setImports]   = useState<WaImport[]>([])
   const [rangeIncidents, setRangeIncidents] = useState<IncidentRow[]>([])
+  const [roster, setRoster] = useState<IncidentTeamMember[]>([])
   const [loadedRange, setLoadedRange] = useState<{ from: string; to: string } | null>(null)
   const [loading,   setLoading]   = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -158,6 +162,16 @@ export function WhatsAppTab({ incidents, windowFrom, windowTo, demoMode, canWrit
     return () => { cancelled = true }
   }, [live, msgRange, loadedRange, incidents])
 
+  // SNDM roster for the same range (who was on duty per log day and shift).
+  useEffect(() => {
+    if (!live || !loadedRange) return
+    let cancelled = false
+    fetchSndmRosterForRange(loadedRange.from, loadedRange.to)
+      .then(rows => { if (!cancelled) setRoster(rows) })
+      .catch(() => { if (!cancelled) setRoster([]) })
+    return () => { cancelled = true }
+  }, [live, loadedRange])
+
   // ── Derived picture ─────────────────────────────────────────────────────────
   const allThreads = useMemo(() => threadsFromMessages(messages), [messages])
   const byDay = useMemo(() => indexIncidentsByDay(rangeIncidents), [rangeIncidents])
@@ -180,6 +194,8 @@ export function WhatsAppTab({ incidents, windowFrom, windowTo, demoMode, canWrit
   const kpis  = useMemo(() => computeKpis(picture), [picture])
   const trend = useMemo(() => computeTrend(picture), [picture])
   const flags = useMemo(() => computeFlags(picture, matches), [picture, matches])
+  const rosterIdx = useMemo(() => indexRoster(roster), [roster])
+  const sndm = useMemo(() => computeSndmStats(picture.scores, rosterIdx), [picture, rosterIdx])
   const incidentById = useMemo(() => new Map(rangeIncidents.map(i => [i.id, i])), [rangeIncidents])
   const threadByKey = useMemo(() => new Map(allThreads.map(t => [t.key, t])), [allThreads])
 
@@ -415,6 +431,7 @@ export function WhatsAppTab({ incidents, windowFrom, windowTo, demoMode, canWrit
               const count = s.id === 'inbox' ? picture.unlinked.filter(t => isInboxWorthy(t)).length
                 : s.id === 'monitoring' ? flags.length
                 : s.id === 'incidents' ? picture.scores.length
+                : s.id === 'sndm' ? sndm.stats.length
                 : s.id === 'imports' ? imports.length : null
               return (
                 <button key={s.id} className={`tab flex items-center gap-2 ${section === s.id ? 'tab-active' : ''}`} onClick={() => setSection(s.id)}>
@@ -427,6 +444,7 @@ export function WhatsAppTab({ incidents, windowFrom, windowTo, demoMode, canWrit
 
           {section === 'scorecard'  && <Scorecard kpis={kpis} trend={trend} picture={picture} rule={rule} />}
           {section === 'incidents'  && <IncidentTable picture={picture} onOpen={setOpenIncidentId} />}
+          {section === 'sndm'       && <SndmSection stats={sndm.stats} rosterRows={roster.length} onOpen={setOpenIncidentId} />}
           {section === 'inbox'      && <UnlinkedInbox picture={picture} matches={matches} incidents={scopedIncidents} onOpenThread={setOpenThreadKey} onLink={linkThread} canWrite={canWrite || !live} />}
           {section === 'monitoring' && <Monitoring flags={flags} onOpen={setOpenIncidentId} onOpenThread={setOpenThreadKey} />}
           {section === 'imports'    && <Imports imports={imports} messages={messages} onClear={clearGroup} canWrite={canWrite || !live} />}
@@ -437,6 +455,7 @@ export function WhatsAppTab({ incidents, windowFrom, windowTo, demoMode, canWrit
         <IncidentCommsModal
           incident={openIncident}
           score={picture.scoreByIncident.get(openIncident.id) ?? null}
+          sndm={sndm.byIncident.get(openIncident.id) ?? null}
           links={links.filter(l => l.incident_id === openIncident.id)}
           threadByKey={threadByKey}
           live={live}
@@ -756,6 +775,130 @@ function IncidentTable({ picture, onOpen }: { picture: WaPicture; onOpen: (id: s
   )
 }
 
+// ─── By SNDM ─────────────────────────────────────────────────────────────────
+
+const SNDM_COLORS = ['var(--nr-orange)', 'var(--nr-blue)', 'var(--nr-green)', 'var(--nr-amber)', 'var(--nr-red)', 'var(--nr-steel)']
+
+function SndmSection({ stats, rosterRows, onOpen }: { stats: SndmStats[]; rosterRows: number; onOpen: (id: string) => void }) {
+  const [metric, setMetric] = useState<SndmTrendMetric>('meanScore')
+  const [selected, setSelected] = useState<string[] | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [sort, setSort] = useState<'incidents' | 'score' | 'lag' | 'close'>('incidents')
+  const named = useMemo(() => stats.filter(s => s.name !== UNATTRIBUTED && s.name !== 'Uncovered'), [stats])
+  const defaultNames = useMemo(() => named.slice(0, 6).map(s => s.name), [named])
+  const names = selected ?? defaultNames
+  const trend = useMemo(() => computeSndmTrend(stats, metric, names), [stats, metric, names])
+  const rows = useMemo(() => {
+    const cmp: Record<typeof sort, (a: SndmStats, b: SndmStats) => number> = {
+      incidents: (a, b) => b.incidents - a.incidents,
+      score: (a, b) => (a.meanScore ?? 0) - (b.meanScore ?? 0),
+      lag: (a, b) => (b.medianFirstPostMins ?? -1) - (a.medianFirstPostMins ?? -1),
+      close: (a, b) => (a.pctWithClose ?? 0) - (b.pctWithClose ?? 0),
+    }
+    return [...stats].sort(cmp[sort])
+  }, [stats, sort])
+  const fromRoster = stats.reduce((n, s) => n + s.fromRoster, 0)
+  const total = stats.reduce((n, s) => n + s.incidents, 0)
+  const colorOf = (name: string) => SNDM_COLORS[Math.max(0, names.indexOf(name)) % SNDM_COLORS.length]
+
+  return (
+    <div className="space-y-4">
+      <div className="text-[11px]" style={{ color: 'var(--ink-400)' }}>
+        Each linked incident is attributed to the SNDM recorded on duty in DLog2 for that log day, taking the day roster when the
+        first post fell between {String(DAY_SHIFT_START).padStart(2, '0')}:00 and {String(DAY_SHIFT_END).padStart(2, '0')}:00 and the night roster otherwise.
+        Where no roster row exists, the poster's own name is used if it is a person rather than the shared SNDM account.
+        {' '}<span className="numeric-mono">{fromRoster}/{total}</span> incidents attributed from the roster{rosterRows ? '' : ' (no roster rows loaded)'}.
+      </div>
+
+      <div className="card p-4">
+        <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+          <div className="label-micro">Trend by month per SNDM</div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <select className="btn text-[11px]" value={metric} onChange={e => setMetric(e.target.value as SndmTrendMetric)}>
+              {(Object.keys(SNDM_TREND_METRIC_LABELS) as SndmTrendMetric[]).map(k => <option key={k} value={k}>{SNDM_TREND_METRIC_LABELS[k]}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="flex items-center gap-1 flex-wrap mb-2">
+          {named.map(s => (
+            <button key={s.name} className={`btn text-[10px] ${names.includes(s.name) ? 'btn-active' : ''}`}
+              onClick={() => setSelected(names.includes(s.name) ? names.filter(n => n !== s.name) : [...names, s.name])}>
+              <span className="inline-block w-2 h-2 rounded-full mr-1" style={{ background: names.includes(s.name) ? colorOf(s.name) : 'var(--ink-500)' }} />{s.name}
+            </button>
+          ))}
+        </div>
+        {!named.length && <div className="text-[11px] py-6 text-center" style={{ color: 'var(--ink-500)' }}>No incident could be attributed to a named SNDM in scope{rosterRows ? '' : ' — the roster is only available with Supabase configured'}.</div>}
+        {named.length > 0 && <ResponsiveContainer width="100%" height={240}>
+          <ComposedChart data={trend} margin={{ top: 8, right: 8, bottom: 4, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
+            <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: 'var(--ink-500)', fontFamily: 'JetBrains Mono, monospace' }} />
+            <YAxis axisLine={false} tickLine={false} width={34} tick={{ fontSize: 9, fill: 'var(--ink-500)', fontFamily: 'JetBrains Mono, monospace' }} domain={metric === 'medianFirstPostMins' ? [0, 'auto'] : [0, 100]} />
+            <Tooltip content={<TrendTip />} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
+            <Legend wrapperStyle={{ fontSize: 10, color: 'var(--ink-400)' }} />
+            {names.map(n => <Line key={n} type="monotone" dataKey={n} name={n} stroke={colorOf(n)} strokeWidth={2} dot={{ r: 2 }} connectNulls />)}
+          </ComposedChart>
+        </ResponsiveContainer>}
+        <div className="text-[10px] mt-1" style={{ color: 'var(--ink-500)' }}>Months with one or two incidents for a person swing hard; read the table's incident counts alongside the lines.</div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <select className="btn text-[11px]" value={sort} onChange={e => setSort(e.target.value as typeof sort)}>
+          <option value="incidents">Most incidents</option>
+          <option value="score">Lowest score first</option>
+          <option value="lag">Slowest first post</option>
+          <option value="close">Lowest closure first</option>
+        </select>
+      </div>
+      <div className="card overflow-hidden">
+        <div className="grid grid-cols-12 gap-2 px-3 py-2 label-micro border-b border-[var(--line)]">
+          <div className="col-span-3">SNDM</div>
+          <div className="col-span-1 text-right">Incidents</div>
+          <div className="col-span-1 text-right">Day / night</div>
+          <div className="col-span-1 text-right">1st post</div>
+          <div className="col-span-1 text-right">≤ 10 min</div>
+          <div className="col-span-1 text-right">1st detail</div>
+          <div className="col-span-1 text-right">Cadence</div>
+          <div className="col-span-1 text-right">Close</div>
+          <div className="col-span-1 text-right">Content</div>
+          <div className="col-span-1 text-right">Score</div>
+        </div>
+        {rows.map(s => (
+          <div key={s.name}>
+            <button className="w-full grid grid-cols-12 gap-2 px-3 py-2 text-left text-[11px] items-center border-b border-[var(--line)] hover:bg-[var(--bg-card-hi)] transition-colors" onClick={() => setExpanded(expanded === s.name ? null : s.name)}>
+              <div className="col-span-3 min-w-0">
+                <div className="truncate" style={{ color: s.name === UNATTRIBUTED ? 'var(--ink-500)' : 'var(--ink-200)' }}>{s.name}</div>
+                <div className="text-[10px] numeric-mono" style={{ color: 'var(--ink-500)' }}>A {s.grades.A} · B {s.grades.B} · C {s.grades.C} · D {s.grades.D} · {s.posts} posts{s.name !== UNATTRIBUTED && s.fromRoster < s.incidents ? ` · ${s.incidents - s.fromRoster} by poster name` : ''}{s.name === UNATTRIBUTED ? ' · no SNDM roster row for these incidents' : ''}</div>
+              </div>
+              <div className="col-span-1 text-right numeric-mono" style={{ color: 'var(--ink-300)' }}>{s.incidents}</div>
+              <div className="col-span-1 text-right numeric-mono" style={{ color: 'var(--ink-400)' }}>{s.dayIncidents} / {s.nightIncidents}</div>
+              <div className="col-span-1 text-right numeric-mono" style={{ color: toneFor(s.medianFirstPostMins, STANDARD.holdingMins, 30, false) }}>{fmtMins(s.medianFirstPostMins)}</div>
+              <div className="col-span-1 text-right numeric-mono" style={{ color: toneFor(s.pctFirstPostWithin10, 0.5, 0.25) }}>{fmtPct(s.pctFirstPostWithin10)}</div>
+              <div className="col-span-1 text-right numeric-mono" style={{ color: toneFor(s.pctFirstUpdateWithin20, 0.8, 0.5) }}>{fmtPct(s.pctFirstUpdateWithin20)}</div>
+              <div className="col-span-1 text-right numeric-mono" style={{ color: toneFor(s.pctGapsWithinTarget, 0.8, 0.5) }}>{fmtPct(s.pctGapsWithinTarget)}</div>
+              <div className="col-span-1 text-right numeric-mono" style={{ color: toneFor(s.pctWithClose, 0.8, 0.6) }}>{fmtPct(s.pctWithClose)}</div>
+              <div className="col-span-1 text-right numeric-mono" style={{ color: toneFor(s.meanCompleteness, 0.8, 0.5) }}>{fmtPct(s.meanCompleteness)}</div>
+              <div className="col-span-1 text-right numeric-mono" style={{ color: toneFor(s.meanScore, 80, 60) }}>{s.meanScore == null ? '—' : Math.round(s.meanScore)}</div>
+            </button>
+            {expanded === s.name && (
+              <div className="px-3 py-2 border-b border-[var(--line)]" style={{ background: 'var(--bg-card)' }}>
+                {[...s.scores].sort((a, b) => b.incident.report_date.localeCompare(a.incident.report_date)).map(x => (
+                  <button key={x.incidentId} className="w-full flex items-center gap-3 text-left text-[11px] py-1 hover:bg-[var(--bg-card-hi)] rounded px-1" onClick={() => onOpen(x.incidentId)}>
+                    <span className="numeric-mono text-[10px] shrink-0" style={{ color: 'var(--ink-500)' }}>{x.incident.report_date}{x.incident.incident_start ? ` ${x.incident.incident_start.slice(0, 5)}` : ''}</span>
+                    <span className="truncate flex-1" style={{ color: 'var(--ink-300)' }}>{x.incident.title ?? '—'}</span>
+                    <span className="numeric-mono text-[10px] shrink-0" style={{ color: 'var(--ink-500)' }}>1st {fmtMins(x.firstPostLagMins)} · {x.postCount} posts{x.hasClose ? ' · closed' : ''}</span>
+                    <GradePill grade={x.grade} score={x.score} />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+        {!rows.length && <div className="p-6 text-center text-[11px]" style={{ color: 'var(--ink-500)' }}>No linked incidents in scope.</div>}
+      </div>
+    </div>
+  )
+}
+
 // ─── Unlinked inbox ──────────────────────────────────────────────────────────
 
 function UnlinkedInbox({ picture, matches, incidents, onOpenThread, onLink, canWrite }: {
@@ -1059,8 +1202,8 @@ function Stat({ label, value, tone, sub }: { label: string; value: string; tone?
 
 // ─── Incident modal: CCIL beside WhatsApp ────────────────────────────────────
 
-function IncidentCommsModal({ incident, score, links, threadByKey, live, canWrite, onDecide, onUnlink, onClose }: {
-  incident: IncidentRow; score: CommsScore | null; links: WaThreadLink[]; threadByKey: Map<string, WaThread>
+function IncidentCommsModal({ incident, score, sndm, links, threadByKey, live, canWrite, onDecide, onUnlink, onClose }: {
+  incident: IncidentRow; score: CommsScore | null; sndm: SndmAttribution | null; links: WaThreadLink[]; threadByKey: Map<string, WaThread>
   live: boolean; canWrite: boolean
   onDecide: (l: WaThreadLink, s: 'confirmed' | 'rejected') => void; onUnlink: (l: WaThreadLink) => void; onClose: () => void
 }) {
@@ -1076,7 +1219,7 @@ function IncidentCommsModal({ incident, score, links, threadByKey, live, canWrit
         <div className="flex items-start justify-between p-4 border-b border-[var(--line)] shrink-0 gap-4">
           <div className="min-w-0">
             <h3 className="serif text-xl font-medium truncate" style={{ color: 'var(--ink-100)' }}>{incident.title ?? 'Incident'}</h3>
-            <p className="label-micro mt-0.5">{incident.report_date}{incident.incident_start ? ` · ${incident.incident_start.slice(0, 5)}` : ''}{incident.ccil ? ` · CCIL ${incident.ccil}` : ''} · {posts.length} WhatsApp post{posts.length === 1 ? '' : 's'}</p>
+            <p className="label-micro mt-0.5">{incident.report_date}{incident.incident_start ? ` · ${incident.incident_start.slice(0, 5)}` : ''}{incident.ccil ? ` · CCIL ${incident.ccil}` : ''} · {posts.length} WhatsApp post{posts.length === 1 ? '' : 's'}{sndm && sndm.name !== UNATTRIBUTED ? ` · SNDM ${sndm.name} (${sndm.shift ?? '—'} shift, ${sndm.source === 'roster' ? 'roster' : 'poster'})` : ''}</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button className={`btn text-[10px] ${view === 'side' ? 'btn-active' : ''}`} onClick={() => setView('side')}>Side by side</button>
