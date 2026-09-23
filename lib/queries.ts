@@ -18,6 +18,7 @@ import {
 } from './types'
 import { railwayPeriodWeek, railwayWeekBounds } from './railwayCalendar'
 import { classifyTrusted } from './classification'
+import type { WaGroup, WaImport, WaLinkStatus, WaMessage, WaThreadLink } from './types'
 
 export const SLA_THRESHOLD_MINS = 45   // arrival within 45 minutes is on-time
 
@@ -2055,4 +2056,175 @@ export function deriveItsrAdherence(
     completed, missing, exempt, unreviewed, applicable,
     pct: applicable === 0 ? 100 : (completed.length / applicable) * 100,
   }
+}
+
+// ─── WhatsApp incident-advice messaging ─────────────────────────────────────
+// See supabase/migrations/017_whatsapp_messaging.sql and lib/whatsapp.ts.
+
+
+const WA_MESSAGE_COLS = 'id, import_id, group_name, sent_at, sent_local, sender, body, body_hash, headline, rag, kind, headcodes, thread_key, has_media, is_deleted'
+const WA_LINK_COLS    = 'id, group_name, thread_key, incident_id, ccil, score, method, status, decided_by, decided_at'
+const WA_IMPORT_COLS  = 'id, group_name, group_label, file_name, file_sha256, first_msg_at, last_msg_at, message_count, new_count, imported_by, imported_at'
+
+// Lean incident rows (no events jsonb) for a date range — used to link
+// imported chains against every incident in the export's span, which can be
+// far wider than the dashboard window.
+export async function fetchIncidentsLeanForRange(from: string, to: string): Promise<IncidentRow[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  const rows = await fetchAllRows<IncidentRow>(() =>
+    sb!.from('incidents').select(INCIDENT_COLS)
+      .gte('report_date', from)
+      .lte('report_date', to)
+      .order('report_date', { ascending: true })
+      .order('id', { ascending: true }),
+  )
+  return normaliseCats(rows)
+}
+
+export async function fetchWaMessages(groups?: WaGroup[]): Promise<WaMessage[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<WaMessage>(() => {
+    let q = sb!.from('wa_messages').select(WA_MESSAGE_COLS)
+      .order('sent_local', { ascending: true })
+      .order('id', { ascending: true })
+    if (groups?.length) q = q.in('group_name', groups)
+    return q
+  })
+}
+
+// Upsert in batches on the message identity key. Existing rows are updated
+// (thread_key and kind can be refined by a later, longer export); the
+// returned count is the number of rows that did not exist before.
+export async function upsertWaMessages(rows: Omit<WaMessage, 'id'>[], importId: string | null): Promise<{ inserted: number; ids: Map<string, string> }> {
+  const sb = getSupabase()
+  const ids = new Map<string, string>()
+  if (!sb || rows.length === 0) return { inserted: 0, ids }
+  const keyOf = (r: { group_name: string; sent_local: string; sender: string; body_hash: string }) => `${r.group_name}|${r.sent_local}|${r.sender}|${r.body_hash}`
+
+  // Which identity keys already exist? One lookup per group over the span.
+  // PostgREST needs every row in a batch to carry the same keys, so existing
+  // rows are re-sent with the import they originally arrived in.
+  const existing = new Map<string, { id: string; import_id: string | null }>()
+  const groups = [...new Set(rows.map(r => r.group_name))]
+  const lo = rows.reduce((a, r) => r.sent_local < a ? r.sent_local : a, rows[0].sent_local)
+  const hi = rows.reduce((a, r) => r.sent_local > a ? r.sent_local : a, rows[0].sent_local)
+  const prior = await fetchAllRows<{ id: string; import_id: string | null; group_name: string; sent_local: string; sender: string; body_hash: string }>(() =>
+    sb!.from('wa_messages').select('id, import_id, group_name, sent_local, sender, body_hash')
+      .in('group_name', groups).gte('sent_local', lo).lte('sent_local', hi)
+      .order('sent_local', { ascending: true }).order('id', { ascending: true }),
+  )
+  for (const p of prior) { existing.set(keyOf(p), { id: p.id, import_id: p.import_id }); ids.set(keyOf(p), p.id) }
+
+  const BATCH = 400
+  let inserted = 0
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const batch = rows.slice(i, i + BATCH).map(r => {
+      const prev = existing.get(keyOf(r))
+      return { ...r, import_id: prev ? prev.import_id : importId }
+    })
+    const { data, error } = await sb
+      .from('wa_messages')
+      .upsert(batch, { onConflict: 'group_name,sent_local,sender,body_hash' })
+      .select('id, group_name, sent_local, sender, body_hash')
+    if (error) throw new Error(error.message)
+    for (const r of (data ?? []) as { id: string; group_name: string; sent_local: string; sender: string; body_hash: string }[]) {
+      const k = keyOf(r)
+      if (!existing.has(k)) inserted++
+      ids.set(k, r.id)
+    }
+  }
+  return { inserted, ids }
+}
+
+export async function fetchWaLinks(groups?: WaGroup[]): Promise<WaThreadLink[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<WaThreadLink>(() => {
+    let q = sb!.from('wa_thread_links').select(WA_LINK_COLS)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+    if (groups?.length) q = q.in('group_name', groups)
+    return q
+  })
+}
+
+// Automatic links never overwrite a decision a person has made: on conflict
+// the existing row (confirmed / rejected / earlier auto) wins.
+export async function insertWaAutoLinks(rows: Omit<WaThreadLink, 'id' | 'decided_by' | 'decided_at'>[]): Promise<WaThreadLink[]> {
+  const sb = getSupabase()
+  if (!sb || rows.length === 0) return []
+  const out: WaThreadLink[] = []
+  for (let i = 0; i < rows.length; i += 400) {
+    const { data, error } = await sb
+      .from('wa_thread_links')
+      .upsert(rows.slice(i, i + 400), { onConflict: 'group_name,thread_key,incident_id', ignoreDuplicates: true })
+      .select(WA_LINK_COLS)
+    if (error) throw new Error(error.message)
+    out.push(...((data ?? []) as WaThreadLink[]))
+  }
+  return out
+}
+
+export async function setWaLink(
+  group: WaGroup, threadKey: string, incidentId: string, ccil: string | null,
+  status: WaLinkStatus, decidedBy: string | null, score?: number | null,
+): Promise<WaThreadLink | null> {
+  const sb = getSupabase()
+  if (!sb) return null
+  const payload = {
+    group_name: group, thread_key: threadKey, incident_id: incidentId, ccil,
+    score: score ?? null, method: 'manual' as const, status, decided_by: decidedBy, decided_at: new Date().toISOString(),
+  }
+  const { data, error } = await sb
+    .from('wa_thread_links')
+    .upsert(payload, { onConflict: 'group_name,thread_key,incident_id' })
+    .select(WA_LINK_COLS)
+    .single()
+  if (error) throw new Error(error.message)
+  return data as unknown as WaThreadLink
+}
+
+export async function deleteWaLink(id: string): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('wa_thread_links').delete().eq('id', id)
+  if (error) throw new Error(error.message)
+}
+
+export async function fetchWaImports(): Promise<WaImport[]> {
+  const sb = getSupabase()
+  if (!sb) return []
+  return fetchAllRows<WaImport>(() =>
+    sb!.from('wa_imports').select(WA_IMPORT_COLS)
+      .order('imported_at', { ascending: false })
+      .order('id', { ascending: true }),
+  )
+}
+
+export async function insertWaImport(row: Omit<WaImport, 'id' | 'imported_at'>): Promise<WaImport | null> {
+  const sb = getSupabase()
+  if (!sb) return null
+  const { data, error } = await sb.from('wa_imports').insert(row).select(WA_IMPORT_COLS).single()
+  if (error) throw new Error(error.message)
+  return data as unknown as WaImport
+}
+
+export async function updateWaImportCounts(id: string, counts: { message_count: number; new_count: number }): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const { error } = await sb.from('wa_imports').update(counts).eq('id', id)
+  if (error) throw new Error(error.message)
+}
+
+// Delete every message and link for a group (the "start again" action on
+// the WhatsApp tab). Imports are kept as an audit trail.
+export async function deleteWaGroupData(group: WaGroup): Promise<void> {
+  const sb = getSupabase()
+  if (!sb) return
+  const l = await sb.from('wa_thread_links').delete().eq('group_name', group)
+  if (l.error) throw new Error(l.error.message)
+  const m = await sb.from('wa_messages').delete().eq('group_name', group)
+  if (m.error) throw new Error(m.error.message)
 }

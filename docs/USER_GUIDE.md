@@ -640,6 +640,83 @@ sentences, export.
 
 ---
 
+## 5. WhatsApp incident advice (comms scoring)
+
+The WhatsApp tab measures how incidents were communicated on the EM North and
+EM South "Incident Advice" groups against the EM Control Messaging Standard.
+Nothing is typed in: you drop the group's export and the tab does the rest.
+
+### 5.1 Importing an export
+
+1. In WhatsApp open the group, then **More › Export chat › Without media**.
+   You get a `.zip` (iOS) or a `.txt` (Android). Either is fine.
+2. Put your initials in the box beside the drop zone (they are recorded against
+   the import and any link decisions you make), then drop the file on the zone
+   or use **Choose files**. Both groups can be dropped together.
+3. The status line reports messages read, how many were new, how many chains
+   were formed and how many were linked to CCIL incidents.
+
+Exports are cumulative, so re-dropping a newer export only adds messages that
+were not already stored. System lines (joins, leaves) are discarded, media is
+kept only as a "media" marker, and phone numbers of unsaved contacts are
+replaced at parse time and never stored.
+
+### 5.2 How messages become chains and links
+
+- Posts that share the same `*bold headline*` within 36 hours form a **chain**.
+  Generic headers ("Incident Update 02", "Holding Message") attach to the
+  chain most recently posted to.
+- Each chain is scored against CCIL incidents that started within a window
+  around its first post: shared headcodes, shared location or asset words, the
+  same gazetteer place, the same fault type, the group's usual areas and the
+  time gap. Confident matches are linked automatically; plausible ones are
+  linked but flagged **for review** in Monitoring.
+- The incident is the anchor. If Control retitled an incident mid-way
+  ("OLE down Elstree" → "Elstree de-wirement") both chains link to the same
+  CCIL row and are shown together.
+
+### 5.3 The sections
+
+- **Scorecard** — coverage of notable incidents, median time to first post,
+  first-detail-within-20-min, updates within cadence, closure, mean score,
+  the monthly trend, and which mandated content elements appear.
+- **Incidents** — one row per linked incident with every timing and a grade.
+  Notable incidents with no post at all are listed underneath. Click a row to
+  open the incident: CCIL fields and commentary on the left, the WhatsApp chain
+  on the right, or **Merged timeline** to interleave them.
+- **Unlinked chains** — chains with no incident. Accept the matcher's
+  suggestion with **Link**, or **Find incident…** to search CCIL rows near the
+  chain's date. Advisories, conference-call invitations and off-route items are
+  hidden by default.
+- **Monitoring** — flags: notable incident with no post, first post outside
+  30 minutes, no closure post, a gap over twice the cadence target, updates in
+  quick succession, and low-confidence links to confirm or reject.
+- **Imports** — what has been imported, how stale each group is, and a
+  **Clear** action per group.
+
+### 5.4 What the score means
+
+Each linked incident scores out of 100: timeliness 40 (first post within
+10 min of Control being advised, first detail within 20 min, share of updates
+within the cadence target), content 40 (the sections the standard lists:
+location, train or asset ID, impact, response, command structure, plan,
+passenger impact, recovery target, in-order time; stranded trains and first
+train to run count when present) and closure 20 (a post confirming normal
+working, close to the CCIL NWR time). A = 85+, B = 70+, C = 50+, D below.
+
+Two caveats. The standard's cadence targets depend on the BLACK/RED/AMBER
+category, which neither WhatsApp posts nor CCIL record after March 2025; the
+tab uses a severity proxy (HIGH/CRITICAL or a delay threshold you can change in
+the **Notable** selector) and says so. Content checks are keyword presence, a
+proxy for a populated section rather than a judgement of its quality.
+
+### 5.5 Scope and persistence
+
+The **Dashboard window / All imported dates** switch decides whether the
+scorecard covers the filter bar's window or everything imported. Messages,
+links and imports are stored in Supabase (migration 017) when Insight is
+configured; in demo mode they live in the browser session only.
+
 ## Quick reference
 
 | I want to… | Go to |

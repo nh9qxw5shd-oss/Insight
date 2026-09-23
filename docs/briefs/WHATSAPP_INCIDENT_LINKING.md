@@ -279,7 +279,23 @@ existing `canWrite` gate once the PII position is settled.
 | 2 | Comms tab roll-ups, unlinked inbox, manual link/unlink | ~2 days |
 | 3 | Browser upload, PII policy, optional LLM re-rank | on decision |
 
-## 8. Reproducing the trial
+## 8. Implementation (built)
+
+| Piece | Where |
+|---|---|
+| Tables `wa_imports`, `wa_messages`, `wa_thread_links` | `supabase/migrations/017_whatsapp_messaging.sql` |
+| Export reading (.zip / .txt), parsing, chaining, matching, scoring, KPIs, trends, flags, merged timeline | `lib/whatsapp.ts` |
+| Supabase accessors | `lib/queries.ts` (WhatsApp section) |
+| Types | `lib/types.ts` (`WaMessage`, `WaThreadLink`, `WaImport`) |
+| UI: drop zone, scorecard, incidents, unlinked chains, monitoring, imports, modals | `app/whatsapp-tab.tsx` |
+| Registration | `app/page.tsx` (`whatsapp` tab) |
+| User guide | `docs/USER_GUIDE.md` §5 |
+
+Ingestion is browser-side (option 2 in section 5): the file never leaves the
+user's machine except as parsed rows written with the app's Supabase key.
+Phone numbers are replaced before anything is stored.
+
+## 9. Reproducing the trial
 
 `scripts/whatsapp-ccil-link-poc.py` is the matcher used above. Export CCIL
 candidates to JSON from the SQL Editor:

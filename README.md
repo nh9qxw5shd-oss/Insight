@@ -25,6 +25,7 @@ Seven views, all driven by a shared filter set:
 | **Assets** | Asset-failure mix, repeat-fault ranking — engineering review priority |
 | **Operators** | Per-TOC/FOC delay, MOM/responder workload distribution |
 | **Briefing** | Pin findings from any view (KPIs, timeline, weather impact, duration effect) and compose them into a one-page executive brief with provenance — print/PDF or HTML export |
+| **WhatsApp** | Drop the EM North / EM South "Incident Advice" group exports; chains are linked to CCIL incidents and scored against the EM Control Messaging Standard — time to first post, update cadence, mandated content, closure — with trends, monitoring flags and a side-by-side CCIL / WhatsApp view per incident |
 
 Filter bar applies globally:
 
@@ -75,6 +76,9 @@ deterministic synthetic dataset so the UI never displays as a void.
 In your DLog2 Supabase project, run `supabase/migrations/003_extend_incident_capture.sql`
 (SQL Editor or `supabase db push`). This adds ~25 nullable analytics columns
 to the `incidents` table — no existing data is altered.
+
+Later features add their own migrations (`004`–`017`); apply them in order.
+`017_whatsapp_messaging.sql` creates the tables behind the WhatsApp tab.
 
 ### 2. Apply the DLog2 patches
 

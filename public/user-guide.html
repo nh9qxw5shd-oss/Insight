@@ -546,6 +546,45 @@
     are disabled — <strong>widen the date window</strong> to reach real incidents.</li>
   </ul>
 
+  <h2 id="whatsapp">5. WhatsApp incident advice (comms scoring)</h2>
+  <p>The WhatsApp tab measures how incidents were communicated on the EM North and EM South
+  "Incident Advice" groups against the EM Control Messaging Standard. Nothing is typed in:
+  drop the group's export (WhatsApp: <em>More › Export chat › Without media</em>, giving a
+  <code>.zip</code> or <code>.txt</code>) on the drop zone, with your initials in the box beside it.
+  Exports are cumulative, so a newer export only adds what is new. System lines are discarded,
+  media is kept only as a marker, and phone numbers of unsaved contacts are never stored.</p>
+  <h3>5.1 Chains and links</h3>
+  <ul>
+    <li>Posts sharing the same <strong>*bold headline*</strong> within 36 hours form a <strong>chain</strong>;
+      generic headers ("Incident Update 02", "Holding Message") attach to the chain most recently posted to.</li>
+    <li>Each chain is scored against CCIL incidents starting near its first post — shared headcodes,
+      location or asset words, gazetteer place, fault type, the group's usual areas and the time gap.
+      Confident matches link automatically; plausible ones link but are flagged for review.</li>
+    <li>The incident is the anchor: if Control retitled an incident mid-way, both chains sit under
+      the same CCIL row.</li>
+  </ul>
+  <h3>5.2 Sections</h3>
+  <ul>
+    <li><strong>Scorecard</strong> — coverage of notable incidents, median time to first post, first detail
+      within 20 min, updates within cadence, closure, mean score, monthly trend, and which mandated
+      content elements appear.</li>
+    <li><strong>Incidents</strong> — one row per linked incident with every timing and a grade; notable incidents
+      with no post are listed underneath. Click a row to see CCIL fields and commentary beside the WhatsApp
+      chain, or switch to the <strong>Merged timeline</strong>.</li>
+    <li><strong>Unlinked chains</strong> — accept the matcher's suggestion with <strong>Link</strong>, or
+      <strong>Find incident…</strong> to search CCIL rows near the chain's date.</li>
+    <li><strong>Monitoring</strong> — notable incident with no post, first post outside 30 minutes, no closure
+      post, a gap over twice the cadence target, rapid-fire updates, low-confidence links.</li>
+    <li><strong>Imports</strong> — import history, staleness per group, and a per-group <strong>Clear</strong>.</li>
+  </ul>
+  <h3>5.3 The score</h3>
+  <p>Out of 100: timeliness 40 (first post within 10 min of Control being advised, first detail within
+  20 min, share of updates within the cadence target), content 40 (the sections the standard lists) and
+  closure 20 (a post confirming normal working, close to the CCIL NWR time). A = 85+, B = 70+, C = 50+.
+  The standard's cadence targets depend on the BLACK/RED/AMBER category, which neither source records
+  after March 2025; the tab uses a severity proxy you can change in the <strong>Notable</strong> selector.
+  Content checks are keyword presence, not a judgement of quality.</p>
+
   <h2 id="quickref">Quick reference</h2>
   <table>
     <thead><tr><th>I want to…</th><th>Go to</th></tr></thead>

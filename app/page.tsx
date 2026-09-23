@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import {
   Activity, AlertTriangle, BarChart2, Bell, BookOpen, CalendarDays, ChevronDown, ChevronLeft, ChevronRight,
   ClipboardCheck, ClipboardList, Clock, Cloud, Compass, Crosshair, Download, FileText, Filter, Flag, FlaskConical,
-  Gauge, GitBranch, GitCompare, Info, Layers, List, MapPin, Minus, Monitor, Moon, Pin, RefreshCw, Route, Search, StickyNote,
+  Gauge, GitBranch, GitCompare, Info, Layers, List, MapPin, MessageSquare, Minus, Monitor, Moon, Pin, RefreshCw, Route, Search, StickyNote,
   Sun, Table2, Thermometer, TrendingDown, TrendingUp, Train, Trash2, Wrench, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -91,13 +91,14 @@ import { PivotTab } from './pivot-tab'
 import { NotebookTab } from './notebook-tab'
 import { QualityTab } from './quality-tab'
 import { TemperatureExposureTab } from './temperature-exposure-tab'
+import { WhatsAppTab } from './whatsapp-tab'
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
 
 type Tab =
   | 'overview' | 'safety' | 'performance' | 'geography' | 'patterns' | 'assets' | 'routes'
   | 'trends' | 'explore' | 'analytics' | 'weather' | 'exposure' | 'calendar' | 'compare' | 'pivot' | 'search'
-  | 'focus' | 'review' | 'reports' | 'briefing' | 'distillation' | 'notebook' | 'quality'
+  | 'focus' | 'review' | 'reports' | 'briefing' | 'distillation' | 'notebook' | 'quality' | 'whatsapp'
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',    icon: Activity },
   { id: 'safety',      label: 'Safety',      icon: AlertTriangle },
@@ -122,6 +123,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'distillation', label: 'Distillation', icon: FlaskConical },
   { id: 'notebook',     label: 'Notebook',     icon: StickyNote },
   { id: 'quality',      label: 'Quality',      icon: Gauge },
+  { id: 'whatsapp',     label: 'WhatsApp',     icon: MessageSquare },
 ]
 
 // ─── Window navigation helper ────────────────────────────────────────────────
@@ -869,6 +871,7 @@ export default function InsightDashboard() {
             {tab === 'search'      && <SearchTab windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} demoMode={demoMode} fallbackIncidents={effectiveData.incidents} />}
             {tab === 'notebook'    && <NotebookTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} canWrite={isSupabaseConfigured() && !demoMode} />}
             {tab === 'quality'     && <QualityTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} />}
+            {tab === 'whatsapp'    && <WhatsAppTab incidents={effectiveData.incidents} windowFrom={effectiveData.windowFrom} windowTo={effectiveData.windowTo} demoMode={demoMode} canWrite={isSupabaseConfigured() && !demoMode} />}
             {tab === 'focus'       && <FocusTab incidents={effectiveData.incidents} weatherData={weatherData} />}
             {tab === 'review'      && (
               reviewLoading && !reviewIncidents

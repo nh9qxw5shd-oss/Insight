@@ -665,3 +665,62 @@ export interface StaffPatternDatum {
   nightShifts: number
   topCategory: IncidentCategory | null
 }
+
+// ─── WhatsApp incident-advice messaging (side-tables, optional) ──────────────
+// Messages imported from the EM North / EM South "Incident Advice" WhatsApp
+// group exports, the chains they form and their links to CCIL incidents.
+// See supabase/migrations/017_whatsapp_messaging.sql and lib/whatsapp.ts.
+
+export type WaGroup = 'north' | 'south' | 'other'
+export type WaRag = 'red' | 'amber' | 'yellow' | 'green'
+export type WaKind =
+  | 'open' | 'update' | 'holding' | 'recovery' | 'close'
+  | 'conference' | 'advisory' | 'offroute' | 'other'
+
+export interface WaMessage {
+  id: string
+  import_id: string | null
+  group_name: WaGroup
+  sent_at: string          // ISO UTC
+  sent_local: string       // 'YYYY-MM-DDTHH:MM:SS' as exported (Europe/London)
+  sender: string
+  body: string
+  body_hash: string
+  headline: string | null
+  rag: WaRag | null
+  kind: WaKind
+  headcodes: string[]
+  thread_key: string
+  has_media: boolean
+  is_deleted: boolean
+}
+
+export type WaLinkMethod = 'auto' | 'manual'
+export type WaLinkStatus = 'auto' | 'confirmed' | 'rejected'
+
+export interface WaThreadLink {
+  id: string
+  group_name: WaGroup
+  thread_key: string
+  incident_id: string
+  ccil: string | null
+  score: number | null
+  method: WaLinkMethod
+  status: WaLinkStatus
+  decided_by: string | null
+  decided_at: string | null
+}
+
+export interface WaImport {
+  id: string
+  group_name: WaGroup
+  group_label: string | null
+  file_name: string | null
+  file_sha256: string | null
+  first_msg_at: string | null
+  last_msg_at: string | null
+  message_count: number
+  new_count: number
+  imported_by: string | null
+  imported_at: string
+}
