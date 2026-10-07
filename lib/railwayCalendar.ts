@@ -93,6 +93,35 @@ export function railwayWeekBounds(period: number, week: number, railYear: number
   return { from: isoDay(new Date(fromMs)), to: isoDay(new Date(toMs)) }
 }
 
+// ─── Fortnights (Control PMC cadence) ────────────────────────────────────────
+// Each period splits into two halves: H1 = W1–W2, H2 = W3–W4. In a 53-week
+// rail year the extra P13 W5 rolls into H2, so that half spans three weeks.
+
+export type RailHalf = 1 | 2
+
+export function railwayHalfOfWeek(week: number): RailHalf {
+  return week <= 2 ? 1 : 2
+}
+
+export function railwayHalfWeeks(period: number, half: RailHalf, railYear: number): { first: number; last: number } {
+  return half === 1
+    ? { first: 1, last: 2 }
+    : { first: 3, last: railwayWeeksInPeriod(period, railYear) }
+}
+
+export function railwayFortnightBounds(period: number, half: RailHalf, railYear: number): { from: string; to: string } {
+  const { first, last } = railwayHalfWeeks(period, half, railYear)
+  return {
+    from: railwayWeekBounds(period, first, railYear).from,
+    to:   railwayWeekBounds(period, last,  railYear).to,
+  }
+}
+
+export function railwayFortnightLabel(period: number, half: RailHalf, railYear: number): string {
+  const { first, last } = railwayHalfWeeks(period, half, railYear)
+  return `P${String(period).padStart(2, '0')} · W${first}–${last}`
+}
+
 // The "data ceiling" — logs cover the previous 24-hour period, so the latest
 // available data is yesterday. Anything starting after yesterday is empty.
 function dataCeilingMs(): number {
@@ -158,6 +187,34 @@ export function listWeeks(period: number, railYear: number): WeekOption[] {
   return out
 }
 
+export interface FortnightOption {
+  half:      RailHalf
+  label:     string                // "W1–2"
+  longLabel: string               // "W1–2 · 20 Sep → 3 Oct"
+  from:      string
+  to:        string
+  status:    'complete' | 'current' | 'future'
+}
+
+export function listFortnights(period: number, railYear: number): FortnightOption[] {
+  const ceiling = dataCeilingMs()
+  return ([1, 2] as RailHalf[]).map(half => {
+    const { from, to } = railwayFortnightBounds(period, half, railYear)
+    const { first, last } = railwayHalfWeeks(period, half, railYear)
+    const fromMs = new Date(from + 'T00:00:00Z').getTime()
+    const toMs   = new Date(to   + 'T00:00:00Z').getTime()
+    let status: FortnightOption['status'] = 'complete'
+    if (fromMs > ceiling) status = 'future'
+    else if (toMs > ceiling) status = 'current'
+    return {
+      half,
+      label: `W${first}–${last}`,
+      longLabel: `W${first}–${last} · ${shortDateUK(from)} → ${shortDateUK(to)}`,
+      from, to, status,
+    }
+  })
+}
+
 // The railway years currently navigable from the Reports tab — the current
 // year plus the previous two. Going further back rarely matters for an
 // operational tool and keeps the dropdown short.
@@ -196,6 +253,20 @@ export function defaultWeekSelection(): { railYear: number; period: number; week
   const lastP = prevPeriods[prevPeriods.length - 1]
   const lastW = listWeeks(lastP.period, prevYear).slice(-1)[0]
   return { railYear: prevYear, period: lastP.period, week: lastW.week }
+}
+
+// Most recent fully complete fortnight — e.g. during P07 W3 this resolves to
+// P07 W1–2; once P07 W4 closes it rolls on to P07 W3–4.
+export function defaultFortnightSelection(): { railYear: number; period: number; half: RailHalf } {
+  for (const { railYear } of listRailYears().slice(0, 2)) {
+    const periods = listPeriods(railYear)
+    for (let i = periods.length - 1; i >= 0; i--) {
+      const done = [...listFortnights(periods[i].period, railYear)].reverse().find(f => f.status === 'complete')
+      if (done) return { railYear, period: periods[i].period, half: done.half }
+    }
+  }
+  const prevYear = listRailYears()[1].railYear
+  return { railYear: prevYear, period: 13, half: 2 }
 }
 
 function shortDateUK(iso: string): string {

@@ -1149,7 +1149,7 @@ function pmcDeltaSpan(signedPct: number | null, inverted = true): string {
 
 function pmcIncidentTable(rows: PmcIncidentRow[], opts: { showNote?: boolean } = {}): string {
   if (rows.length === 0) {
-    return `<p style="color: var(--ink-3); font-size: 9.5pt; margin: 6pt 0;">No incidents in this band for the selected week.</p>`
+    return `<p style="color: var(--ink-3); font-size: 9.5pt; margin: 6pt 0;">No incidents in this band for the selected fortnight.</p>`
   }
   return `
     <table class="data">
@@ -1294,8 +1294,8 @@ function renderPmcSummary(plan: ReportPlan, num: number): string {
   `).join('')
   return `
     <section class="page section">
-      ${sectionHead(String(num).padStart(2, '0'), 'Control PMC · Week summary', plan.meta.scopeLabel)}
-      <p class="section-lede">Six headline numbers for the Control PMC week — the same set the Period Report leads on. Each topic is broken down in detail in the sections that follow.</p>
+      ${sectionHead(String(num).padStart(2, '0'), 'Control PMC · Fortnight summary', plan.meta.scopeLabel)}
+      <p class="section-lede">Six headline numbers for the Control PMC fortnight — the same set the Period Report leads on. Each topic is broken down in detail in the sections that follow.</p>
       <div class="kpi-grid kpi-grid-3">${tiles}</div>
       <hr class="rule" />
       <div class="two-col">
@@ -1305,7 +1305,7 @@ function renderPmcSummary(plan: ReportPlan, num: number): string {
         </div>
         <div class="panel-light">
           <div class="panel-title">Period vector</div>
-          <p>Each headline number is compared against the same week one cycle earlier. Up-arrows are red where rising is bad (incidents, duration, time stranded, time to recover, SLA breaches) and green where rising is good (ITSR adherence, shown in percentage points).</p>
+          <p>Each headline number is compared against the preceding fortnight. Up-arrows are red where rising is bad (incidents, duration, time stranded, time to recover, SLA breaches) and green where rising is good (ITSR adherence, shown in percentage points).</p>
         </div>
       </div>
       ${footer(plan, num)}
@@ -1316,7 +1316,7 @@ function renderPmcSummary(plan: ReportPlan, num: number): string {
 function renderPmcFatalities(plan: ReportPlan, num: number): string {
   return renderPmcTopic(plan, num,
     'Fatalities · Person Struck',
-    'All person-struck and fatality incidents recorded in the week. Zero is the target — any non-zero number triggers a deep-dive in the Control room.',
+    'All person-struck and fatality incidents recorded in the fortnight. Zero is the target — any non-zero number triggers a deep-dive in the Control room.',
     plan.controlPmc?.fatalities)
 }
 
@@ -1391,7 +1391,7 @@ function renderPmcRecoveryTrend(plan: ReportPlan, num: number): string {
 function renderPmcIrregular(plan: ReportPlan, num: number): string {
   return renderPmcTopic(plan, num,
     'Irregular working',
-    'Irregular-working incidents from the CCIL feed. Used to monitor procedural drift and refresh briefings where volume rises week-on-week.',
+    'Irregular-working incidents from the CCIL feed. Used to monitor procedural drift and refresh briefings where volume rises fortnight-on-fortnight.',
     plan.controlPmc?.irregular)
 }
 
@@ -1400,7 +1400,7 @@ function renderPmcPax(plan: ReportPlan, num: number): string {
   if (!pax) return ''
   const subtitle = pax.summary.count > 10
     ? `Passenger / public injury events ranked by delay impact — only the top 10 of ${pax.summary.count} appear in the table.`
-    : 'Passenger / public injury events captured this week, ranked by delay impact.'
+    : 'Passenger / public injury events captured this fortnight, ranked by delay impact.'
   return renderPmcTopic(plan, num, 'PAX incidents', subtitle, pax)
 }
 
@@ -1626,8 +1626,8 @@ function renderPmcTopDelay(plan: ReportPlan, num: number): string {
   const cards = td.incidents.map((d, i) => renderPmcTopDelayCard(d, i + 1, maxDelay)).join('')
   const title = flagged ? 'Flagged incidents · deep-dive' : 'Top 5 delay incidents · deep-dive'
   const lede = flagged
-    ? `Incidents manually flagged for this reporting week (maximum five per railway week), presented lowest → highest impact — replacing the automatic top-5-by-delay ranking. Each card surfaces the full operational record plus any matching incidents from ${esc(shortDate(td.windowFrom))} → ${esc(shortDate(td.windowTo))} (same fault number, or same location and asset type) to flag potential repeat issues.`
-    : `Filter-blind ranking of the week's five highest delay-incurring incidents. Each card surfaces the full operational record plus any matching incidents from ${esc(shortDate(td.windowFrom))} → ${esc(shortDate(td.windowTo))} (same fault number, or same location and asset type) to flag potential repeat issues.`
+    ? `Incidents manually flagged for this reporting fortnight (maximum five per railway fortnight), presented lowest → highest impact — replacing the automatic top-5-by-delay ranking. Each card surfaces the full operational record plus any matching incidents from ${esc(shortDate(td.windowFrom))} → ${esc(shortDate(td.windowTo))} (same fault number, or same location and asset type) to flag potential repeat issues.`
+    : `Filter-blind ranking of the fortnight's five highest delay-incurring incidents. Each card surfaces the full operational record plus any matching incidents from ${esc(shortDate(td.windowFrom))} → ${esc(shortDate(td.windowTo))} (same fault number, or same location and asset type) to flag potential repeat issues.`
   return `
     <section class="page section">
       ${sectionHead(String(num).padStart(2, '0'), title, plan.meta.scopeLabel)}
@@ -1649,7 +1649,7 @@ function renderPmcSatisfaction(plan: ReportPlan, num: number): string {
       <div class="panel">
         <div class="panel-title">Reserved section</div>
         ${pmcInsights(sat.insights)}
-        <p style="color: var(--ink-3); font-size: 9.5pt; margin-top: 6pt;">When the satisfaction data feed is wired up, this section will display weekly survey results, top complaint themes, and movement against the prior week — using the same period-vs-period framing as the rest of this pack.</p>
+        <p style="color: var(--ink-3); font-size: 9.5pt; margin-top: 6pt;">When the satisfaction data feed is wired up, this section will display fortnightly survey results, top complaint themes, and movement against the prior fortnight — using the same period-vs-period framing as the rest of this pack.</p>
       </div>
       ${footer(plan, num)}
     </section>

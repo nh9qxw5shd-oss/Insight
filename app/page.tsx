@@ -28,6 +28,8 @@ import {
   railwayPeriodWeek, listPeriods, listWeeks, listRailYears,
   railwayPeriodBounds, railwayWeekBounds, railwayWeeksInPeriod,
   defaultPeriodSelection, defaultWeekSelection,
+  RailHalf, railwayHalfOfWeek, railwayFortnightBounds, railwayFortnightLabel,
+  listFortnights, defaultFortnightSelection,
 } from '@/lib/railwayCalendar'
 import {
   fetchAnalytics, deriveKPIs, deriveTrend, deriveCategorySplit,
@@ -752,20 +754,22 @@ export default function InsightDashboard() {
 
   const pmcFlaggedIds = useMemo(() => new Set(pmcFlags.map(f => f.incident_id)), [pmcFlags])
 
+  // Flag cap is per railway fortnight (W1–2 / W3–4) to match the Control
+  // PMC reporting cadence.
   const pmcFlagWeekCounts = useMemo(() => {
     const m = new Map<string, number>()
     for (const f of pmcFlags) {
       const pw = railwayPeriodWeek(f.report_date)
-      const key = `${pw.railYear}-${pw.period}-${pw.week}`
+      const key = `${pw.railYear}-${pw.period}-${railwayHalfOfWeek(pw.week)}`
       m.set(key, (m.get(key) ?? 0) + 1)
     }
     return m
   }, [pmcFlags])
 
-  // Flags already used in the railway week containing the given report date.
+  // Flags already used in the railway fortnight containing the given report date.
   const pmcWeekFlagCount = (reportDate: string): number => {
     const pw = railwayPeriodWeek(reportDate)
-    return pmcFlagWeekCounts.get(`${pw.railYear}-${pw.period}-${pw.week}`) ?? 0
+    return pmcFlagWeekCounts.get(`${pw.railYear}-${pw.period}-${railwayHalfOfWeek(pw.week)}`) ?? 0
   }
 
   const handleTogglePmcFlag = async (incident: IncidentRow) => {
@@ -6081,8 +6085,9 @@ function ReviewIncidentRow({
   )
 }
 
-// Flag toggle for the weekly Control PMC report. Sits above the review form
-// when an incident is expanded. Max PMC_FLAG_LIMIT flags per railway week —
+// Flag toggle for the fortnightly Control PMC report. Sits above the review
+// form when an incident is expanded. Max PMC_FLAG_LIMIT flags per railway
+// fortnight (W1–2 / W3–4) —
 // the button disables at capacity and the query layer re-checks the live
 // count on write in case another session flagged in the meantime.
 function PmcFlagBar({
@@ -6098,6 +6103,7 @@ function PmcFlagBar({
   const [error, setError] = useState<string | null>(null)
   const atCap = !flagged && weekCount >= PMC_FLAG_LIMIT
   const pw = railwayPeriodWeek(incident.report_date)
+  const fortnightLabel = railwayFortnightLabel(pw.period, railwayHalfOfWeek(pw.week), pw.railYear)
 
   const handleClick = async () => {
     setBusy(true)
@@ -6121,19 +6127,19 @@ function PmcFlagBar({
         title={
           !canSave ? 'Flagging requires a live Supabase connection'
           : flagged ? 'Remove this incident from the Control PMC report'
-          : atCap   ? `Maximum ${PMC_FLAG_LIMIT} incidents per railway week — unflag another incident first`
-          : 'Nominate this incident for the weekly Control PMC report (replaces the top-5-by-delay deep-dive)'
+          : atCap   ? `Maximum ${PMC_FLAG_LIMIT} incidents per railway fortnight — unflag another incident first`
+          : 'Nominate this incident for the fortnightly Control PMC report (replaces the top-5-by-delay deep-dive)'
         }
       >
         <Flag size={10} />
         {busy ? 'Saving…' : flagged ? 'Flagged for Control PMC' : 'Flag for Control PMC'}
       </button>
       <span style={{ color: 'var(--ink-500)' }}>
-        {weekCount}/{PMC_FLAG_LIMIT} flagged in {pw.label.replace(' · ', ' ')} · {pw.yearLabel}
+        {weekCount}/{PMC_FLAG_LIMIT} flagged in {fortnightLabel.replace(' · ', ' ')} · {pw.yearLabel}
       </span>
       {atCap && (
         <span style={{ color: 'var(--nr-amber)' }}>
-          Week at capacity — unflag another incident to free a slot.
+          Fortnight at capacity — unflag another incident to free a slot.
         </span>
       )}
       {error && <span style={{ color: '#FF8077' }}>{error}</span>}
@@ -6881,6 +6887,7 @@ function minsBetweenHHMM(start: string, end: string): number | null {
 type ReportScope =
   | { kind: 'period';  railYear: number; period: number; from: string; to: string }
   | { kind: 'weekly';  railYear: number; period: number; week: number; from: string; to: string }
+  | { kind: 'fortnight'; railYear: number; period: number; half: RailHalf; from: string; to: string }
   | { kind: 'range';   from: string; to: string }
 
 function daysBetween(from: string, to: string): number {
@@ -6918,6 +6925,12 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
     const b = railwayWeekBounds(d.period, d.week, d.railYear)
     return { railYear: d.railYear, period: d.period, week: d.week, from: b.from, to: b.to }
   })
+  // Control PMC runs fortnightly: each period splits into W1–2 and W3–4.
+  const [fortnightSel, setFortnightSel] = useState(() => {
+    const d = defaultFortnightSelection()
+    const b = railwayFortnightBounds(d.period, d.half, d.railYear)
+    return { railYear: d.railYear, period: d.period, half: d.half, from: b.from, to: b.to }
+  })
   const [safetyRange, setSafetyRange] = useState<{ from: string; to: string }>(() => ({
     from: isoMinusDays(yesterdayISO(), 29),
     to:   yesterdayISO(),
@@ -6929,17 +6942,23 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
 
   const scope: ReportScope = useMemo(() => {
     if (template === 'period') return { kind: 'period', ...periodSel }
-    if (template === 'weekly' || template === 'controlPmc') {
+    if (template === 'controlPmc') {
+      // Re-derive bounds from (period, half) so a stale from/to can't widen
+      // or shift the window. The Control PMC report is strictly
+      // fortnight-based.
+      const b = railwayFortnightBounds(fortnightSel.period, fortnightSel.half, fortnightSel.railYear)
+      return { kind: 'fortnight', railYear: fortnightSel.railYear, period: fortnightSel.period, half: fortnightSel.half, from: b.from, to: b.to }
+    }
+    if (template === 'weekly') {
       // Always derive `to` as `from + 6 days` so a stale weekSel.to (e.g. one
       // that somehow inherited a 28-day period range) can't widen the window.
-      // The Control PMC report is strictly week-based.
       const fromMs = new Date(weekSel.from + 'T00:00:00Z').getTime()
       const to = new Date(fromMs + 6 * 86_400_000).toISOString().slice(0, 10)
       return { kind: 'weekly', railYear: weekSel.railYear, period: weekSel.period, week: weekSel.week, from: weekSel.from, to }
     }
     if (template === 'safety') return { kind: 'range', ...safetyRange }
     return { kind: 'range', ...customRange }
-  }, [template, periodSel, weekSel, safetyRange, customRange])
+  }, [template, periodSel, weekSel, fortnightSel, safetyRange, customRange])
 
   // Reset section toggles whenever the template changes.
   useEffect(() => { setSections(TEMPLATE_DEFAULT_SECTIONS[template]) }, [template])
@@ -6953,10 +6972,10 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
   const [loadingReport, setLoadingReport] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
   // Control PMC needs incident reviews to drive stranded-train and ITSR
-  // adherence figures. Fetched on demand for the chosen week + the previous
-  // week (for week-on-week deltas).
+  // adherence figures. Fetched on demand for the chosen window + the
+  // equal-length window before it (for fortnight-on-fortnight deltas).
   const [reviewBundle, setReviewBundle] = useState<{ reviews: IncidentReview[]; prevReviews: IncidentReview[] } | null>(null)
-  // Manual Control PMC flags for the scoped week — when any exist, the top-5
+  // Manual Control PMC flags for the scoped fortnight — when any exist, the top-5
   // deep-dive shows the flagged incidents (lowest → highest impact) instead.
   const [reportPmcFlags, setReportPmcFlags] = useState<PmcFlag[]>([])
   // Trailing 6-month history used by the Control PMC top-5 deep-dive to flag
@@ -7252,6 +7271,7 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
           template={template}
           periodSel={periodSel}      setPeriodSel={setPeriodSel}
           weekSel={weekSel}          setWeekSel={setWeekSel}
+          fortnightSel={fortnightSel} setFortnightSel={setFortnightSel}
           safetyRange={safetyRange}  setSafetyRange={setSafetyRange}
           customRange={customRange}  setCustomRange={setCustomRange}
         />
@@ -7304,8 +7324,8 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
             {template === 'controlPmc' && !loadingReport && (
               <div className="text-[10.5px] mt-1" style={{ color: reportPmcFlags.length > 0 ? 'var(--nr-orange)' : 'var(--ink-400)' }}>
                 {reportPmcFlags.length > 0
-                  ? `${reportPmcFlags.length} incident${reportPmcFlags.length === 1 ? '' : 's'} flagged for this week — the deep-dive shows flagged incidents, lowest → highest impact.`
-                  : 'No incidents flagged for this week — the deep-dive falls back to the top 5 by delay. Flag incidents from the Review tab.'}
+                  ? `${reportPmcFlags.length} incident${reportPmcFlags.length === 1 ? '' : 's'} flagged for this fortnight — the deep-dive shows flagged incidents, lowest → highest impact.`
+                  : 'No incidents flagged for this fortnight — the deep-dive falls back to the top 5 by delay. Flag incidents from the Review tab.'}
               </div>
             )}
           </div>
@@ -7396,13 +7416,16 @@ function ReportsTab({ data, filters, demoMode }: { data: RawData | null; filters
 // from–to picker so the user can frame any window they like.
 
 function ScopePicker({
-  template, periodSel, setPeriodSel, weekSel, setWeekSel, safetyRange, setSafetyRange, customRange, setCustomRange,
+  template, periodSel, setPeriodSel, weekSel, setWeekSel, fortnightSel, setFortnightSel,
+  safetyRange, setSafetyRange, customRange, setCustomRange,
 }: {
   template: ReportTemplate
   periodSel:   { railYear: number; period: number; from: string; to: string }
   setPeriodSel: (s: { railYear: number; period: number; from: string; to: string }) => void
   weekSel:     { railYear: number; period: number; week: number; from: string; to: string }
   setWeekSel:  (s: { railYear: number; period: number; week: number; from: string; to: string }) => void
+  fortnightSel:    { railYear: number; period: number; half: RailHalf; from: string; to: string }
+  setFortnightSel: (s: { railYear: number; period: number; half: RailHalf; from: string; to: string }) => void
   safetyRange: { from: string; to: string }
   setSafetyRange: (s: { from: string; to: string }) => void
   customRange: { from: string; to: string }
@@ -7459,12 +7482,70 @@ function ScopePicker({
     )
   }
 
-  if (template === 'weekly' || template === 'controlPmc') {
+  if (template === 'controlPmc') {
+    const periods = listPeriods(fortnightSel.railYear)
+    const halves = listFortnights(fortnightSel.period, fortnightSel.railYear)
+    const pick = (railYear: number, period: number, half: RailHalf) => {
+      const b = railwayFortnightBounds(period, half, railYear)
+      setFortnightSel({ railYear, period, half, from: b.from, to: b.to })
+    }
+    return (
+      <div className="rounded-sm p-4" style={{ background: 'var(--bg-card-hi)', border: '1px solid var(--line)' }}>
+        <div className="label-micro mb-3">Control PMC scope · pick the railway period and fortnight to roll up</div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <div className="label-micro mb-1.5">Railway year</div>
+            <select
+              className="select w-full"
+              value={fortnightSel.railYear}
+              onChange={e => pick(Number(e.target.value), fortnightSel.period, fortnightSel.half)}
+            >
+              {years.map(y => <option key={y.railYear} value={y.railYear}>{y.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <div className="label-micro mb-1.5">Period</div>
+            <select
+              className="select w-full"
+              value={fortnightSel.period}
+              onChange={e => pick(fortnightSel.railYear, Number(e.target.value), 1)}
+            >
+              {periods.map(p => (
+                <option key={p.period} value={p.period} disabled={p.status === 'future'}>
+                  {p.label}{p.status === 'current' ? ' (current)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div className="label-micro mb-1.5">Fortnight</div>
+            <select
+              className="select w-full"
+              value={fortnightSel.half}
+              onChange={e => pick(fortnightSel.railYear, fortnightSel.period, Number(e.target.value) as RailHalf)}
+            >
+              {halves.map(h => {
+                const tag = h.status === 'future' ? ' — future' : h.status === 'current' ? ' — in progress' : ''
+                return (
+                  <option key={h.half} value={h.half} disabled={h.status === 'future'}>
+                    {h.longLabel}{tag}
+                  </option>
+                )
+              })}
+            </select>
+          </div>
+        </div>
+        <div className="text-[10.5px] mt-3" style={{ color: 'var(--ink-400)' }}>
+          Each period splits into two fortnights: W1–2 and W3–4 (P13 W5 in 53-week years rolls into W3–5). Comparison runs against the fortnight immediately before.
+        </div>
+      </div>
+    )
+  }
+
+  if (template === 'weekly') {
     const periods = listPeriods(weekSel.railYear)
     const weeks = listWeeks(weekSel.period, weekSel.railYear)
-    const lede = template === 'controlPmc'
-      ? 'Control PMC scope · pick the railway period and week to roll up'
-      : 'Weekly scope · pick a period then a week within it'
+    const lede = 'Weekly scope · pick a period then a week within it'
     return (
       <div className="rounded-sm p-4" style={{ background: 'var(--bg-card-hi)', border: '1px solid var(--line)' }}>
         <div className="label-micro mb-3">{lede}</div>

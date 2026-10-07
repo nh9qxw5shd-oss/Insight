@@ -11,7 +11,7 @@ import {
   deriveChangePoints, effectiveDelay, effectiveDuration, effectiveMinsToArrival,
   nonContinuation, RawData,
 } from '../queries'
-import { railwayPeriodWeek } from '../railwayCalendar'
+import { railwayPeriodWeek, railwayHalfOfWeek, railwayFortnightLabel } from '../railwayCalendar'
 import { buildNarrative } from './narrative'
 import { buildControlPmcPlan } from './controlPmc'
 import { buildHeadlineKpis } from './headlineKpis'
@@ -41,7 +41,11 @@ function buildScopeLabel(template: ReportOptions['template'], from: string, to: 
     }
     return `${pwFrom.yearLabel} · P${String(pwFrom.period).padStart(2, '0')} W${pwFrom.week} → P${String(pwTo.period).padStart(2, '0')} W${pwTo.week}`
   }
-  if (template === 'weekly' || template === 'controlPmc') {
+  if (template === 'controlPmc') {
+    const pw = railwayPeriodWeek(from)
+    return `${pw.yearLabel} · ${railwayFortnightLabel(pw.period, railwayHalfOfWeek(pw.week), pw.railYear)} · ${shortDate(from)} → ${shortDate(to)}`
+  }
+  if (template === 'weekly') {
     const pw = railwayPeriodWeek(from)
     return `${pw.yearLabel} · P${String(pw.period).padStart(2, '0')} · W${pw.week} · ${shortDate(from)} → ${shortDate(to)}`
   }

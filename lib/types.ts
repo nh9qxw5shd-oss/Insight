@@ -180,12 +180,12 @@ export const CLASSIFICATION_CONFIG: Record<IncidentClassification, { label: stri
 }
 
 // ─── Control PMC incident flags ──────────────────────────────────────────────
-// Manual flags nominating incidents for the weekly Control PMC report. When
-// any incidents in the reporting week carry a flag, the report's "Top 5
-// delay incidents" deep-dive shows the flagged incidents instead (ordered
-// lowest → highest impact). Capped at PMC_FLAG_LIMIT per railway week —
-// enforced in the app layer since railway weeks aren't expressible as a
-// plain DB constraint.
+// Manual flags nominating incidents for the fortnightly Control PMC report.
+// When any incidents in the reporting fortnight carry a flag, the report's
+// "Top 5 delay incidents" deep-dive shows the flagged incidents instead
+// (ordered lowest → highest impact). Capped at PMC_FLAG_LIMIT per railway
+// fortnight (W1–2 / W3–4) — enforced in the app layer since railway
+// fortnights aren't expressible as a plain DB constraint.
 
 export interface PmcFlag {
   incident_id: string
