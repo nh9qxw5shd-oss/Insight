@@ -546,12 +546,14 @@ week (green when a week is fully signed off). Inside the full form, a
 
 - **Control PMC flags** — every expanded incident carries a **Flag for
   Control PMC** toggle just above the review form. Flagged incidents replace
-  the automatic "Top 5 incidents by delay" deep-dive in that week's Control
-  PMC report, presented **lowest → highest impact**. A maximum of **5
-  incidents per railway week** can be flagged — the toggle shows the week's
-  running count (e.g. `3/5 flagged in P03 W4 · 2026/27`) and disables at
-  capacity until a slot is freed. With no flags in the week, the report falls
-  back to the automatic top-5-by-delay ranking.
+  the automatic "Top 5 incidents by delay" deep-dive in that fortnight's
+  Control PMC report, presented **lowest → highest impact**. The Control PMC
+  runs fortnightly — each period splits into **W1–2** and **W3–4** (P13 W5 in
+  53-week years rolls into W3–5). A maximum of **5 incidents per railway
+  fortnight** can be flagged — the toggle shows the fortnight's running count
+  (e.g. `3/5 flagged in P03 W3–4 · 2026/27`) and disables at capacity until a
+  slot is freed. With no flags in the fortnight, the report falls back to the
+  automatic top-5-by-delay ranking.
 
 Keeping the Review tab's progress bars green means downstream reports are
 trustworthy.

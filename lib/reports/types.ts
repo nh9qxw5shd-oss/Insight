@@ -11,7 +11,7 @@ export type ReportTemplate =
   | 'weekly'        // 7-day brief — tactical
   | 'safety'        // Safety-critical roll-up with reviewed commentary
   | 'custom'        // Current dashboard window, every section
-  | 'controlPmc'    // Control PMC weekly KPI roll-up by topic
+  | 'controlPmc'    // Control PMC fortnightly KPI roll-up by topic
 
 export const REPORT_TEMPLATES: { id: ReportTemplate; name: string; subtitle: string; tagline: string }[] = [
   { id: 'period',  name: 'Period Report',
@@ -24,8 +24,8 @@ export const REPORT_TEMPLATES: { id: ReportTemplate; name: string; subtitle: str
     subtitle: 'Operational',
     tagline: 'Safety-critical incidents only — radar comparison, location clusters, reviewed commentary.' },
   { id: 'controlPmc', name: 'Control PMC',
-    subtitle: 'Weekly · Control',
-    tagline: 'Weekly Control PMC roll-up by topic — fatalities, stranded trains, irregular working, PAX, train faults, ITSR adherence and (later) passenger satisfaction.' },
+    subtitle: 'Fortnightly · Control',
+    tagline: 'Fortnightly Control PMC roll-up by topic — fatalities, stranded trains, irregular working, PAX, train faults, ITSR adherence and (later) passenger satisfaction.' },
   { id: 'custom',  name: 'Custom Range Report',
     subtitle: 'Bespoke',
     tagline: 'Uses the dashboard\'s current filter window. Toggle individual sections in or out.' },
@@ -46,7 +46,7 @@ export type ReportSectionId =
   | 'narrative'
   | 'appendix'
   // Control PMC sections — each one corresponds to a single KPI topic in the
-  // weekly Control PMC pack (one section per topic).
+  // fortnightly Control PMC pack (one section per topic).
   | 'pmcSummary'
   | 'pmcFatalities'
   | 'pmcStranded'
@@ -72,7 +72,7 @@ export const SECTION_LABELS: Record<ReportSectionId, string> = {
   signals:      'Anomalies & signals',
   narrative:    'Findings & guidance',
   appendix:     'Incident appendix',
-  pmcSummary:         'PMC week summary',
+  pmcSummary:         'PMC fortnight summary',
   pmcFatalities:      'Fatalities · Person Struck',
   pmcStranded:        'Stranded train incidents',
   pmcRecoveryTrend:   'Recovery trend (periodic)',
@@ -374,8 +374,8 @@ export interface PmcTopDelayPlan {
   windowFrom:   string                 // ISO date the historical search starts from
   windowTo:     string                 // ISO date the historical search ends on
   // 'ranked'  — automatic top 5 by delay, sorted highest first (default)
-  // 'flagged' — manually flagged incidents for the week, sorted lowest →
-  //             highest impact (max 5 per railway week)
+  // 'flagged' — manually flagged incidents for the fortnight, sorted lowest →
+  //             highest impact (max 5 per railway fortnight)
   mode:         'ranked' | 'flagged'
   incidents:    PmcTopDelayDetail[]    // up to 5 rows, ordered per `mode`
   insights:     string[]
@@ -460,7 +460,7 @@ export interface ReportSource {
   // time stranded by period). Same window as historicalIncidents.
   historicalReviews?: IncidentReview[]
   // Incident ids manually flagged for the Control PMC report within the
-  // scoped week. When non-empty, the top-5 deep-dive shows these incidents
+  // scoped fortnight. When non-empty, the top-5 deep-dive shows these incidents
   // (lowest → highest impact) instead of the automatic delay ranking.
   pmcFlaggedIds?:     string[]
 }

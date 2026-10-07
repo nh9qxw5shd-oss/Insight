@@ -1,5 +1,6 @@
-// ─── Control PMC weekly KPI roll-up builder ──────────────────────────────────
-// Produces a topic-by-topic plan for the weekly Control PMC report. Each topic
+// ─── Control PMC fortnightly KPI roll-up builder ─────────────────────────────
+// Produces a topic-by-topic plan for the fortnightly Control PMC report
+// (railway W1–2 / W3–4 of each period). Each topic
 // is filtered out of the same incidents bundle, with stranded-train and ITSR
 // adherence riding on top of the incident_reviews side-table.
 //
@@ -109,8 +110,8 @@ function buildFatalities(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan
   const summary = summarise(cur, pre)
 
   const insights: string[] = []
-  if (cur.length === 0)         insights.push('Zero person-struck or fatality incidents recorded in this week.')
-  if (cur.length > pre.length)  insights.push(`Up from ${pre.length} the previous week.`)
+  if (cur.length === 0)         insights.push('Zero person-struck or fatality incidents recorded in this fortnight.')
+  if (cur.length > pre.length)  insights.push(`Up from ${pre.length} the previous fortnight.`)
 
   return {
     topic:     'Fatalities · Person Struck',
@@ -134,7 +135,7 @@ function buildStranded(
   const pre = f(prev, prevRevById)
   const summary = summarise(cur, pre)
   const insights: string[] = []
-  if (cur.length === 0) insights.push('No reviewed incidents flagged a stranded train this week.')
+  if (cur.length === 0) insights.push('No reviewed incidents flagged a stranded train this fortnight.')
   // Surface stranded entries as inline notes on the row
   const rows: PmcIncidentRow[] = cur
     .sort((a, b) => effectiveDelay(b) - effectiveDelay(a))
@@ -146,7 +147,7 @@ function buildStranded(
         : null
       return toPmcRow(i, note)
     })
-  // Total stranded units across the week (from review entries)
+  // Total stranded units across the fortnight (from review entries)
   let totalUnits = 0
   for (const i of cur) {
     const rev = curRevById.get(i.id)
@@ -159,7 +160,7 @@ function buildStranded(
     locations: topLocations(cur),
     incidents: rows,
     insights,
-    status:    curRevById.size === 0 ? 'No incident reviews loaded for this week — stranded-train flag depends on reviewed incidents.' : undefined,
+    status:    curRevById.size === 0 ? 'No incident reviews loaded for this fortnight — stranded-train flag depends on reviewed incidents.' : undefined,
   }
 }
 
@@ -171,9 +172,9 @@ function buildIrregular(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan 
   const pre = f(prev)
   const summary = summarise(cur, pre)
   const insights: string[] = []
-  if (cur.length === 0) insights.push('No irregular-working events captured this week.')
+  if (cur.length === 0) insights.push('No irregular-working events captured this fortnight.')
   if (summary.countDeltaPct != null && summary.countDeltaPct > 50) {
-    insights.push(`Volume up ${Math.round(summary.countDeltaPct)}% on the previous week.`)
+    insights.push(`Volume up ${Math.round(summary.countDeltaPct)}% on the previous fortnight.`)
   }
   return {
     topic:     'Irregular working',
@@ -197,7 +198,7 @@ function buildPax(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPlan {
   if (sorted.length > PAX_TOPN) {
     insights.push(`Showing top ${PAX_TOPN} of ${sorted.length} PAX incidents by delay impact — ${sorted.length - PAX_TOPN} lower-impact event${sorted.length - PAX_TOPN === 1 ? '' : 's'} omitted from the table.`)
   }
-  if (cur.length === 0) insights.push('No passenger / public injury incidents captured this week.')
+  if (cur.length === 0) insights.push('No passenger / public injury incidents captured this fortnight.')
   return {
     topic:     `PAX incidents${cur.length > PAX_TOPN ? ` (top ${PAX_TOPN} of ${cur.length})` : ''}`,
     summary,
@@ -220,7 +221,7 @@ function buildTrainFaults(curr: IncidentRow[], prev: IncidentRow[]): PmcTopicPla
 
   const insights: string[] = []
   insights.push(`${above.length} train fault${above.length === 1 ? '' : 's'} above ${TRAIN_FAULT_PRIMARY_MINS} minutes delay; top ${below.length} below the threshold also shown.`)
-  if (cur.length === 0) insights.push('No train fault incidents captured this week.')
+  if (cur.length === 0) insights.push('No train fault incidents captured this fortnight.')
 
   return {
     topic:     'Train fault incidents',
@@ -273,7 +274,7 @@ function buildItsr(
   if (itsrExempt > 0)     insights.push(`${itsrExempt} incident${itsrExempt === 1 ? '' : 's'} reviewed as ITSR N/A — does not apply; excluded from the adherence calculation.`)
   if (itsrUnreviewed > 0) insights.push(`${itsrUnreviewed} incident${itsrUnreviewed === 1 ? '' : 's'} have no review on file — these count against adherence until reviewed.`)
   if (itsrMissing > 0)   insights.push(`${itsrMissing} reviewed incident${itsrMissing === 1 ? '' : 's'} without an ITSR completed — these count against adherence; verify the rationale.`)
-  if (prevApplicable > 0) insights.push(`Previous week adherence: ${prevPct.toFixed(0)}% (${prevDid}/${prevApplicable}).`)
+  if (prevApplicable > 0) insights.push(`Previous fortnight adherence: ${prevPct.toFixed(0)}% (${prevDid}/${prevApplicable}).`)
 
   // Primary table = with ITSR; secondary = without (didn't have + unreviewed
   // + N/A-exempt, the last listed for transparency but not counted)
@@ -481,16 +482,16 @@ function buildTopDelay(
 
   const insights: string[] = []
   if (incidents.length === 0) {
-    insights.push('No delay-incurring incidents in the week — section presented for completeness.')
+    insights.push('No delay-incurring incidents in the fortnight — section presented for completeness.')
   } else {
     if (mode === 'flagged') {
-      insights.push(`${incidents.length} incident${incidents.length === 1 ? '' : 's'} manually flagged for this reporting week — replacing the automatic top-5-by-delay ranking, presented lowest → highest impact.`)
+      insights.push(`${incidents.length} incident${incidents.length === 1 ? '' : 's'} manually flagged for this reporting fortnight — replacing the automatic top-5-by-delay ranking, presented lowest → highest impact.`)
     }
     const totalTop = incidents.reduce((s, i) => s + i.delayMins, 0)
     const weekTotal = nonContinuation(curr).reduce((s, i) => s + effectiveDelay(i), 0)
     const share = weekTotal > 0 ? Math.round((totalTop / weekTotal) * 100) : 0
     const setNoun = mode === 'flagged' ? 'Flagged' : 'Top'
-    insights.push(`${setNoun} ${incidents.length} incident${incidents.length === 1 ? '' : 's'} account${incidents.length === 1 ? 's' : ''} for ${share}% of the week's total delay (${fmtMinsShort(totalTop)} of ${fmtMinsShort(weekTotal)}).`)
+    insights.push(`${setNoun} ${incidents.length} incident${incidents.length === 1 ? '' : 's'} account${incidents.length === 1 ? 's' : ''} for ${share}% of the fortnight's total delay (${fmtMinsShort(totalTop)} of ${fmtMinsShort(weekTotal)}).`)
     const repeats = incidents.filter(i => i.matches.length > 0).length
     if (repeats > 0) {
       insights.push(`${repeats} of the ${incidents.length} match historical incidents in the trailing ${HISTORICAL_LOOKBACK_DAYS} days — flagged as candidate repeat issues.`)
@@ -545,7 +546,7 @@ function buildHeadline(
     prevIncidents: prev,
     reviews,
     prevReviews,
-    deltaLabel:    'vs prev week',
+    deltaLabel:    'vs prev fortnight',
   })
 }
 
@@ -575,7 +576,7 @@ export function buildControlPmcPlan(
   const topDelay    = buildTopDelay(curr, history, weekFrom, weekTo, new Set(pmcFlaggedIds))
 
   // Recovery trend uses the broadest review pool available. Fall back to
-  // current + previous week when no historical window was provided.
+  // current + previous fortnight when no historical window was provided.
   const trendPool = allReviews.length > 0 ? allReviews : [...prevReviews, ...reviews]
   const recoveryTrend = deriveRecoveryTrendByPeriod(trendPool)
 
@@ -674,7 +675,7 @@ export function serialiseControlPmcCsv(plan: ControlPmcPlan, scopeLabel: string,
   sline('ITSR adherence (>300m)',     plan.itsr)
 
   const lines: string[] = []
-  lines.push(`# Control PMC weekly report — ${scopeLabel}`)
+  lines.push(`# Control PMC fortnightly report — ${scopeLabel}`)
   lines.push(`# Generated: ${generatedAt}`)
   lines.push(`# ITSR adherence: ${plan.itsr.itsrPct.toFixed(1)}% (${plan.itsr.itsrCompleted}/${plan.itsr.itsrCount} applicable incidents > ${ITSR_THRESHOLD_MINS}m; ${plan.itsr.itsrExempt} N/A exempt)`)
   lines.push(`# Top-5 historical lookup window: ${plan.topDelay.windowFrom} → ${plan.topDelay.windowTo}`)
