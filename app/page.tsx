@@ -14,6 +14,7 @@ import {
   ReferenceArea, ReferenceDot, ReferenceLine, ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
 } from 'recharts'
 import { isSupabaseConfigured } from '@/lib/supabase'
+import { withBase } from '@/lib/basePath'
 import {
   AnalyticsFilters, DEFAULT_FILTERS, IncidentCategory, IncidentRow, Severity,
   CATEGORY_CONFIG, SEVERITY_CONFIG, SAFETY_CATEGORIES,
@@ -1059,7 +1060,7 @@ function Header(props: {
           </button>
 
           <button
-            onClick={() => window.open('/user-guide.html', '_blank', 'noopener,noreferrer')}
+            onClick={() => window.open(withBase('/user-guide.html'), '_blank', 'noopener,noreferrer')}
             className="btn"
             title="Open the Insight user guide"
           >
@@ -1068,7 +1069,7 @@ function Header(props: {
           </button>
 
           <button
-            onClick={() => window.open('/wallboard', '_blank', 'noopener,noreferrer')}
+            onClick={() => window.open(withBase('/wallboard'), '_blank', 'noopener,noreferrer')}
             className="btn"
             title="Open the auto-cycling control-room wallboard view in a new tab"
           >

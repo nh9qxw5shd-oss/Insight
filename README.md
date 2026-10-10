@@ -124,11 +124,29 @@ Cloudflare Access in front of the deployment URL.
 ```bash
 npm install
 cp .env.example .env.local      # populate with your Supabase URL + key
-npm run dev                     # → http://localhost:3000
+npm run dev                     # → http://localhost:3000/insight
 ```
 
 Without env vars set, the app boots in demo mode against synthetic data, so
 you can develop UI without a Supabase project.
+
+---
+
+## Mounted on the Derby Control hub
+
+Insight is served at `overseer.derbycontrol.co.uk/insight`: the hub proxies
+`/insight/*` to this deployment. `next.config.js` sets `basePath: '/insight'`,
+so the standalone host serves the same build under the prefix too
+(`insight.derbycontrol.co.uk/insight`, `/insight/wallboard`).
+
+- Old standalone URLs redirect (307): `/` → `/insight`, `/wallboard` →
+  `/insight/wallboard` (query string kept, so wallboard displays on a fixed
+  URL such as `/wallboard?panel=trend` keep working), `/user-guide.html` →
+  `/insight/user-guide.html`. Add any new top-level page to these redirects.
+- `<Link>`, the router and Next's own assets add the prefix automatically. Any
+  URL built by hand (`window.open`, a raw `<a href>`, metadata icons, `fetch`
+  of a same-origin path) must go through `withBase()` from `lib/basePath.ts`.
+  Static files in `public/` cannot read the env, so they spell out `/insight`.
 
 ---
 

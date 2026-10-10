@@ -12,6 +12,7 @@ import {
   effectiveDelay, nonContinuation, RawData, fetchPerfSnapshots, pickDailyFinal,
 } from '@/lib/queries'
 import { isSupabaseConfigured } from '@/lib/supabase'
+import { withBase } from '@/lib/basePath'
 import { generateSyntheticData } from '@/lib/syntheticData'
 import { railwayPeriodWeek, railwayPeriodBounds } from '@/lib/railwayCalendar'
 
@@ -297,7 +298,7 @@ export default function WallboardPage() {
           <span className="numeric-mono text-sm" style={{ color: stale ? '#E74C3C' : 'var(--ink-400)' }}>
             updated {fmtClock(updatedAt)}
           </span>
-          <a href="/" className="text-xs hover:underline" style={{ color: 'var(--ink-500)' }}>
+          <a href={withBase('/')} className="text-xs hover:underline" style={{ color: 'var(--ink-500)' }}>
             ← dashboard
           </a>
         </div>
