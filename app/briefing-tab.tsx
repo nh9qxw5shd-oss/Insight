@@ -7,6 +7,7 @@ import {
 } from '@/lib/briefing'
 import { HEATWAVE_EXAMPLE_META, HEATWAVE_EXAMPLE_PINS } from '@/lib/briefingExample'
 import { openPrintWindow, downloadHtml, reportFilename } from '@/lib/reports/print'
+import { useStorageKey, useFocusSafe } from '@/lib/storageSync'
 
 // ─── Briefing composer ───────────────────────────────────────────────────────
 // Findings pinned anywhere in Insight land here as evidence cards. Reorder
@@ -41,6 +42,7 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
   const [subtitle, setSubtitle] = useState('')
   const [intro, setIntro] = useState('')
   const metaLoaded = useRef(false)
+  const skipFirstSave = useRef(true)
   // Worked example — everything renders and exports normally, but nothing is
   // read from or written to the shared pin board while it's active.
   const [exampleMode, setExampleMode] = useState(false)
@@ -57,12 +59,38 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
       }
     } catch { /* corrupt draft — start fresh */ }
     metaLoaded.current = true
+    skipFirstSave.current = true
   }, [])
+  // A draft edited in another copy of Insight (another tab, or the hub frame)
+  // replaces this one field by field; a field being typed in keeps the user's
+  // text until it loses focus. Only state is set here — the save below skips
+  // a value that is already in storage, so nothing is written back.
+  const titleSync    = useFocusSafe<string>(setTitle)
+  const subtitleSync = useFocusSafe<string>(setSubtitle)
+  const introSync    = useFocusSafe<string, HTMLTextAreaElement>(setIntro)
+  useStorageKey(META_KEY, raw => {
+    if (!metaLoaded.current || exampleMode || raw === null) return
+    try {
+      const m = JSON.parse(raw)
+      if (typeof m.title === 'string') titleSync.receive(m.title)
+      if (typeof m.subtitle === 'string') subtitleSync.receive(m.subtitle)
+      if (typeof m.intro === 'string') introSync.receive(m.intro)
+    } catch { /* corrupt draft — keep ours */ }
+  })
   useEffect(() => {
     // The example's headline/narrative must never clobber the user's draft.
     if (!metaLoaded.current || exampleMode) return
-    try { localStorage.setItem(META_KEY, JSON.stringify({ title, subtitle, intro })) } catch { /* storage full */ }
-  }, [title, subtitle, intro, exampleMode])
+    // The pass straight after loading still sees the defaults from before the
+    // load; saving them would briefly overwrite the stored draft, and with it
+    // every other open copy's.
+    if (skipFirstSave.current) { skipFirstSave.current = false; return }
+    // Storage already holds a newer value waiting for a focused field's blur.
+    if (titleSync.holding() || subtitleSync.holding() || introSync.holding()) return
+    try {
+      const json = JSON.stringify({ title, subtitle, intro })
+      if (localStorage.getItem(META_KEY) !== json) localStorage.setItem(META_KEY, json)
+    } catch { /* storage full */ }
+  }, [title, subtitle, intro, exampleMode, titleSync, subtitleSync, introSync])
 
   const load = async () => {
     setExampleMode(false)
@@ -207,20 +235,23 @@ export function BriefingTab({ supabaseConfigured, demoMode }: { supabaseConfigur
             <div>
               <label className="label-micro mb-1 block text-[9px]">Headline</label>
               <input type="text" className="input w-full" value={title}
-                     onChange={e => setTitle(e.target.value)}
+                     ref={titleSync.ref} onBlur={titleSync.onBlur}
+                     onChange={e => { titleSync.edited(); setTitle(e.target.value) }}
                      placeholder="e.g. Fourteen days at Extreme: what the July heatwave did to the route" />
             </div>
             <div>
               <label className="label-micro mb-1 block text-[9px]">Scope line (optional)</label>
               <input type="text" className="input w-full" value={subtitle}
-                     onChange={e => setSubtitle(e.target.value)}
+                     ref={subtitleSync.ref} onBlur={subtitleSync.onBlur}
+                     onChange={e => { subtitleSync.edited(); setSubtitle(e.target.value) }}
                      placeholder="e.g. Event 4–17 Jul 2026 · baseline: Normal-rated days" />
             </div>
           </div>
           <div>
             <label className="label-micro mb-1 block text-[9px]">Narrative — “what this means” (optional)</label>
             <textarea className="input w-full" rows={4} value={intro}
-                      onChange={e => setIntro(e.target.value)}
+                      ref={introSync.ref} onBlur={introSync.onBlur}
+                      onChange={e => { introSync.edited(); setIntro(e.target.value) }}
                       placeholder="Two or three plain-English sentences an exec can read in thirty seconds. Blank lines split paragraphs." />
           </div>
         </div>

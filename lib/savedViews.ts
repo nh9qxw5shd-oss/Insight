@@ -1,6 +1,7 @@
 'use client'
 
 import { AnalyticsFilters } from './types'
+import { subscribeStorageKey } from './storageSync'
 
 const STORAGE_KEY = 'insight_saved_views'
 
@@ -36,4 +37,10 @@ export function saveView(name: string, filters: AnalyticsFilters): SavedView {
 export function deleteView(id: string): void {
   const views = getSavedViews().filter(v => v.id !== id)
   localStorage.setItem(STORAGE_KEY, JSON.stringify(views))
+}
+
+/** Calls back with the stored list whenever another copy of Insight (another
+ *  tab, or the hub frame) changes it. Returns the unsubscribe function. */
+export function subscribeSavedViews(onChange: (views: SavedView[]) => void): () => void {
+  return subscribeStorageKey(STORAGE_KEY, () => onChange(getSavedViews()))
 }

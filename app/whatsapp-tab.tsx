@@ -16,6 +16,7 @@ import {
   insertWaImport, updateWaImportCounts, setWaLink, deleteWaLink, deleteWaGroupData,
 } from '@/lib/queries'
 import { isSupabaseConfigured } from '@/lib/supabase'
+import { useStorageKey, useFocusSafe } from '@/lib/storageSync'
 import { parseEventSignals } from '@/lib/eventParser'
 import {
   readExportFile, parseExport, classifyMessage, buildThreads, threadsFromMessages, operationalPosts,
@@ -127,6 +128,10 @@ export function WhatsAppTab({ incidents, windowFrom, windowTo, demoMode, canWrit
   const [openThreadKey,  setOpenThreadKey]  = useState<string | null>(null)
 
   useEffect(() => { setAuthor(loadStoredAuthor()) }, [])
+  // Initials changed in another copy of Insight (another tab, the hub frame);
+  // held while the field is being typed in.
+  const authorSync = useFocusSafe<string>(setAuthor)
+  useStorageKey(AUTHOR_STORAGE_KEY, v => authorSync.receive(v ?? ''))
 
   // ── Load persisted data once ────────────────────────────────────────────────
   useEffect(() => {
@@ -404,7 +409,9 @@ export function WhatsAppTab({ incidents, windowFrom, windowTo, demoMode, canWrit
           </div>
           <div className="flex items-center gap-2">
             <input
-              className="btn text-[11px] w-24" placeholder="Initials" value={author} onChange={e => setAuthor(e.target.value)}
+              className="btn text-[11px] w-24" placeholder="Initials" value={author}
+              ref={authorSync.ref} onBlur={authorSync.onBlur}
+              onChange={e => { authorSync.edited(); setAuthor(e.target.value) }}
               title="Recorded against imports and link decisions"
             />
             <button className="btn text-[11px]" onClick={() => fileRef.current?.click()} disabled={!!busy}>Choose files</button>

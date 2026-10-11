@@ -67,7 +67,8 @@ import {
   WEATHER_RISK_TYPES, LOOKAHEAD_COVERAGE_START,
   fetchWeatherLookahead, lookaheadDayQualifies, weatherLevelLabel,
 } from '@/lib/weatherLookahead'
-import { getSavedViews, saveView, deleteView, SavedView } from '@/lib/savedViews'
+import { getSavedViews, saveView, deleteView, subscribeSavedViews, SavedView } from '@/lib/savedViews'
+import { useStorageKey, useFocusSafe } from '@/lib/storageSync'
 import { getFiltersFromUrl, setFiltersInUrl, clearFiltersFromUrl } from '@/lib/filterUrl'
 import { exportCSV } from '@/lib/export'
 import {
@@ -223,6 +224,8 @@ export default function InsightDashboard() {
   const [distChart, setDistChart] = useState<DistributionKind>('donut')
   const [drillDown, setDrillDown] = useState<{ title: string; incidents: IncidentRow[] } | null>(null)
   const [savedViews, setSavedViews] = useState<SavedView[]>(() => getSavedViews())
+  // Views saved or deleted in another copy of Insight (another tab, the hub frame).
+  useEffect(() => subscribeSavedViews(setSavedViews), [])
 
   // Review-tab data — fetched separately so the SNDM sees every incident in
   // the window regardless of the analytics filter selection.
@@ -581,13 +584,14 @@ export default function InsightDashboard() {
   const handleClearStaffFilter       = ()                     => setFilters(f => clearStaffFilter(f))
 
   const handleSaveView = (name: string) => {
-    const view = saveView(name, filters)
-    setSavedViews(vs => [view, ...vs.filter(v => v.id !== view.id)])
+    // saveView/deleteView work on the stored list, which may be newer than ours.
+    saveView(name, filters)
+    setSavedViews(getSavedViews())
   }
 
   const handleDeleteView = (id: string) => {
     deleteView(id)
-    setSavedViews(vs => vs.filter(v => v.id !== id))
+    setSavedViews(getSavedViews())
   }
 
   const handleResetFilters = () => {
@@ -5634,7 +5638,13 @@ function ReviewQueue({
   const [author, setAuthor]     = useState<string>(() =>
     typeof window === 'undefined' ? '' : localStorage.getItem('insight-author') ?? '')
 
+  // Initials changed in another copy of Insight (another tab, the hub frame);
+  // held while the field is being typed in.
+  const authorSync = useFocusSafe<string>(setAuthor)
+  useStorageKey('insight-author', v => authorSync.receive(v ?? ''))
+
   const setAuthorPersist = (v: string) => {
+    authorSync.edited()
     setAuthor(v)
     try { localStorage.setItem('insight-author', v) } catch { /* private mode */ }
   }
@@ -5717,6 +5727,7 @@ function ReviewQueue({
             className="input !py-1 !px-2 w-20 text-[13px]"
             placeholder="e.g. JD"
             value={author}
+            ref={authorSync.ref} onBlur={authorSync.onBlur}
             onChange={e => setAuthorPersist(e.target.value)}
           />
         </label>

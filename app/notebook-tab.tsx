@@ -13,6 +13,7 @@ import {
   fetchWatchlist, addWatchlistEntry, deleteWatchlistEntry,
 } from '@/lib/queries'
 import { isSupabaseConfigured } from '@/lib/supabase'
+import { useStorageKey, useFocusSafe } from '@/lib/storageSync'
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -93,6 +94,10 @@ export function NotebookTab({ incidents, windowFrom, windowTo, canWrite }: {
 
   // Prefill author initials from localStorage
   useEffect(() => { setAuthor(loadStoredAuthor()) }, [])
+  // …and follow changes made in another copy of Insight (another tab, the hub
+  // frame); held while the field is being typed in.
+  const authorSync = useFocusSafe<string>(setAuthor)
+  useStorageKey(AUTHOR_STORAGE_KEY, v => authorSync.receive(v ?? ''))
 
   // Load persisted entries once on mount
   useEffect(() => {
@@ -344,7 +349,8 @@ export function NotebookTab({ incidents, windowFrom, windowTo, canWrite }: {
                   placeholder="e.g. JD"
                   maxLength={8}
                   value={author}
-                  onChange={e => setAuthor(e.target.value)}
+                  ref={authorSync.ref} onBlur={authorSync.onBlur}
+                  onChange={e => { authorSync.edited(); setAuthor(e.target.value) }}
                 />
               </div>
               <button
